@@ -22,7 +22,7 @@ export class InputHandler {
             rotateLeft: ['ArrowLeft', 'a', 'A'],
             rotateRight: ['ArrowRight', 'd', 'D'],
             fire: [' ', 'Space'], // Space bar
-            hyperspace: ['h', 'H'],
+            hyperspace: ['h', 'H', 'ArrowDown', 's', 'S'],
             pause: ['p', 'P'],
             enter: ['Enter'],
             escape: ['Escape'],

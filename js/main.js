@@ -65,31 +65,50 @@ const UFO_SPAWN_BASE_INTERVAL = 15; // Average seconds between UFO spawns (Added
 const EXTRA_LIFE_SCORE = 10000;
 const LEVEL_UP_SCORE = 500; // Score needed per level (level 2 at 500, level 3 at 1000, etc.)
 
-// Camera system for following the player
+// Camera system - always centered on player, handles wrapping in rendering
 const Camera = {
     x: 0,
     y: 0,
-    targetX: 0,
-    targetY: 0,
-    smoothing: 0.1, // Lower = smoother but more lag (0.1 = 10% per frame)
+    // Parallax offset tracks continuous movement for smooth starfield
+    parallaxX: 0,
+    parallaxY: 0,
+    lastShipX: null,
+    lastShipY: null,
 
-    update(targetX, targetY, canvasWidth, canvasHeight) {
-        this.targetX = targetX - canvasWidth / 2;
-        this.targetY = targetY - canvasHeight / 2;
+    update(shipX, shipY, canvasWidth, canvasHeight) {
+        // Track continuous movement for parallax (before wrapping correction)
+        if (this.lastShipX !== null) {
+            let deltaX = shipX - this.lastShipX;
+            let deltaY = shipY - this.lastShipY;
 
-        // Smooth interpolation towards target
-        this.x += (this.targetX - this.x) * this.smoothing;
-        this.y += (this.targetY - this.y) * this.smoothing;
+            // Correct for world wrapping to get actual movement
+            if (deltaX > WORLD_WIDTH / 2) deltaX -= WORLD_WIDTH;
+            else if (deltaX < -WORLD_WIDTH / 2) deltaX += WORLD_WIDTH;
+            if (deltaY > WORLD_HEIGHT / 2) deltaY -= WORLD_HEIGHT;
+            else if (deltaY < -WORLD_HEIGHT / 2) deltaY += WORLD_HEIGHT;
+
+            // Accumulate for smooth parallax
+            this.parallaxX += deltaX;
+            this.parallaxY += deltaY;
+        }
+
+        this.lastShipX = shipX;
+        this.lastShipY = shipY;
+
+        // Simply center camera on ship - always
+        this.x = shipX - canvasWidth / 2;
+        this.y = shipY - canvasHeight / 2;
     },
 
-    reset(x, y, canvasWidth, canvasHeight) {
-        this.x = x - canvasWidth / 2;
-        this.y = y - canvasHeight / 2;
-        this.targetX = this.x;
-        this.targetY = this.y;
+    reset(shipX, shipY, canvasWidth, canvasHeight) {
+        this.x = shipX - canvasWidth / 2;
+        this.y = shipY - canvasHeight / 2;
+        this.parallaxX = 0;
+        this.parallaxY = 0;
+        this.lastShipX = shipX;
+        this.lastShipY = shipY;
     },
 
-    // Convert world coordinates to screen coordinates
     worldToScreen(worldX, worldY) {
         return {
             x: worldX - this.x,
@@ -129,9 +148,9 @@ let pausedGameExists = false; // Flag to track paused game
 let currentUser = null; // Track current user
 let promptInput = ""; // For user name entry
 
-// Bounded world settings (3x3 screens with wrap-around)
-const WORLD_SCREENS_X = 3; // World is 3 screens wide
-const WORLD_SCREENS_Y = 3; // World is 3 screens tall
+// Bounded world settings (1.5x1.5 screens with wrap-around for higher asteroid density)
+const WORLD_SCREENS_X = 1.5; // World is 1.5 screens wide
+const WORLD_SCREENS_Y = 1.5; // World is 1.5 screens tall
 let WORLD_WIDTH = 800 * WORLD_SCREENS_X;  // Will be set properly after canvas init
 let WORLD_HEIGHT = 600 * WORLD_SCREENS_Y; // Will be set properly after canvas init
 
@@ -158,6 +177,45 @@ function wrapWorldPosition(entity) {
     } else if (entity.y >= WORLD_HEIGHT) {
         entity.y -= WORLD_HEIGHT;
     }
+}
+
+// Draw an entity at all its wrapped positions that are visible on screen
+// This creates the seamless wrapping effect
+function drawEntityWrapped(entity, ctx) {
+    if (!entity.isAlive) return;
+
+    const originalX = entity.x;
+    const originalY = entity.y;
+
+    // Get camera position in world coordinates (normalized)
+    const camCenterX = Camera.x + canvas.width / 2;
+    const camCenterY = Camera.y + canvas.height / 2;
+
+    // Check all 9 possible wrapped positions (3x3 grid)
+    // This ensures entity appears correctly when near world edges
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+            const wrappedX = originalX + dx * WORLD_WIDTH;
+            const wrappedY = originalY + dy * WORLD_HEIGHT;
+
+            // Check if this wrapped position is visible on screen
+            const screenX = wrappedX - Camera.x;
+            const screenY = wrappedY - Camera.y;
+            const margin = entity.radius ? entity.radius * 2 : 50;
+
+            if (screenX > -margin && screenX < canvas.width + margin &&
+                screenY > -margin && screenY < canvas.height + margin) {
+                // Temporarily move entity to wrapped position and draw
+                entity.x = wrappedX;
+                entity.y = wrappedY;
+                entity.draw(ctx);
+            }
+        }
+    }
+
+    // Restore original position
+    entity.x = originalX;
+    entity.y = originalY;
 }
 
 // Draw level up notification
@@ -227,13 +285,14 @@ function drawStarfield() {
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw stars with parallax effect
+    // Draw stars with parallax effect using continuous parallax offset
+    // This ensures smooth scrolling even when ship/camera wraps
     stars.forEach(star => {
-        // Apply parallax based on layer
-        const parallaxX = star.x - Camera.x * star.layer;
-        const parallaxY = star.y - Camera.y * star.layer;
+        // Apply parallax based on layer using continuous parallax tracking
+        const parallaxX = star.x - Camera.parallaxX * star.layer;
+        const parallaxY = star.y - Camera.parallaxY * star.layer;
 
-        // Wrap stars to keep them visible
+        // Wrap stars to keep them visible (seamless tiling)
         const screenX = ((parallaxX % canvas.width) + canvas.width) % canvas.width;
         const screenY = ((parallaxY % canvas.height) + canvas.height) % canvas.height;
 
@@ -738,10 +797,11 @@ function renderGame() {
             ctx.save();
             ctx.translate(-Camera.x, -Camera.y);
 
-            if (ship && ship.isAlive && respawnTimer <= 0) ship.draw(ctx);
-            asteroids.forEach(asteroid => asteroid.draw(ctx));
-            bullets.forEach(bullet => bullet.draw(ctx));
-            ufos.forEach(ufo => ufo.draw(ctx));
+            // Draw all entities with wrapping support for seamless scrolling
+            if (ship && ship.isAlive && respawnTimer <= 0) drawEntityWrapped(ship, ctx);
+            asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
+            bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
+            ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
 
             ctx.restore();
 
@@ -766,10 +826,11 @@ function renderGame() {
             ctx.save();
             ctx.translate(-Camera.x, -Camera.y);
 
-            if (ship && ship.isAlive && respawnTimer <= 0) ship.draw(ctx);
-            asteroids.forEach(asteroid => asteroid.draw(ctx));
-            bullets.forEach(bullet => bullet.draw(ctx));
-            ufos.forEach(ufo => ufo.draw(ctx));
+            // Draw all entities with wrapping support
+            if (ship && ship.isAlive && respawnTimer <= 0) drawEntityWrapped(ship, ctx);
+            asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
+            bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
+            ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
 
             ctx.restore();
             ctx.globalAlpha = 1.0;

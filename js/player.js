@@ -204,29 +204,50 @@ export class PlayerShip extends Entity {
         ctx.closePath();
         ctx.stroke();
 
-        // Draw thrust flame if thrusting
+        // Draw thrust flame if thrusting - low poly flickering style
         if (this.isThrusting) {
-            ctx.fillStyle = 'red';
-            ctx.strokeStyle = 'orange';
+            // Flicker effect - randomize flame length
+            const flameFlicker = 0.8 + Math.random() * 0.6; // 0.8 to 1.4
+            const flameLength = this.radius * 1.3 * flameFlicker;
+
+            // Rear center of ship (base of flame)
+            const rearCenterX = this.x + Math.cos(angle + Math.PI) * (this.radius * 0.5);
+            const rearCenterY = this.y + Math.sin(angle + Math.PI) * (this.radius * 0.5);
+
+            // Flame tip (points backward from ship)
+            const flameTipX = this.x + Math.cos(angle + Math.PI) * flameLength;
+            const flameTipY = this.y + Math.sin(angle + Math.PI) * flameLength;
+
+            // Flame base corners (slightly inside the rear of ship)
+            const flameBaseLeft = {
+                x: this.x + Math.cos(angle + degToRad(155)) * this.radius * 0.6,
+                y: this.y + Math.sin(angle + degToRad(155)) * this.radius * 0.6
+            };
+            const flameBaseRight = {
+                x: this.x + Math.cos(angle - degToRad(155)) * this.radius * 0.6,
+                y: this.y + Math.sin(angle - degToRad(155)) * this.radius * 0.6
+            };
+
+            // Draw outer flame (orange/yellow)
+            ctx.strokeStyle = '#FFA500';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(flameBaseLeft.x, flameBaseLeft.y);
+            ctx.lineTo(flameTipX, flameTipY);
+            ctx.lineTo(flameBaseRight.x, flameBaseRight.y);
+            ctx.stroke();
+
+            // Draw inner flame (brighter, shorter) for depth
+            const innerFlicker = 0.5 + Math.random() * 0.3;
+            const innerTipX = this.x + Math.cos(angle + Math.PI) * (this.radius * 0.9 * innerFlicker);
+            const innerTipY = this.y + Math.sin(angle + Math.PI) * (this.radius * 0.9 * innerFlicker);
+
+            ctx.strokeStyle = '#FFFF00';
             ctx.lineWidth = 1;
             ctx.beginPath();
-            const flameTipX = this.x + Math.cos(angle + Math.PI) * (this.radius * 1.5); // Point backwards
-            const flameTipY = this.y + Math.sin(angle + Math.PI) * (this.radius * 1.5);
-            ctx.moveTo(flameTipX, flameTipY);
-            // Base of flame is between the rear points
-            ctx.lineTo((rearLeftX + rearRightX) / 2, (rearLeftY + rearRightY) / 2);
-            // Add some randomness for flicker?
-            // Draw slightly smaller points for the flame base sides
-            const flameRearLeftX = this.x + Math.cos(angle + degToRad(160)) * this.radius * 0.8;
-            const flameRearLeftY = this.y + Math.sin(angle + degToRad(160)) * this.radius * 0.8;
-            const flameRearRightX = this.x + Math.cos(angle - degToRad(160)) * this.radius * 0.8;
-            const flameRearRightY = this.y + Math.sin(angle - degToRad(160)) * this.radius * 0.8;
-            ctx.lineTo(flameRearLeftX, flameRearLeftY);
-            ctx.moveTo(flameTipX, flameTipY);
-            ctx.lineTo(flameRearRightX, flameRearRightY);
-
-            ctx.closePath();
-            ctx.fill();
+            ctx.moveTo(flameBaseLeft.x, flameBaseLeft.y);
+            ctx.lineTo(innerTipX, innerTipY);
+            ctx.lineTo(flameBaseRight.x, flameBaseRight.y);
             ctx.stroke();
         }
 
