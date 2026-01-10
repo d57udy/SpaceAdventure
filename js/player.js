@@ -156,8 +156,8 @@ export class PlayerShip extends Entity {
         this.velX *= SHIP_FRICTION;
         this.velY *= SHIP_FRICTION;
 
-        // Reset thrusting flag (will be set by input handler if key is down)
-        this.isThrusting = false;
+        // Note: isThrusting flag is managed by main.js input handling
+        // It's set true by thrust() and false when thrust key is not pressed
 
         // Call parent update for movement and wrapping
         super.update(deltaTime, canvasWidth, canvasHeight);
