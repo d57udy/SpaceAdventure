@@ -1,22 +1,37 @@
 import { Entity } from './entity.js';
 import { randomRange, degToRad } from './utils.js';
 
+// Asteroid Types
+const AsteroidType = {
+    GREEN: 'green',  // Collectible - gives points on collision
+    RED: 'red'       // Dangerous - lose life on collision, must be shot
+};
+
 const AsteroidSize = {
-    LARGE: { radius: 40, points: 10, speedMultiplier: 1, score: 20 },
-    MEDIUM: { radius: 20, points: 8, speedMultiplier: 1.5, score: 50 },
-    SMALL: { radius: 10, points: 6, speedMultiplier: 2, score: 100 },
+    LARGE: { radius: 40, points: 10, speedMultiplier: 1, greenScore: 100, redScore: 0 },
+    MEDIUM: { radius: 30, points: 8, speedMultiplier: 1.5, greenScore: 50, redScore: 0 },
+    SMALL: { radius: 20, points: 6, speedMultiplier: 2, greenScore: 25, redScore: 0 },
 };
 
 const ASTEROID_BASE_SPEED = 30; // Base speed pixels per second
 const ASTEROID_VERTICES_JAGGEDNESS = 0.4; // How irregular the shape is (0 = circle, 1 = very jagged)
 const ASTEROID_ROTATION_SPEED_MAX = 90; // Max degrees per second rotation
+const GREEN_GLOW_PULSE_SPEED = 2; // Speed of green asteroid pulse
 
 export class Asteroid extends Entity {
-    constructor(x, y, size = AsteroidSize.LARGE, initialVel = null, speedMultiplier = 1.0) {
+    constructor(x, y, size = AsteroidSize.LARGE, initialVel = null, speedMultiplier = 1.0, type = null) {
         super(x, y, size.radius);
         this.sizeInfo = size;
         this.rotationSpeed = degToRad(randomRange(-ASTEROID_ROTATION_SPEED_MAX, ASTEROID_ROTATION_SPEED_MAX));
-        this.scoreValue = size.score;
+
+        // Set asteroid type - if not specified, randomly choose (60% green, 40% red)
+        this.type = type || (Math.random() < 0.6 ? AsteroidType.GREEN : AsteroidType.RED);
+
+        // Score value depends on type and size
+        this.scoreValue = this.type === AsteroidType.GREEN ? size.greenScore : size.redScore;
+
+        // Pulse effect timer for green asteroids
+        this.pulseTimer = Math.random() * Math.PI * 2; // Random start phase
 
         // Generate random shape vertices
         this.shapeVertices = this.generateShape();
@@ -56,35 +71,84 @@ export class Asteroid extends Entity {
         // Apply rotation
         this.rotation += this.rotationSpeed * deltaTime;
 
+        // Update pulse timer for green asteroids
+        if (this.type === AsteroidType.GREEN) {
+            this.pulseTimer += deltaTime * GREEN_GLOW_PULSE_SPEED;
+        }
+
         // Call parent update for movement and wrapping
         super.update(deltaTime, canvasWidth, canvasHeight);
+    }
+
+    // Update for infinite world (no screen wrapping)
+    updateInfinite(deltaTime) {
+        if (!this.isAlive) return;
+
+        // Apply rotation
+        this.rotation += this.rotationSpeed * deltaTime;
+
+        // Update pulse timer for green asteroids
+        if (this.type === AsteroidType.GREEN) {
+            this.pulseTimer += deltaTime * GREEN_GLOW_PULSE_SPEED;
+        }
+
+        // Move without wrapping
+        this.x += this.velX * deltaTime;
+        this.y += this.velY * deltaTime;
     }
 
     draw(ctx) {
         if (!this.isAlive) return;
 
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
+        // Different colors based on type
+        if (this.type === AsteroidType.GREEN) {
+            // Green asteroids: bright green with pulsing glow
+            const pulseIntensity = 0.5 + 0.5 * Math.sin(this.pulseTimer);
+            const glowAlpha = 0.3 * pulseIntensity;
 
-        // Translate and rotate canvas context to draw the asteroid shape
-        ctx.translate(this.x, this.y);
-        ctx.rotate(this.rotation);
+            // Draw glow effect
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
 
-        // Draw the custom shape
-        ctx.moveTo(this.shapeVertices[0].x, this.shapeVertices[0].y);
-        for (let i = 1; i < this.shapeVertices.length; i++) {
-            ctx.lineTo(this.shapeVertices[i].x, this.shapeVertices[i].y);
+            // Outer glow
+            ctx.shadowColor = '#00FF00';
+            ctx.shadowBlur = 15 * pulseIntensity;
+            ctx.strokeStyle = `rgba(0, 255, 0, ${0.6 + 0.4 * pulseIntensity})`;
+            ctx.fillStyle = `rgba(0, 180, 0, ${glowAlpha})`;
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            ctx.moveTo(this.shapeVertices[0].x, this.shapeVertices[0].y);
+            for (let i = 1; i < this.shapeVertices.length; i++) {
+                ctx.lineTo(this.shapeVertices[i].x, this.shapeVertices[i].y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.restore();
+        } else {
+            // Red asteroids: dark red/crimson, jagged appearance
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
+
+            ctx.strokeStyle = '#CC0000';
+            ctx.fillStyle = 'rgba(100, 0, 0, 0.3)';
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            ctx.moveTo(this.shapeVertices[0].x, this.shapeVertices[0].y);
+            for (let i = 1; i < this.shapeVertices.length; i++) {
+                ctx.lineTo(this.shapeVertices[i].x, this.shapeVertices[i].y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.restore();
         }
-        ctx.closePath();
-        ctx.stroke();
-
-        // Reset transformation
-        ctx.rotate(-this.rotation);
-        ctx.translate(-this.x, -this.y);
-
-        // Optionally draw collision radius for debugging
-        // super.draw(ctx); // Uncomment to see the red circle/line from Entity
     }
 
     split(newAsteroidsArray, audioManager) {
@@ -96,6 +160,14 @@ export class Asteroid extends Entity {
         }
 
         let children = [];
+
+        // GREEN asteroids: Just get destroyed, no splitting (player shouldn't shoot them!)
+        if (this.type === AsteroidType.GREEN) {
+            this.destroy();
+            return children; // No children - shooting green asteroids is wasteful
+        }
+
+        // RED asteroids: Split into smaller red asteroids
         let nextSize = null;
 
         if (this.sizeInfo === AsteroidSize.LARGE) {
@@ -105,7 +177,7 @@ export class Asteroid extends Entity {
         }
 
         if (nextSize) {
-            // Create two smaller asteroids
+            // Create two smaller RED asteroids
             for (let i = 0; i < 2; i++) {
                 // Give them slightly divergent velocities based on original + a kick
                 const angleKick = randomRange(-Math.PI / 4, Math.PI / 4);
@@ -115,7 +187,8 @@ export class Asteroid extends Entity {
                     y: (this.velY + Math.sin(angleKick) * 20) * speedKick
                 };
 
-                const child = new Asteroid(this.x, this.y, nextSize, newVel);
+                // Preserve RED type for children
+                const child = new Asteroid(this.x, this.y, nextSize, newVel, 1.0, AsteroidType.RED);
                 children.push(child);
                 newAsteroidsArray.push(child);
             }
@@ -134,5 +207,20 @@ export class Asteroid extends Entity {
     // Expose sizes for use elsewhere (e.g., spawning)
     static get Sizes() {
         return AsteroidSize;
+    }
+
+    // Expose types for use elsewhere
+    static get Types() {
+        return AsteroidType;
+    }
+
+    // Check if this is a green (collectible) asteroid
+    isGreen() {
+        return this.type === AsteroidType.GREEN;
+    }
+
+    // Check if this is a red (dangerous) asteroid
+    isRed() {
+        return this.type === AsteroidType.RED;
     }
 } 

@@ -63,6 +63,40 @@ const RESPAWN_DELAY = 2;
 const SAFE_SPAWN_RADIUS = 150;
 const UFO_SPAWN_BASE_INTERVAL = 15; // Average seconds between UFO spawns (Added back)
 const EXTRA_LIFE_SCORE = 10000;
+const LEVEL_UP_SCORE = 500; // Score needed per level (level 2 at 500, level 3 at 1000, etc.)
+
+// Camera system for following the player
+const Camera = {
+    x: 0,
+    y: 0,
+    targetX: 0,
+    targetY: 0,
+    smoothing: 0.1, // Lower = smoother but more lag (0.1 = 10% per frame)
+
+    update(targetX, targetY, canvasWidth, canvasHeight) {
+        this.targetX = targetX - canvasWidth / 2;
+        this.targetY = targetY - canvasHeight / 2;
+
+        // Smooth interpolation towards target
+        this.x += (this.targetX - this.x) * this.smoothing;
+        this.y += (this.targetY - this.y) * this.smoothing;
+    },
+
+    reset(x, y, canvasWidth, canvasHeight) {
+        this.x = x - canvasWidth / 2;
+        this.y = y - canvasHeight / 2;
+        this.targetX = this.x;
+        this.targetY = this.y;
+    },
+
+    // Convert world coordinates to screen coordinates
+    worldToScreen(worldX, worldY) {
+        return {
+            x: worldX - this.x,
+            y: worldY - this.y
+        };
+    }
+};
 
 // Game State Variables
 let canvas, ctx;
@@ -94,6 +128,121 @@ const pauseMenuOptions = ['Resume', 'Restart', 'Main Menu']; // Pause menu items
 let pausedGameExists = false; // Flag to track paused game
 let currentUser = null; // Track current user
 let promptInput = ""; // For user name entry
+
+// Bounded world settings (3x3 screens with wrap-around)
+const WORLD_SCREENS_X = 3; // World is 3 screens wide
+const WORLD_SCREENS_Y = 3; // World is 3 screens tall
+let WORLD_WIDTH = 800 * WORLD_SCREENS_X;  // Will be set properly after canvas init
+let WORLD_HEIGHT = 600 * WORLD_SCREENS_Y; // Will be set properly after canvas init
+
+// Level progression settings
+const BASE_ASTEROIDS_PER_LEVEL = 10; // Starting asteroids at level 1
+const ASTEROIDS_PER_LEVEL_INCREASE = 3; // Additional asteroids per level
+
+// Level up notification
+let levelUpNotificationTimer = 0;
+const LEVEL_UP_NOTIFICATION_DURATION = 3; // seconds to show "Level X" message
+
+// Wrap an object's position within the bounded world
+function wrapWorldPosition(entity) {
+    // Wrap X position
+    if (entity.x < 0) {
+        entity.x += WORLD_WIDTH;
+    } else if (entity.x >= WORLD_WIDTH) {
+        entity.x -= WORLD_WIDTH;
+    }
+
+    // Wrap Y position
+    if (entity.y < 0) {
+        entity.y += WORLD_HEIGHT;
+    } else if (entity.y >= WORLD_HEIGHT) {
+        entity.y -= WORLD_HEIGHT;
+    }
+}
+
+// Draw level up notification
+function drawLevelUpNotification() {
+    if (levelUpNotificationTimer <= 0) return;
+
+    // Fade out effect
+    const alpha = Math.min(1, levelUpNotificationTimer / (LEVEL_UP_NOTIFICATION_DURATION * 0.3));
+
+    ctx.save();
+
+    // Draw semi-transparent background box
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.7 * alpha})`;
+    const boxWidth = 300;
+    const boxHeight = 100;
+    const boxX = (canvas.width - boxWidth) / 2;
+    const boxY = (canvas.height - boxHeight) / 2 - 50;
+    ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+
+    // Draw border
+    ctx.strokeStyle = `rgba(0, 255, 0, ${alpha})`;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+    // Draw "LEVEL X" text
+    ctx.fillStyle = `rgba(0, 255, 0, ${alpha})`;
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`LEVEL ${level}`, canvas.width / 2, boxY + 35);
+
+    // Draw "Clear all asteroids!" subtitle
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.font = '16px Arial';
+    ctx.fillText('Clear all asteroids to advance!', canvas.width / 2, boxY + 70);
+
+    ctx.restore();
+}
+
+// Starfield for parallax background
+const STAR_COUNT = 200;
+const stars = [];
+
+// Generate stars for the background
+function generateStars() {
+    stars.length = 0;
+    for (let i = 0; i < STAR_COUNT; i++) {
+        stars.push({
+            x: Math.random() * 10000 - 5000, // Wide range for infinite world
+            y: Math.random() * 10000 - 5000,
+            size: Math.random() * 2 + 0.5,
+            brightness: Math.random() * 0.5 + 0.5,
+            layer: Math.random() < 0.7 ? 0.3 : 0.6 // Parallax layer (0.3 = far, 0.6 = near)
+        });
+    }
+}
+
+// Draw parallax starfield background
+function drawStarfield() {
+    // Dark space gradient background
+    const gradient = ctx.createRadialGradient(
+        canvas.width / 2, canvas.height / 2, 0,
+        canvas.width / 2, canvas.height / 2, canvas.width
+    );
+    gradient.addColorStop(0, '#0A0A20');
+    gradient.addColorStop(1, '#050510');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw stars with parallax effect
+    stars.forEach(star => {
+        // Apply parallax based on layer
+        const parallaxX = star.x - Camera.x * star.layer;
+        const parallaxY = star.y - Camera.y * star.layer;
+
+        // Wrap stars to keep them visible
+        const screenX = ((parallaxX % canvas.width) + canvas.width) % canvas.width;
+        const screenY = ((parallaxY % canvas.height) + canvas.height) % canvas.height;
+
+        ctx.fillStyle = `rgba(255, 255, 255, ${star.brightness})`;
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, star.size, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
 
 // --- Initialization ---
 
@@ -171,6 +320,13 @@ function startGame() {
     bullets = [];
     asteroids = [];
     ufos = [];
+
+    // Generate starfield for the world
+    generateStars();
+
+    // Initialize camera at center of the world
+    Camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, canvas.width, canvas.height);
+
     respawnPlayer(true); // Call respawn before creating asteroids
     createLevelAsteroids();
     resetUfoSpawnTimer();
@@ -181,6 +337,9 @@ function startGame() {
     achievementManager.resetSessionStats();
     pauseMenuSelectionIndex = 0;
     pausedGameExists = false;
+
+    // Show initial level notification
+    levelUpNotificationTimer = LEVEL_UP_NOTIFICATION_DURATION;
 }
 
 // Function to handle username prompt input
@@ -210,8 +369,13 @@ function resizeCanvas() {
     const size = Math.min(window.innerWidth, window.innerHeight) * 0.9;
     canvas.width = size;
     canvas.height = size;
+
+    // Update world dimensions based on canvas size (5x5 screens)
+    WORLD_WIDTH = canvas.width * WORLD_SCREENS_X;
+    WORLD_HEIGHT = canvas.height * WORLD_SCREENS_Y;
+
     console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
-    // Could potentially reposition entities if needed after resize
+    console.log(`World size: ${WORLD_WIDTH}x${WORLD_HEIGHT}`);
 }
 
 function updateUI() {
@@ -451,21 +615,43 @@ function updateGame(deltaTime) {
 
     if (ship && ship.isAlive && respawnTimer <= 0) {
         ship.update(deltaTime, canvas.width, canvas.height, audioManager);
+        // Wrap player position in bounded world
+        wrapWorldPosition(ship);
+        // Update camera to follow player
+        Camera.update(ship.x, ship.y, canvas.width, canvas.height);
     }
 
-    asteroids.forEach(asteroid => asteroid.update(deltaTime, canvas.width, canvas.height, audioManager));
+    // Update asteroids and wrap their positions
+    asteroids.forEach(asteroid => {
+        asteroid.updateInfinite(deltaTime);
+        wrapWorldPosition(asteroid);
+    });
 
-    bullets.forEach(bullet => bullet.update(deltaTime, canvas.width, canvas.height));
+    // Update level up notification timer
+    if (levelUpNotificationTimer > 0) {
+        levelUpNotificationTimer -= deltaTime;
+    }
 
-    let activeUfoExists = false;
+    // Update bullets and wrap their positions
+    bullets.forEach(bullet => {
+        bullet.update(deltaTime, canvas.width, canvas.height);
+        wrapWorldPosition(bullet);
+    });
+
+    // Update UFOs and wrap their positions
+    let visibleUfoExists = false;
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
-             ufo.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager, selectedDifficulty);
-             activeUfoExists = true;
+             ufo.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager, selectedDifficulty, asteroids, Camera.x, Camera.y);
+             wrapWorldPosition(ufo);
+             if (ufo.isOnScreen) {
+                 visibleUfoExists = true;
+             }
         }
     });
 
-    if (activeUfoExists && !audioManager.isMuted) audioManager.startUfoHum();
+    // Only play UFO hum when a UFO is actually visible on screen
+    if (visibleUfoExists && !audioManager.isMuted) audioManager.startUfoHum();
     else audioManager.stopUfoHum();
 
     checkCollisions();
@@ -476,6 +662,7 @@ function updateGame(deltaTime) {
 
     updateUfoSpawning(deltaTime);
 
+    // Level up when all asteroids are cleared (classic Asteroids style)
     if (asteroids.length === 0 && ufos.length === 0 && respawnTimer <= 0 && ship && ship.isAlive) {
         levelUp();
     }
@@ -501,9 +688,18 @@ function renderGame() {
             ctx.fillStyle = 'white';
             ctx.textAlign = 'center';
             ctx.font = '48px Arial';
-            ctx.fillText("ASTEROIDS", canvas.width / 2, canvas.height / 4);
+            ctx.fillText("SPACE ADVENTURE", canvas.width / 2, canvas.height / 6);
+
+            // Game description
+            ctx.font = '14px Arial';
+            ctx.fillStyle = '#00FF00';
+            ctx.fillText("Collect GREEN asteroids for points!", canvas.width / 2, canvas.height / 6 + 35);
+            ctx.fillStyle = '#CC0000';
+            ctx.fillText("Avoid RED asteroids - shoot them to survive!", canvas.width / 2, canvas.height / 6 + 55);
+            ctx.fillStyle = 'white';
+
             ctx.font = '20px Arial';
-            const menuStartY = canvas.height * 0.4;
+            const menuStartY = canvas.height * 0.45;
             const menuLineHeight = 30;
 
             // Regenerate options based on paused state for render
@@ -535,19 +731,47 @@ function renderGame() {
             break;
 
         case GameState.PLAYING:
+            // Draw starfield background (parallax effect)
+            drawStarfield();
+
+            // Apply camera transformation for game objects
+            ctx.save();
+            ctx.translate(-Camera.x, -Camera.y);
+
             if (ship && ship.isAlive && respawnTimer <= 0) ship.draw(ctx);
             asteroids.forEach(asteroid => asteroid.draw(ctx));
             bullets.forEach(bullet => bullet.draw(ctx));
             ufos.forEach(ufo => ufo.draw(ctx));
+
+            ctx.restore();
+
+            // Draw level up notification (screen-space, not world-space)
+            drawLevelUpNotification();
+
+            // Draw remaining asteroids count
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Asteroids: ${asteroids.length}`, 10, canvas.height - 10);
+
             drawAchievementNotifications();
             break;
 
         case GameState.PAUSED:
+            // Draw starfield background
+            drawStarfield();
+
             ctx.globalAlpha = 0.5;
+            // Apply camera transformation for game objects
+            ctx.save();
+            ctx.translate(-Camera.x, -Camera.y);
+
             if (ship && ship.isAlive && respawnTimer <= 0) ship.draw(ctx);
             asteroids.forEach(asteroid => asteroid.draw(ctx));
             bullets.forEach(bullet => bullet.draw(ctx));
             ufos.forEach(ufo => ufo.draw(ctx));
+
+            ctx.restore();
             ctx.globalAlpha = 1.0;
 
             drawPauseMenu();
@@ -608,29 +832,40 @@ function gameLoop(timestamp = 0) {
 function createLevelAsteroids() {
     console.log(`Creating asteroids for level ${level} (Difficulty: ${selectedDifficulty.name})`);
     asteroids = [];
-    const baseAsteroids = selectedDifficulty.startingAsteroids;
-    const numAsteroids = baseAsteroids + (level - 1) * 2;
+
+    // Calculate number of asteroids for this level
+    const numAsteroids = BASE_ASTEROIDS_PER_LEVEL + (level - 1) * ASTEROIDS_PER_LEVEL_INCREASE;
+    const playerX = ship ? ship.x : WORLD_WIDTH / 2;
+    const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
+
+    console.log(`Spawning ${numAsteroids} asteroids across ${WORLD_SCREENS_X}x${WORLD_SCREENS_Y} world`);
 
     for (let i = 0; i < numAsteroids; i++) {
         let x, y;
-        do {
-            const edge = Math.floor(Math.random() * 4);
-            if (edge === 0) {
-                x = randomRange(0, canvas.width);
-                y = -Asteroid.Sizes.LARGE.radius;
-            } else if (edge === 1) {
-                x = canvas.width + Asteroid.Sizes.LARGE.radius;
-                y = randomRange(0, canvas.height);
-            } else if (edge === 2) {
-                x = randomRange(0, canvas.width);
-                y = canvas.height + Asteroid.Sizes.LARGE.radius;
-            } else {
-                x = -Asteroid.Sizes.LARGE.radius;
-                y = randomRange(0, canvas.height);
-            }
-        } while (Math.sqrt((x - canvas.width/2)**2 + (y - canvas.height/2)**2) < SAFE_SPAWN_RADIUS);
+        let attempts = 0;
 
-        asteroids.push(new Asteroid(x, y, Asteroid.Sizes.LARGE, null, selectedDifficulty.asteroidSpeedMultiplier));
+        // Find a position that's not too close to the player
+        do {
+            x = randomRange(0, WORLD_WIDTH);
+            y = randomRange(0, WORLD_HEIGHT);
+            attempts++;
+        } while (
+            Math.sqrt((x - playerX) ** 2 + (y - playerY) ** 2) < SAFE_SPAWN_RADIUS * 2 &&
+            attempts < 20
+        );
+
+        // Mostly large asteroids at start of level (they split into smaller ones)
+        const sizeRoll = Math.random();
+        let size;
+        if (sizeRoll < 0.6) {
+            size = Asteroid.Sizes.LARGE;
+        } else if (sizeRoll < 0.85) {
+            size = Asteroid.Sizes.MEDIUM;
+        } else {
+            size = Asteroid.Sizes.SMALL;
+        }
+
+        asteroids.push(new Asteroid(x, y, size, null, selectedDifficulty.asteroidSpeedMultiplier));
     }
 }
 
@@ -638,10 +873,24 @@ function checkCollisions() {
     if (ship && ship.isAlive && !ship.isInvulnerable) {
         for (const asteroid of asteroids) {
             if (asteroid.isAlive && ship.collidesWith(asteroid)) {
-                console.log("Collision: Ship <-> Asteroid");
-                handlePlayerDeath();
-                asteroid.split(asteroids, audioManager);
-                return;
+                if (asteroid.isGreen()) {
+                    // GREEN asteroid: Collect it for points!
+                    console.log("Collision: Ship <-> Green Asteroid (Collected!)");
+                    const scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
+                    updateScore(scoreGained);
+                    asteroid.destroy();
+                    // Play collection sound
+                    if (audioManager) {
+                        audioManager.play('collectGreen');
+                    }
+                    achievementManager.trackAsteroidCollected();
+                } else {
+                    // RED asteroid: Lose a life!
+                    console.log("Collision: Ship <-> Red Asteroid (Damage!)");
+                    handlePlayerDeath();
+                    asteroid.split(asteroids, audioManager);
+                    return;
+                }
             }
         }
 
@@ -672,12 +921,18 @@ function checkCollisions() {
             const asteroid = asteroids[j];
             if (!asteroid.isAlive) continue;
             if (bullet.collidesWith(asteroid)) {
-                console.log("Collision: Player Bullet <-> Asteroid");
                 bullet.destroy();
-                const scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
-                updateScore(scoreGained);
-                asteroid.split(asteroids, audioManager);
-                achievementManager.trackAsteroidDestroyed();
+
+                if (asteroid.isGreen()) {
+                    // Shooting green asteroids: NO points! (wasteful - should collect instead)
+                    console.log("Collision: Player Bullet <-> Green Asteroid (Wasted!)");
+                    asteroid.split(asteroids, audioManager); // Just destroys, no children
+                } else {
+                    // Shooting red asteroids: Good! They split but no points
+                    console.log("Collision: Player Bullet <-> Red Asteroid (Destroyed!)");
+                    asteroid.split(asteroids, audioManager);
+                    achievementManager.trackAsteroidDestroyed();
+                }
                 bulletHit = true;
                 break;
             }
@@ -693,6 +948,27 @@ function checkCollisions() {
                 updateScore(scoreGained);
                 ufo.destroy(audioManager);
                 achievementManager.trackUfoDestroyed();
+                break;
+            }
+        }
+    }
+
+    // Check UFO bullets hitting asteroids (UFOs destroy green asteroids!)
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        const bullet = bullets[i];
+        if (!bullet.isAlive || bullet.isPlayerBullet) continue; // Only UFO bullets
+
+        for (let j = asteroids.length - 1; j >= 0; j--) {
+            const asteroid = asteroids[j];
+            if (!asteroid.isAlive) continue;
+
+            if (bullet.collidesWith(asteroid)) {
+                bullet.destroy();
+                if (asteroid.isGreen()) {
+                    // UFO destroyed a green asteroid - bad for player!
+                    console.log("Collision: UFO Bullet <-> Green Asteroid (Score opportunity lost!)");
+                }
+                asteroid.split(asteroids, audioManager);
                 break;
             }
         }
@@ -724,11 +1000,17 @@ function respawnPlayer(isInitialSpawn = false) {
     console.log(`respawnPlayer called. isInitialSpawn=${isInitialSpawn}, currentGameState=${currentGameState}, shipExists=${!!ship}, shipAlive=${ship?.isAlive}`);
     if (currentGameState !== GameState.GAME_OVER && (!ship || !ship.isAlive)) {
          console.log("Respawning Player - Conditions Met");
-         const centerX = canvas.width / 2;
-         const centerY = canvas.height / 2;
+
+         // Spawn at center of the world
+         const centerX = WORLD_WIDTH / 2;
+         const centerY = WORLD_HEIGHT / 2;
+
          ship = new PlayerShip(centerX, centerY);
          respawnTimer = 0;
          audioManager.stopThrustSound();
+
+         // Reset camera to player position
+         Camera.reset(centerX, centerY, canvas.width, canvas.height);
     } else {
         console.log("Respawning Player - Conditions NOT Met");
     }
@@ -737,10 +1019,23 @@ function respawnPlayer(isInitialSpawn = false) {
 function levelUp() {
     level++;
     console.log(`Level up to ${level}!`);
+
+    // Show level up notification
+    levelUpNotificationTimer = LEVEL_UP_NOTIFICATION_DURATION;
+
+    // Play level up sound
+    if (audioManager) {
+        audioManager.play('collectGreen'); // Satisfying chime
+    }
+
+    // Create new asteroids for this level
+    createLevelAsteroids();
+
+    // Reset UFO spawn timer for new level
+    resetUfoSpawnTimer();
+
     updateUI();
     achievementManager.checkUnlockConditions({ score: score, level: level, user: currentUser });
-    createLevelAsteroids();
-    resetUfoSpawnTimer();
 }
 
 function gameOver() {
@@ -798,9 +1093,48 @@ function updateUfoSpawning(deltaTime) {
     ufoSpawnTimer -= deltaTime;
     if (ufoSpawnTimer <= 0) {
         console.log("Attempting to spawn UFO");
-        ufos.push(new UFO(canvas.width, canvas.height));
+        // Spawn UFO at a visible position near the edge of the current screen
+        const playerX = ship ? ship.x : WORLD_WIDTH / 2;
+        const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
+
+        // Spawn at edge of visible area
+        const spawnSide = Math.floor(Math.random() * 4); // 0=top, 1=right, 2=bottom, 3=left
+        let ufoX, ufoY;
+
+        switch (spawnSide) {
+            case 0: // Top
+                ufoX = playerX + randomRange(-canvas.width / 2, canvas.width / 2);
+                ufoY = playerY - canvas.height / 2 - 20;
+                break;
+            case 1: // Right
+                ufoX = playerX + canvas.width / 2 + 20;
+                ufoY = playerY + randomRange(-canvas.height / 2, canvas.height / 2);
+                break;
+            case 2: // Bottom
+                ufoX = playerX + randomRange(-canvas.width / 2, canvas.width / 2);
+                ufoY = playerY + canvas.height / 2 + 20;
+                break;
+            case 3: // Left
+                ufoX = playerX - canvas.width / 2 - 20;
+                ufoY = playerY + randomRange(-canvas.height / 2, canvas.height / 2);
+                break;
+        }
+
+        // Wrap UFO spawn position to world bounds
+        ufoX = ((ufoX % WORLD_WIDTH) + WORLD_WIDTH) % WORLD_WIDTH;
+        ufoY = ((ufoY % WORLD_HEIGHT) + WORLD_HEIGHT) % WORLD_HEIGHT;
+
+        // Create UFO at the calculated position
+        const ufo = new UFO(canvas.width, canvas.height, playerX, playerY);
+        ufo.x = ufoX;
+        ufo.y = ufoY;
+        ufos.push(ufo);
+
+        console.log(`UFO spawned at (${ufoX.toFixed(0)}, ${ufoY.toFixed(0)}) near player at (${playerX.toFixed(0)}, ${playerY.toFixed(0)})`);
         resetUfoSpawnTimer();
     }
+
+    // In bounded world, UFOs wrap around naturally - no despawning needed
 }
 
 function drawHighScores(scoresToDisplay, achievementsMap) {
@@ -940,26 +1274,51 @@ function drawPauseMenu() {
 function drawHelpScreen() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '36px Arial';
-    const titleY = canvas.height / 8;
-    ctx.fillText("HELP - CONTROLS", canvas.width / 2, titleY);
+    ctx.font = '28px Arial';
+    const titleY = canvas.height / 12;
+    ctx.fillText("SPACE ADVENTURE - HELP", canvas.width / 2, titleY);
 
-    ctx.font = '18px Arial';
+    // Game rules section
+    ctx.font = '16px Arial';
     ctx.textAlign = 'left';
-    const helpStartY = titleY + 60;
-    const helpLineHeight = 28;
-    const controlsX = canvas.width / 6;
+    const rulesX = canvas.width / 10;
+    let rulesY = titleY + 40;
+
+    ctx.fillStyle = '#00FF00';
+    ctx.fillText("GREEN Asteroids:", rulesX, rulesY);
+    ctx.fillStyle = 'white';
+    ctx.fillText("Fly INTO them to collect points! Don't shoot them.", rulesX + 130, rulesY);
+
+    rulesY += 22;
+    ctx.fillStyle = '#CC0000';
+    ctx.fillText("RED Asteroids:", rulesX, rulesY);
+    ctx.fillStyle = 'white';
+    ctx.fillText("Dangerous! SHOOT them to survive. Don't touch!", rulesX + 120, rulesY);
+
+    rulesY += 22;
+    ctx.fillStyle = '#9933FF';
+    ctx.fillText("Aliens (UFOs):", rulesX, rulesY);
+    ctx.fillStyle = 'white';
+    ctx.fillText("Shoot at you AND green asteroids! Destroy them!", rulesX + 110, rulesY);
+
+    // Controls section
+    ctx.fillStyle = 'white';
+    ctx.font = '20px Arial';
+    rulesY += 35;
+    ctx.fillText("CONTROLS", rulesX, rulesY);
+
+    ctx.font = '14px Arial';
+    const helpStartY = rulesY + 25;
+    const helpLineHeight = 22;
+    const controlsX = rulesX;
     const keysX = canvas.width / 2;
 
     const controls = [
-        { action: 'Rotate Left', keys: 'Left Arrow / A' },
-        { action: 'Rotate Right', keys: 'Right Arrow / D' },
-        { action: 'Thrust', keys: 'Up Arrow / W' },
+        { action: 'Rotate Left/Right', keys: 'Arrow Keys / A,D' },
+        { action: 'Thrust Forward', keys: 'Up Arrow / W' },
         { action: 'Fire', keys: 'Spacebar' },
-        { action: 'Hyperspace', keys: 'H' },
-        { action: 'Pause/Menu Back', keys: 'P / Escape' },
-        { action: 'Menu Navigate', keys: 'Up / Down Arrows' },
-        { action: 'Menu Select', keys: 'Enter / Spacebar' },
+        { action: 'Hyperspace (Risky!)', keys: 'H' },
+        { action: 'Pause Game', keys: 'P / Escape' },
         { action: 'Toggle Mute', keys: 'M' },
     ];
 
@@ -969,8 +1328,8 @@ function drawHelpScreen() {
     });
 
     ctx.textAlign = 'center';
-    ctx.font = '18px Arial';
-    ctx.fillText("Press Space/Enter/Esc to return", canvas.width / 2, canvas.height - 40);
+    ctx.font = '16px Arial';
+    ctx.fillText("Press Space/Enter/Esc to return", canvas.width / 2, canvas.height - 30);
 }
 
 function drawUserPrompt() {

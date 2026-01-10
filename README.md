@@ -1,42 +1,94 @@
-# Classic Asteroids Game
+# Space Adventure
 
-A web-based implementation of the classic arcade game Asteroids, built with HTML, CSS, and vanilla JavaScript.
+A modified Asteroids game with unique gameplay mechanics - collect green asteroids for points while avoiding and destroying dangerous red asteroids!
 
 ## Gameplay
 
-Control a spaceship navigating a dangerous asteroid field. Your goal is to survive as long as possible by destroying asteroids and occasional enemy UFOs while avoiding collisions.
+Navigate your spaceship through an infinite asteroid field with two types of asteroids:
 
--   Rotate your ship left and right.
--   Thrust forward to move, but beware of inertia!
--   Fire bullets to destroy asteroids. Large asteroids break into medium ones, medium ones break into small ones, and small ones disintegrate.
--   Watch out for enemy UFOs that appear periodically and shoot back.
--   Use the risky Hyperspace jump to escape tight situations (but you might reappear in a worse spot or self-destruct!).
--   Clear levels by destroying all asteroids.
--   Earn points for destroying asteroids and UFOs, and gain extra lives.
--   Compete for high scores and unlock achievements!
+### Green Asteroids (Collectible)
+- **Fly INTO them** to collect points
+- Larger green asteroids give more points
+- **Don't shoot them** - shooting destroys potential points!
+
+### Red Asteroids (Dangerous)
+- **Avoid collision** - touching them costs you a life
+- **Shoot them** to destroy and survive
+- They split into smaller red asteroids when shot
+
+### Aliens (UFOs)
+- Enemy UFOs that shoot at you
+- They also target green asteroids to steal your scoring opportunities!
+- Destroy them before they destroy your points
 
 ## Features
 
-*   Classic Asteroids gameplay loop.
-*   Multiple difficulty levels (Easy, Medium, Hard).
-*   Persistent high scores per user.
-*   Achievement system.
-*   Keyboard and Touch controls.
-*   Sound effects (requires user interaction to enable).
-*   Retro vector-style graphics using HTML Canvas.
+- **Infinite scrolling world** - explore endless space
+- **Camera follows player** - smooth scrolling gameplay
+- **Parallax starfield** - beautiful space background
+- **Score-based leveling** - level up every 500 points
+- Multiple difficulty levels (Easy, Medium, Hard)
+- Persistent high scores per user
+- Achievement system
+- Keyboard and touch controls
+- Sound effects
 
-## Play the Game
+## Controls
 
-You can play the game directly in your browser here:
-
-[https://d57udy.github.io/Astroids/](https://d57udy.github.io/Astroids/)
+| Action | Keys |
+|--------|------|
+| Rotate Left/Right | Arrow Keys / A, D |
+| Thrust Forward | Up Arrow / W |
+| Fire | Spacebar |
+| Hyperspace (risky!) | H |
+| Pause | P / Escape |
+| Mute | M |
 
 ## Running Locally
 
-1.  Clone or download the repository.
-2.  Ensure you have Python installed.
-3.  Navigate to the project directory in your terminal.
-4.  Start a simple local web server: `python -m http.server`
-5.  Open your browser and go to `http://localhost:8000`.
+**IMPORTANT: The game must be run from a web server, not by opening the HTML file directly!**
 
-*(Note: Running directly from the `file://` protocol may cause issues with loading game modules due to browser security restrictions.)* 
+### Option 1: Using npm (recommended)
+```bash
+npm start
+```
+Then open http://localhost:8080
+
+### Option 2: Using Python
+```bash
+python3 -m http.server 8080
+```
+Then open http://localhost:8080
+
+### Option 3: Using any other web server
+Serve the files from any web server and open in browser.
+
+## Running Tests
+
+```bash
+# Install dependencies
+npm install
+
+# Run tests
+npm test
+
+# Run tests with browser visible
+npm run test:headed
+```
+
+## GitHub Pages Deployment
+
+This game is fully compatible with GitHub Pages (free edition):
+
+1. Push to a GitHub repository
+2. Go to Settings > Pages
+3. Select "Deploy from a branch"
+4. Select `main` branch and `/ (root)` folder
+5. Your game will be available at `https://yourusername.github.io/repository-name/`
+
+## Technical Notes
+
+- Built with vanilla JavaScript and HTML5 Canvas
+- Uses ES6 modules (requires web server)
+- No external dependencies for the game itself
+- Playwright tests for quality assurance

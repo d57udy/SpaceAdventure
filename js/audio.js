@@ -50,7 +50,16 @@ export class AudioManager {
     }
 
     play(soundName, loop = false, volume = 1.0) {
-        if (this.isMuted || !this.sounds[soundName] || this.audioContext.state === 'suspended') {
+        if (this.isMuted || this.audioContext.state === 'suspended') {
+            return null;
+        }
+
+        // Handle procedural sounds
+        if (soundName === 'collectGreen') {
+            return this.playCollectSound();
+        }
+
+        if (!this.sounds[soundName]) {
             return null;
         }
 
@@ -67,6 +76,32 @@ export class AudioManager {
         source.loop = loop;
         source.start(0);
         return source; // Return the source node for potential control (e.g., stopping loops)
+    }
+
+    // Procedural collect sound - a pleasant rising chime
+    playCollectSound() {
+        if (this.isMuted) return null;
+
+        const now = this.audioContext.currentTime;
+        const oscillator = this.audioContext.createOscillator();
+        const gainNode = this.audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(this.masterGain);
+
+        oscillator.type = 'sine';
+        // Rising pitch for satisfying collection feeling
+        oscillator.frequency.setValueAtTime(400, now);
+        oscillator.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+        oscillator.frequency.exponentialRampToValueAtTime(1200, now + 0.15);
+
+        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+
+        oscillator.start(now);
+        oscillator.stop(now + 0.2);
+
+        return oscillator;
     }
 
     // Specific function for looping thrust sound

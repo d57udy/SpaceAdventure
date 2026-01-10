@@ -1,0 +1,25 @@
+{
+  "name": "space-adventure",
+  "version": "1.0.0",
+  "description": "Space Adventure - A modified Asteroids game with green collectible and red dangerous asteroids.",
+  "main": "index.js",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/d57udy/Astroids.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/d57udy/Astroids/issues"
+  },
+  "homepage": "https://github.com/d57udy/Astroids#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}

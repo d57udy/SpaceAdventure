@@ -16,8 +16,14 @@ export class Entity {
         this.x += this.velX * deltaTime;
         this.y += this.velY * deltaTime;
 
-        // Apply screen wrapping
-        wrapAroundEdges(this, canvasWidth, canvasHeight);
+        // Apply screen wrapping (disabled for infinite world)
+        // wrapAroundEdges(this, canvasWidth, canvasHeight);
+    }
+
+    // Update for infinite world (no wrapping, just move)
+    updateInfinite(deltaTime) {
+        this.x += this.velX * deltaTime;
+        this.y += this.velY * deltaTime;
     }
 
     // Basic draw method (intended to be overridden by subclasses)

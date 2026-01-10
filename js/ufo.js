@@ -11,58 +11,94 @@ const UFOSize = {
 // const UFO_ACCURACY = 0.8;
 
 export class UFO extends Entity {
-    constructor(canvasWidth, canvasHeight) {
+    constructor(canvasWidth, canvasHeight, playerX = null, playerY = null) {
         const size = UFOSize.STANDARD;
-        // Spawn off-screen left or right
-        const spawnLeft = Math.random() < 0.5;
-        const x = spawnLeft ? -size.radius : canvasWidth + size.radius;
-        const y = randomRange(size.radius, canvasHeight - size.radius);
+
+        // If player position provided, spawn relative to player (infinite world mode)
+        let x, y;
+        if (playerX !== null && playerY !== null) {
+            // Spawn at edge of visibility around player
+            const angle = randomRange(0, Math.PI * 2);
+            const distance = 400; // Just outside typical view
+            x = playerX + Math.cos(angle) * distance;
+            y = playerY + Math.sin(angle) * distance;
+        } else {
+            // Legacy: Spawn off-screen left or right
+            const spawnLeft = Math.random() < 0.5;
+            x = spawnLeft ? -size.radius : canvasWidth + size.radius;
+            y = randomRange(size.radius, canvasHeight - size.radius);
+        }
 
         super(x, y, size.radius);
 
         this.sizeInfo = size;
         this.scoreValue = size.score;
-        this.velX = spawnLeft ? size.speed : -size.speed;
-        this.velY = 0; // Simple horizontal movement for now
+
+        // Move towards player area (random direction with bias toward center)
+        const moveAngle = randomRange(0, Math.PI * 2);
+        this.velX = Math.cos(moveAngle) * size.speed;
+        this.velY = Math.sin(moveAngle) * size.speed;
+
         this.fireTimer = size.fireRate * randomRange(0.5, 1.5); // Start with variable delay
 
-        console.log(`UFO spawned at (${x.toFixed(0)}, ${y.toFixed(0)}) moving ${spawnLeft ? 'right' : 'left'}`);
+        console.log(`UFO spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
     }
 
-    update(deltaTime, canvasWidth, canvasHeight, playerShip, bullets, audioManager, difficulty) {
+    update(deltaTime, canvasWidth, canvasHeight, playerShip, bullets, audioManager, difficulty, asteroids = [], cameraX = 0, cameraY = 0) {
         super.update(deltaTime, canvasWidth, canvasHeight); // Basic movement
 
-        // Despawn if it goes fully off the other side
-        if ((this.velX > 0 && this.x > canvasWidth + this.radius * 2) ||
-            (this.velX < 0 && this.x < -this.radius * 2)) {
-            console.log("UFO despawned off-screen");
-            this.isAlive = false;
-        }
+        // In infinite world, despawn is handled by main.js based on distance from player
+
+        // Check if UFO is visible on screen
+        const isOnScreen = this.isVisibleOnScreen(cameraX, cameraY, canvasWidth, canvasHeight);
 
         // Firing logic
         this.fireTimer -= deltaTime;
         if (this.fireTimer <= 0 && this.isAlive) {
-            this.fire(playerShip, bullets, audioManager, difficulty); // Pass difficulty to fire
+            this.fire(playerShip, bullets, audioManager, difficulty, asteroids, isOnScreen);
             this.fireTimer = this.sizeInfo.fireRate * randomRange(0.8, 1.2);
         }
 
-        // UFO Hum is handled in main.js
+        // Store visibility for use by main.js (for UFO hum sound)
+        this.isOnScreen = isOnScreen;
     }
 
-    fire(playerShip, bullets, audioManager, difficulty) {
-        if (!playerShip || !playerShip.isAlive) return;
-
-        console.log("UFO Firing!");
-
+    fire(playerShip, bullets, audioManager, difficulty, asteroids = [], isOnScreen = true) {
         // Use accuracy from difficulty settings
         const accuracy = difficulty ? difficulty.ufoAccuracy : 0.8; // Default if missing
 
-        // Calculate base angle towards player
-        const angleToPlayer = Math.atan2(playerShip.y - this.y, playerShip.x - this.x);
+        // 30% chance to target a green asteroid instead of the player
+        let target = null;
+        let targetType = 'player';
+
+        // Find nearby green asteroids
+        const greenAsteroids = asteroids.filter(a => a.isAlive && a.isGreen && a.isGreen());
+        const nearbyGreenAsteroids = greenAsteroids.filter(a => {
+            const dx = a.x - this.x;
+            const dy = a.y - this.y;
+            return Math.sqrt(dx * dx + dy * dy) < 400; // Only consider nearby green asteroids
+        });
+
+        if (nearbyGreenAsteroids.length > 0 && Math.random() < 0.3) {
+            // Target a random nearby green asteroid
+            target = nearbyGreenAsteroids[Math.floor(Math.random() * nearbyGreenAsteroids.length)];
+            targetType = 'green_asteroid';
+            console.log("UFO targeting green asteroid!");
+        } else if (playerShip && playerShip.isAlive) {
+            target = playerShip;
+            targetType = 'player';
+        }
+
+        if (!target) return;
+
+        console.log(`UFO Firing at ${targetType}!`);
+
+        // Calculate base angle towards target
+        const angleToTarget = Math.atan2(target.y - this.y, target.x - this.x);
 
         // Add inaccuracy
         const angleOffset = (1 - accuracy) * Math.PI;
-        const finalAngle = angleToPlayer + randomRange(-angleOffset, angleOffset);
+        const finalAngle = angleToTarget + randomRange(-angleOffset, angleOffset);
 
         // Calculate velocity vector
         const bulletSpeed = this.sizeInfo.bulletSpeed;
@@ -72,10 +108,22 @@ export class UFO extends Entity {
         // Create the bullet (flagged as not a player bullet)
         bullets.push(new Bullet(this.x, this.y, bulletVelX, bulletVelY, false));
 
-        // Play UFO fire sound
-        if (audioManager) {
+        // Only play UFO fire sound if UFO is visible on screen
+        if (audioManager && isOnScreen) {
             audioManager.play('ufoShoot');
         }
+    }
+
+    // Check if UFO is visible on screen given camera position
+    isVisibleOnScreen(cameraX, cameraY, canvasWidth, canvasHeight) {
+        const screenX = this.x - cameraX;
+        const screenY = this.y - cameraY;
+        const margin = this.radius * 2; // Small margin
+
+        return screenX > -margin &&
+               screenX < canvasWidth + margin &&
+               screenY > -margin &&
+               screenY < canvasHeight + margin;
     }
 
     draw(ctx) {

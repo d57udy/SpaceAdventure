@@ -9,6 +9,7 @@ export class AchievementManager {
         this.sessionStats = {
             asteroidsDestroyed: 0,
             ufosDestroyed: 0,
+            asteroidsCollected: 0,  // Green asteroids collected
         };
         this.recentlyUnlocked = [];
         this.notificationTimer = 0;
@@ -48,6 +49,12 @@ export class AchievementManager {
     trackUfoDestroyed() {
         if (!this.currentUser) return;
         this.sessionStats.ufosDestroyed++;
+        this.checkUnlockConditions();
+    }
+
+    trackAsteroidCollected() {
+        if (!this.currentUser) return;
+        this.sessionStats.asteroidsCollected++;
         this.checkUnlockConditions();
     }
 

@@ -32,10 +32,9 @@ export class Bullet extends Entity {
             this.isAlive = false;
         }
 
-        // Bullets do not wrap around edges in classic Asteroids
-        if (this.x < 0 || this.x > canvasWidth || this.y < 0 || this.y > canvasHeight) {
-             this.isAlive = false;
-        }
+        // NOTE: In infinite world mode, we don't kill bullets based on canvas bounds
+        // Bullets die based on lifetime only (handled above)
+        // The old code killed bullets at screen edges which doesn't work with camera movement
     }
 
     draw(ctx) {
