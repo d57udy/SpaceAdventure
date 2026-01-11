@@ -1,5 +1,6 @@
 const HIGH_SCORES_BASE_KEY = 'asteroids_highScores';
 const ACHIEVEMENTS_BASE_KEY = 'asteroids_achievements';
+const UPGRADES_BASE_KEY = 'asteroids_upgrades';
 const CURRENT_USER_KEY = 'asteroids_currentUser';
 const USER_LIST_KEY = 'asteroids_userList'; // Key for storing known usernames
 
@@ -195,15 +196,45 @@ export class PersistenceManager {
         }
     }
 
-    // --- Reset --- 
+    // --- Upgrades ---
+    saveUpgrades(username, upgradeData) {
+        const key = this._getUserSpecificKey(UPGRADES_BASE_KEY, username);
+        if (!key || !this.isLocalStorageAvailable()) return;
+        try {
+            localStorage.setItem(key, JSON.stringify(upgradeData));
+            console.log(`Upgrades saved for user: ${username}`);
+        } catch (error) {
+            console.error(`Error saving upgrades for ${username}:`, error);
+        }
+    }
+
+    loadUpgrades(username) {
+        const key = this._getUserSpecificKey(UPGRADES_BASE_KEY, username);
+        if (!key || !this.isLocalStorageAvailable()) return null;
+        try {
+            const storedUpgrades = localStorage.getItem(key);
+            if (storedUpgrades) {
+                const data = JSON.parse(storedUpgrades);
+                console.log(`Upgrades loaded for user: ${username}`);
+                return data;
+            }
+        } catch (error) {
+            console.error(`Error loading upgrades for ${username}:`, error);
+        }
+        return null;
+    }
+
+    // --- Reset ---
     resetUserData(username) {
         if (!username || !this.isLocalStorageAvailable()) return;
         console.warn(`Resetting all data for user: ${username}`);
         try {
             const hsKey = this._getUserSpecificKey(HIGH_SCORES_BASE_KEY, username);
             const acKey = this._getUserSpecificKey(ACHIEVEMENTS_BASE_KEY, username);
+            const upKey = this._getUserSpecificKey(UPGRADES_BASE_KEY, username);
             if (hsKey) localStorage.removeItem(hsKey);
             if (acKey) localStorage.removeItem(acKey);
+            if (upKey) localStorage.removeItem(upKey);
             console.log(`Data reset for user: ${username}`);
             // After resetting, if it was the current user, clear the current user setting
             if (this.currentUser === username) {

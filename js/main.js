@@ -9,6 +9,7 @@ import { PersistenceManager } from './persistence.js';
 import { AchievementManager } from './achievementManager.js';
 import { Achievements } from './achievements.js';
 import { PowerUp, PowerUpType } from './powerup.js';
+import { Boss } from './boss.js';
 
 // Game States Enum
 const GameState = {
@@ -18,6 +19,7 @@ const GameState = {
     PAUSED: 'paused',
     HIGH_SCORES: 'high_scores',
     ACHIEVEMENTS: 'achievements',
+    UPGRADES: 'upgrades',
     HELP: 'help',
     GAME_OVER: 'game_over'
 };
@@ -171,8 +173,8 @@ const DynamicDifficulty = {
     extraLifeThresholdMod: 1.0,
 
     // Settings
-    evaluationInterval: 30, // Seconds between performance evaluations
-    adjustmentSpeed: 0.1, // How fast adjustments change (0-1)
+    evaluationInterval: 15, // Seconds between performance evaluations (faster response)
+    adjustmentSpeed: 0.3, // How fast adjustments change (0-1) - more responsive
 
     reset() {
         this.sessionStartTime = Date.now();
@@ -206,8 +208,13 @@ const DynamicDifficulty = {
         this.shotsHit++;
     },
 
-    trackGreenCollected() {
+    trackGreenCollected(comboCount = 0) {
         this.greenAsteroidsCollected++;
+        // If player maintains high combo, they're skilled - increase difficulty
+        if (comboCount >= 10) {
+            this.performanceScore = Math.min(1, this.performanceScore + 0.05);
+            this.applyAdjustments();
+        }
     },
 
     trackGreenSpawned(count = 1) {
@@ -308,23 +315,32 @@ const DynamicDifficulty = {
         // Struggling (p < 0): Make game easier
         // Skilled (p > 0): Make game harder
 
-        // Asteroid speed: 0.8x (struggling) to 1.3x (skilled)
-        this.asteroidSpeedMod = 1.0 + (p * 0.25);
+        // Asteroid speed: 0.6x (struggling) to 1.5x (skilled) - MORE PRONOUNCED
+        this.asteroidSpeedMod = 1.0 + (p * 0.4);
 
-        // UFO spawn rate: 1.5x interval (struggling) to 0.6x interval (skilled)
-        this.ufoSpawnMod = 1.0 - (p * 0.4);
+        // UFO spawn rate: 2x interval (struggling) to 0.5x interval (skilled) - MORE PRONOUNCED
+        this.ufoSpawnMod = 1.0 - (p * 0.5);
 
-        // UFO accuracy: 0.6x (struggling) to 1.2x (skilled)
-        this.ufoAccuracyMod = 1.0 + (p * 0.2);
+        // UFO accuracy: 0.5x (struggling) to 1.3x (skilled) - MORE PRONOUNCED
+        this.ufoAccuracyMod = 1.0 + (p * 0.3);
 
-        // Power-up spawn: 1.5x rate (struggling) to 0.7x rate (skilled)
-        this.powerUpSpawnMod = 1.0 - (p * 0.3);
+        // Power-up spawn: 2x rate (struggling) to 0.5x rate (skilled) - MORE PRONOUNCED
+        this.powerUpSpawnMod = 1.0 - (p * 0.5);
 
-        // Green asteroid ratio: +20% (struggling) to -10% (skilled)
-        this.greenRatioMod = 1.0 - (p * 0.15);
+        // Green asteroid ratio: +30% (struggling) to -15% (skilled) - MORE PRONOUNCED
+        this.greenRatioMod = 1.0 - (p * 0.225);
 
-        // Extra life threshold: 0.7x (struggling) to 1.3x (skilled)
-        this.extraLifeThresholdMod = 1.0 + (p * 0.3);
+        // Extra life threshold: 0.5x (struggling) to 1.5x (skilled) - MORE PRONOUNCED
+        this.extraLifeThresholdMod = 1.0 + (p * 0.5);
+    },
+
+    // Immediate difficulty reduction on death
+    onPlayerDeath() {
+        this.deaths++;
+        // Immediately reduce performance score on death for faster response
+        this.performanceScore = Math.max(-1, this.performanceScore - 0.2);
+        this.applyAdjustments();
+        console.log(`[DDA] Death penalty applied. Performance: ${this.performanceScore.toFixed(2)}`);
     },
 
     // Get display text for current adjustment level
@@ -341,13 +357,342 @@ const DynamicDifficulty = {
     }
 };
 
+// Combo System - chain collections for multipliers
+const ComboSystem = {
+    count: 0,           // Current combo count
+    multiplier: 1,      // Current score multiplier (1x, 2x, 3x, etc.)
+    timer: 0,           // Time remaining before combo resets
+    maxTime: 3,         // Seconds before combo expires
+    streakMilestones: [5, 10, 15, 25, 50, 100], // Streak bonus thresholds
+    lastMilestone: 0,   // Last milestone reached
+
+    addCollection() {
+        this.count++;
+        this.timer = this.maxTime;
+
+        // Update multiplier based on combo count
+        if (this.count >= 20) this.multiplier = 4;
+        else if (this.count >= 10) this.multiplier = 3;
+        else if (this.count >= 5) this.multiplier = 2;
+        else this.multiplier = 1;
+
+        // Check for streak milestones
+        for (const milestone of this.streakMilestones) {
+            if (this.count === milestone && milestone > this.lastMilestone) {
+                this.lastMilestone = milestone;
+                const bonus = milestone * 100;
+                FloatingTexts.spawn(canvas.width / 2, canvas.height / 3,
+                    `${milestone} STREAK! +${bonus}`, '#FFD700', 36);
+                return { streakBonus: bonus, milestone };
+            }
+        }
+        return { streakBonus: 0, milestone: 0 };
+    },
+
+    break() {
+        if (this.count >= 5) {
+            FloatingTexts.spawn(canvas.width / 2, canvas.height / 2,
+                'Combo Lost!', '#FF4444', 24);
+        }
+        this.count = 0;
+        this.multiplier = 1;
+        this.timer = 0;
+        this.lastMilestone = 0;
+    },
+
+    update(deltaTime) {
+        if (this.timer > 0) {
+            this.timer -= deltaTime;
+            if (this.timer <= 0) {
+                this.break();
+            }
+        }
+    },
+
+    reset() {
+        this.count = 0;
+        this.multiplier = 1;
+        this.timer = 0;
+        this.lastMilestone = 0;
+    }
+};
+
+// Floating Text System - for score popups, combo notifications
+const FloatingTexts = {
+    texts: [],
+
+    spawn(x, y, text, color = '#FFFFFF', size = 20, duration = 1.5) {
+        this.texts.push({
+            x, y,
+            text,
+            color,
+            size,
+            duration,
+            timer: duration,
+            velY: -50 // Float upward
+        });
+    },
+
+    update(deltaTime) {
+        this.texts = this.texts.filter(t => {
+            t.timer -= deltaTime;
+            t.y += t.velY * deltaTime;
+            t.velY *= 0.95; // Slow down
+            return t.timer > 0;
+        });
+    },
+
+    draw(ctx) {
+        this.texts.forEach(t => {
+            const alpha = Math.min(1, t.timer / (t.duration * 0.3));
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = t.color;
+            ctx.font = `bold ${t.size}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            // Draw shadow
+            ctx.fillStyle = 'black';
+            ctx.fillText(t.text, t.x + 2, t.y + 2);
+            ctx.fillStyle = t.color;
+            ctx.fillText(t.text, t.x, t.y);
+            ctx.restore();
+        });
+    },
+
+    clear() {
+        this.texts = [];
+    }
+};
+
+// Particle System - for explosions, collections, trails
+const Particles = {
+    particles: [],
+
+    spawn(x, y, count, color, speed = 100, lifetime = 0.5, size = 3) {
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const vel = speed * (0.5 + Math.random() * 0.5);
+            this.particles.push({
+                x, y,
+                velX: Math.cos(angle) * vel,
+                velY: Math.sin(angle) * vel,
+                color,
+                size: size * (0.5 + Math.random() * 0.5),
+                lifetime,
+                timer: lifetime
+            });
+        }
+    },
+
+    // Explosion effect
+    explode(x, y, color = '#FF6600', count = 20) {
+        this.spawn(x, y, count, color, 150, 0.8, 4);
+        // Add some white sparks
+        this.spawn(x, y, count / 2, '#FFFFFF', 200, 0.4, 2);
+    },
+
+    // Collection sparkle effect
+    collect(x, y, color = '#00FF00') {
+        this.spawn(x, y, 12, color, 80, 0.6, 3);
+    },
+
+    update(deltaTime) {
+        this.particles = this.particles.filter(p => {
+            p.timer -= deltaTime;
+            p.x += p.velX * deltaTime;
+            p.y += p.velY * deltaTime;
+            p.velX *= 0.98;
+            p.velY *= 0.98;
+            return p.timer > 0;
+        });
+    },
+
+    draw(ctx, cameraX, cameraY) {
+        this.particles.forEach(p => {
+            const alpha = p.timer / p.lifetime;
+            const screenX = p.x - cameraX;
+            const screenY = p.y - cameraY;
+
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, p.size * alpha, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        });
+    },
+
+    clear() {
+        this.particles = [];
+    }
+};
+
+// Screen Shake Effect
+const ScreenShake = {
+    intensity: 0,
+    duration: 0,
+    timer: 0,
+    offsetX: 0,
+    offsetY: 0,
+
+    trigger(intensity = 10, duration = 0.3) {
+        this.intensity = Math.max(this.intensity, intensity);
+        this.duration = duration;
+        this.timer = duration;
+    },
+
+    update(deltaTime) {
+        if (this.timer > 0) {
+            this.timer -= deltaTime;
+            const progress = this.timer / this.duration;
+            const currentIntensity = this.intensity * progress;
+            this.offsetX = (Math.random() - 0.5) * 2 * currentIntensity;
+            this.offsetY = (Math.random() - 0.5) * 2 * currentIntensity;
+        } else {
+            this.offsetX = 0;
+            this.offsetY = 0;
+            this.intensity = 0;
+        }
+    },
+
+    reset() {
+        this.intensity = 0;
+        this.timer = 0;
+        this.offsetX = 0;
+        this.offsetY = 0;
+    }
+};
+
+// Persistent Ship Upgrades System
+const ShipUpgrades = {
+    // Upgrade definitions with max levels and effects
+    upgrades: {
+        collectionRadius: {
+            name: 'Collection Radius',
+            maxLevel: 5,
+            cost: [500, 1000, 2000, 4000, 8000],
+            description: '+10% collection range per level'
+        },
+        thrustPower: {
+            name: 'Thrust Power',
+            maxLevel: 5,
+            cost: [500, 1000, 2000, 4000, 8000],
+            description: '+15% thrust speed per level'
+        },
+        startingLives: {
+            name: 'Starting Lives',
+            maxLevel: 3,
+            cost: [2000, 5000, 10000],
+            description: '+1 starting life per level'
+        },
+        turnSpeed: {
+            name: 'Turn Speed',
+            maxLevel: 5,
+            cost: [300, 600, 1200, 2400, 4800],
+            description: '+10% turn speed per level'
+        },
+        powerUpDuration: {
+            name: 'Power-Up Duration',
+            maxLevel: 5,
+            cost: [400, 800, 1600, 3200, 6400],
+            description: '+20% power-up duration per level'
+        }
+    },
+
+    // Current upgrade levels (loaded from persistence)
+    levels: {
+        collectionRadius: 0,
+        thrustPower: 0,
+        startingLives: 0,
+        turnSpeed: 0,
+        powerUpDuration: 0
+    },
+
+    // Currency for buying upgrades
+    currency: 0,
+
+    load(persistenceManager, user) {
+        if (!persistenceManager || !user) return;
+        const data = persistenceManager.loadUpgrades(user);
+        if (data) {
+            this.levels = data.levels || this.levels;
+            this.currency = data.currency || 0;
+        }
+    },
+
+    save(persistenceManager, user) {
+        if (!persistenceManager || !user) return;
+        persistenceManager.saveUpgrades(user, {
+            levels: this.levels,
+            currency: this.currency
+        });
+    },
+
+    addCurrency(amount) {
+        this.currency += amount;
+    },
+
+    canAfford(upgradeKey) {
+        const upgrade = this.upgrades[upgradeKey];
+        const currentLevel = this.levels[upgradeKey];
+        if (currentLevel >= upgrade.maxLevel) return false;
+        return this.currency >= upgrade.cost[currentLevel];
+    },
+
+    purchase(upgradeKey, persistenceManager, user) {
+        if (!this.canAfford(upgradeKey)) return false;
+        const upgrade = this.upgrades[upgradeKey];
+        const currentLevel = this.levels[upgradeKey];
+        this.currency -= upgrade.cost[currentLevel];
+        this.levels[upgradeKey]++;
+        this.save(persistenceManager, user);
+        return true;
+    },
+
+    // Get multipliers for game systems
+    getCollectionRadiusMult() {
+        return 1 + (this.levels.collectionRadius * 0.1);
+    },
+    getThrustMult() {
+        return 1 + (this.levels.thrustPower * 0.15);
+    },
+    getExtraStartingLives() {
+        return this.levels.startingLives;
+    },
+    getTurnSpeedMult() {
+        return 1 + (this.levels.turnSpeed * 0.1);
+    },
+    getPowerUpDurationMult() {
+        return 1 + (this.levels.powerUpDuration * 0.2);
+    },
+
+    reset() {
+        this.levels = {
+            collectionRadius: 0,
+            thrustPower: 0,
+            startingLives: 0,
+            turnSpeed: 0,
+            powerUpDuration: 0
+        };
+        this.currency = 0;
+    }
+};
+
+// Boss battle state
+let currentBoss = null;
+let bossDefeatedThisLevel = false;
+const BOSS_LEVEL_INTERVAL = 2; // Boss every 2 levels
+
 let score = 0;
 let lives = Difficulty.MEDIUM.startingLives; // Default before selection
 let level = 1;
 let currentGameState = GameState.PROMPT_USER;
 let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty
 let menuSelectionIndex = 0; // For menu navigation (0: Start, 1: High Scores, 2: Achievements, 3: Help, 4: Reset Data, 5: Easy, 6: Medium, 7: Hard)
-const menuOptionBaseTexts = ['Start', 'High Scores', 'Achievements', 'Help', 'Reset Data', 'Change User'];
+const menuOptionBaseTexts = ['Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Reset Data', 'Change User'];
+let upgradeMenuIndex = 0; // For navigating upgrade options
 let currentMenuOptions = []; // Will be populated based on state
 let respawnTimer = 0;
 let ufoSpawnTimer = UFO_SPAWN_BASE_INTERVAL;
@@ -799,6 +1144,8 @@ function loadUserData(username) {
     // Load only the current user's scores into the main highScores variable
     highScores = persistenceManager.loadHighScores(username);
     achievementManager.loadUserAchievements(username);
+    // Load ship upgrades
+    ShipUpgrades.load(persistenceManager, username);
     menuSelectionIndex = 0;
     pausedGameExists = false;
     // Ensure sounds are stopped
@@ -815,7 +1162,8 @@ function startGame() {
     }
     console.log(`Starting New Game (User: ${currentUser}, Difficulty: ${selectedDifficulty.name})`);
     score = 0;
-    lives = selectedDifficulty.startingLives;
+    // Apply upgrade: extra starting lives
+    lives = selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives();
     level = 1;
     nextExtraLifeScore = EXTRA_LIFE_SCORE;
     bullets = [];
@@ -823,6 +1171,16 @@ function startGame() {
     ufos = [];
     resetPowerUps();
     DynamicDifficulty.reset();
+
+    // Reset visual effect systems
+    ComboSystem.reset();
+    FloatingTexts.clear();
+    Particles.clear();
+    ScreenShake.reset();
+
+    // Reset boss state
+    currentBoss = null;
+    bossDefeatedThisLevel = false;
 
     // Generate starfield for the world
     generateStars();
@@ -885,11 +1243,13 @@ function updateUI() {
     const scoreElement = document.getElementById('score');
     const livesElement = document.getElementById('lives');
     const levelElement = document.getElementById('level');
+    const creditsElement = document.getElementById('credits');
     const userElement = document.getElementById('user-display'); // Get user display element
 
     if (scoreElement) scoreElement.textContent = `Score: ${score}`;
     if (livesElement) livesElement.textContent = `Lives: ${lives}`;
     if (levelElement) levelElement.textContent = `Level: ${level}`;
+    if (creditsElement) creditsElement.textContent = `Credits: ${ShipUpgrades.currency}`;
     // Update user display, show placeholder if no user
     if (userElement) {
         userElement.textContent = `User: ${currentUser || '---'}`;
@@ -940,8 +1300,12 @@ function handleInput(deltaTime) {
                         startGame();
                     }
                 } else if (typeof selectedOption === 'string') {
-                    // Handle string options (High Scores, Achievements, Help, Reset, Change User)
+                    // Handle string options (Upgrades, High Scores, Achievements, Help, Reset, Change User)
                     switch (selectedOption) {
+                        case 'Upgrades':
+                            upgradeMenuIndex = 0;
+                            currentGameState = GameState.UPGRADES;
+                            break;
                         case 'High Scores':
                             // Load combined data when entering the high score screen
                             allHighScores = persistenceManager.loadHighScores(); // Load all
@@ -960,6 +1324,7 @@ function handleInput(deltaTime) {
                                 persistenceManager.resetUserData(currentUser);
                                 highScores = [];
                                 achievementManager.loadUserAchievements(currentUser);
+                                ShipUpgrades.reset();
                                 alert("User data reset.");
                             }
                             break;
@@ -1082,6 +1447,37 @@ function handleInput(deltaTime) {
                 menuSelectionIndex = 0;
                 allHighScores = []; // Clear combined data when leaving
                 allAchievements = {};
+            }
+            break;
+
+        case GameState.UPGRADES:
+            {
+                const upgradeKeys = Object.keys(ShipUpgrades.upgrades);
+                if (inputHandler.consumeAction('menuUp')) {
+                    upgradeMenuIndex = (upgradeMenuIndex - 1 + upgradeKeys.length + 1) % (upgradeKeys.length + 1);
+                }
+                if (inputHandler.consumeAction('menuDown')) {
+                    upgradeMenuIndex = (upgradeMenuIndex + 1) % (upgradeKeys.length + 1);
+                }
+                if (inputHandler.consumeAction('menuSelect')) {
+                    if (upgradeMenuIndex === upgradeKeys.length) {
+                        // Back option
+                        currentGameState = GameState.MENU;
+                        menuSelectionIndex = 0;
+                    } else {
+                        // Try to purchase upgrade
+                        const key = upgradeKeys[upgradeMenuIndex];
+                        if (ShipUpgrades.purchase(key, persistenceManager, currentUser)) {
+                            console.log(`Purchased upgrade: ${key}`);
+                            FloatingTexts.spawn(canvas.width / 2, canvas.height / 2,
+                                'Upgrade Purchased!', '#00FF00', 28);
+                        }
+                    }
+                }
+                if (inputHandler.consumeAction('escape')) {
+                    currentGameState = GameState.MENU;
+                    menuSelectionIndex = 0;
+                }
             }
             break;
 
@@ -1259,8 +1655,9 @@ function updateGame(deltaTime) {
 
     updateUfoSpawning(deltaTime);
 
-    // Level up when all asteroids are cleared (classic Asteroids style)
-    if (asteroids.length === 0 && ufos.length === 0 && respawnTimer <= 0 && ship && ship.isAlive) {
+    // Level up when all asteroids are cleared and boss is defeated (if present)
+    const bossCleared = !currentBoss || !currentBoss.isAlive;
+    if (asteroids.length === 0 && ufos.length === 0 && bossCleared && respawnTimer <= 0 && ship && ship.isAlive) {
         levelUp();
     }
 
@@ -1269,6 +1666,21 @@ function updateGame(deltaTime) {
 
     // Evaluate player performance and adjust difficulty
     DynamicDifficulty.evaluate(score);
+
+    // Update visual effects systems
+    ComboSystem.update(deltaTime);
+    FloatingTexts.update(deltaTime);
+    Particles.update(deltaTime);
+    ScreenShake.update(deltaTime);
+
+    // Update boss if present
+    if (currentBoss && currentBoss.isAlive) {
+        currentBoss.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager);
+        // Only wrap position during fighting phase (not during entry animation)
+        if (currentBoss.phase === Boss.PHASES.FIGHTING) {
+            wrapWorldPosition(currentBoss);
+        }
+    }
 
     updateUI();
 }
@@ -1328,15 +1740,23 @@ function renderGame() {
                 }
                 ctx.fillText(text, canvas.width / 2, menuStartY + index * menuLineHeight);
             });
+
+            // Show current user and credits at bottom
+            ctx.font = '16px Arial';
+            ctx.fillStyle = '#888888';
+            ctx.fillText(`Player: ${currentUser || 'None'}`, canvas.width / 2, canvas.height - 50);
+            ctx.fillStyle = '#FFD700';
+            ctx.font = 'bold 18px Arial';
+            ctx.fillText(`Upgrade Credits: ${ShipUpgrades.currency}`, canvas.width / 2, canvas.height - 25);
             break;
 
         case GameState.PLAYING:
             // Draw starfield background (parallax effect)
             drawStarfield();
 
-            // Apply camera transformation for game objects
+            // Apply camera transformation for game objects (with screen shake)
             ctx.save();
-            ctx.translate(-Camera.x, -Camera.y);
+            ctx.translate(-Camera.x + ScreenShake.offsetX, -Camera.y + ScreenShake.offsetY);
 
             // Draw all entities with wrapping support for seamless scrolling
             if (ship && ship.isAlive && respawnTimer <= 0) drawEntityWrapped(ship, ctx);
@@ -1344,6 +1764,14 @@ function renderGame() {
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
             ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
             powerUps.forEach(powerUp => drawEntityWrapped(powerUp, ctx));
+
+            // Draw boss if present
+            if (currentBoss && currentBoss.isAlive) {
+                drawEntityWrapped(currentBoss, ctx);
+            }
+
+            // Draw particles in world space (context is already camera-transformed, so pass 0,0)
+            Particles.draw(ctx, 0, 0);
 
             ctx.restore();
 
@@ -1377,8 +1805,46 @@ function renderGame() {
             const ddaColor = DynamicDifficulty.getAdjustmentColor();
             ctx.fillStyle = ddaColor;
             ctx.font = '12px Arial';
-            ctx.textAlign = 'right';
-            ctx.fillText(`Difficulty: ${ddaText}`, canvas.width - 140, canvas.height - 10);
+            ctx.textAlign = 'left';
+            ctx.fillText(`Difficulty: ${ddaText}`, 130, canvas.height - 10);
+
+            // Draw combo indicator
+            if (ComboSystem.count >= 2) {
+                ctx.textAlign = 'center';
+                const comboAlpha = Math.min(1, ComboSystem.timer / ComboSystem.maxTime + 0.3);
+                ctx.globalAlpha = comboAlpha;
+
+                // Combo count and multiplier
+                ctx.fillStyle = '#FFD700';
+                ctx.font = 'bold 24px Arial';
+                ctx.fillText(`${ComboSystem.count}x COMBO`, canvas.width / 2, 80);
+
+                // Multiplier indicator
+                if (ComboSystem.multiplier > 1) {
+                    ctx.fillStyle = '#FF6600';
+                    ctx.font = 'bold 18px Arial';
+                    ctx.fillText(`${ComboSystem.multiplier}x SCORE`, canvas.width / 2, 105);
+                }
+
+                // Timer bar
+                const timerWidth = 100 * (ComboSystem.timer / ComboSystem.maxTime);
+                ctx.fillStyle = '#FFD700';
+                ctx.fillRect(canvas.width / 2 - 50, 115, timerWidth, 4);
+                ctx.globalAlpha = 1;
+            }
+
+            // Draw floating texts (screen-space)
+            FloatingTexts.draw(ctx);
+
+            // Draw boss warning if boss is entering (limited time)
+            if (currentBoss && currentBoss.isAlive && currentBoss.shouldShowWarning()) {
+                ctx.fillStyle = '#FF0000';
+                ctx.font = 'bold 36px Arial';
+                ctx.textAlign = 'center';
+                ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 200) * 0.5;
+                ctx.fillText('WARNING: BOSS APPROACHING!', canvas.width / 2, canvas.height / 2);
+                ctx.globalAlpha = 1;
+            }
 
             drawAchievementNotifications();
             break;
@@ -1411,6 +1877,11 @@ function renderGame() {
 
         case GameState.ACHIEVEMENTS:
             drawAchievements();
+            break;
+
+        case GameState.UPGRADES:
+            drawUpgradesMenu();
+            FloatingTexts.draw(ctx);
             break;
 
         case GameState.HELP:
@@ -1456,12 +1927,15 @@ function gameLoop(timestamp = 0) {
 
 // --- Helper Functions ---
 
-function createLevelAsteroids() {
-    console.log(`Creating asteroids for level ${level} (Difficulty: ${selectedDifficulty.name})`);
+function createLevelAsteroids(isBossLevel = false) {
+    console.log(`Creating asteroids for level ${level} (Difficulty: ${selectedDifficulty.name})${isBossLevel ? ' [BOSS LEVEL]' : ''}`);
     asteroids = [];
 
-    // Calculate number of asteroids for this level
-    const numAsteroids = BASE_ASTEROIDS_PER_LEVEL + (level - 1) * ASTEROIDS_PER_LEVEL_INCREASE;
+    // Calculate number of asteroids for this level (fewer during boss battles)
+    let numAsteroids = BASE_ASTEROIDS_PER_LEVEL + (level - 1) * ASTEROIDS_PER_LEVEL_INCREASE;
+    if (isBossLevel) {
+        numAsteroids = Math.floor(numAsteroids * 0.4); // 40% of normal asteroids during boss fight
+    }
     const playerX = ship ? ship.x : WORLD_WIDTH / 2;
     const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
 
@@ -1528,19 +2002,49 @@ function checkCollisions() {
                 if (asteroid.isGreen()) {
                     // GREEN asteroid: Collect it for points!
                     console.log("Collision: Ship <-> Green Asteroid (Collected!)");
+
+                    // Calculate base score
                     let scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
+
                     // Apply score multiplier power-up
                     if (activePowerUps.score_multiplier > 0) {
                         scoreGained *= 2;
                     }
+
+                    // Apply combo multiplier
+                    const comboResult = ComboSystem.addCollection();
+                    scoreGained *= ComboSystem.multiplier;
+
+                    // Add streak bonus if any
+                    if (comboResult.streakBonus > 0) {
+                        scoreGained += comboResult.streakBonus;
+                    }
+
                     updateScore(scoreGained);
+
+                    // Add credits for upgrades (10% of score)
+                    const creditsEarned = Math.ceil(scoreGained * 0.1);
+                    ShipUpgrades.addCurrency(creditsEarned);
+
                     asteroid.destroy();
+
+                    // Visual effects
+                    const screenPos = Camera.worldToScreen(asteroid.x, asteroid.y);
+                    Particles.collect(asteroid.x, asteroid.y, '#00FF00');
+
+                    // Floating score text
+                    let scoreText = `+${scoreGained}`;
+                    if (ComboSystem.multiplier > 1) {
+                        scoreText += ` (${ComboSystem.multiplier}x)`;
+                    }
+                    FloatingTexts.spawn(screenPos.x, screenPos.y, scoreText, '#00FF00', 18);
+
                     // Play collection sound
                     if (audioManager) {
                         audioManager.play('collectGreen');
                     }
                     achievementManager.trackAsteroidCollected();
-                    DynamicDifficulty.trackGreenCollected();
+                    DynamicDifficulty.trackGreenCollected(ComboSystem.count);
                 } else {
                     // RED asteroid: Lose a life (unless shield is active)!
                     if (activePowerUps.shield > 0) {
@@ -1626,6 +2130,9 @@ function checkCollisions() {
                 DynamicDifficulty.trackShotHit(); // Track bullet hit
                 const scoreGained = Math.round(ufo.scoreValue * selectedDifficulty.scoreMultiplier);
                 updateScore(scoreGained);
+                // Award credits for UFO kill (10% of score)
+                const creditsEarned = Math.ceil(scoreGained * 0.1);
+                ShipUpgrades.addCurrency(creditsEarned);
                 // UFOs have higher chance to drop power-ups
                 if (Math.random() < 0.5) {
                     spawnPowerUpAt(ufo.x, ufo.y);
@@ -1657,10 +2164,103 @@ function checkCollisions() {
             }
         }
     }
+
+    // Check player bullets hitting boss weak points
+    if (currentBoss && currentBoss.isAlive && currentBoss.phase === Boss.PHASES.FIGHTING) {
+        for (const bullet of bullets) {
+            if (!bullet.isAlive || !bullet.isPlayerBullet) continue;
+
+            const hitWeakPoint = currentBoss.checkBulletHit(bullet);
+            if (hitWeakPoint) {
+                bullet.destroy();
+                DynamicDifficulty.trackShotHit();
+
+                // Damage the weak point
+                const bossDefeated = currentBoss.damageWeakPoint(hitWeakPoint, 10);
+
+                // Visual and audio feedback
+                Particles.explode(bullet.x, bullet.y, '#FFFF00', 10);
+                ScreenShake.trigger(5, 0.1);
+
+                if (hitWeakPoint.destroyed) {
+                    // Weak point destroyed
+                    FloatingTexts.spawn(bullet.x, bullet.y - 20, 'WEAK POINT!', '#FFFF00', 24);
+                    Particles.explode(bullet.x, bullet.y, '#FF00FF', 25);
+                    ScreenShake.trigger(10, 0.3);
+                    updateScore(200);
+                    ShipUpgrades.addCurrency(20); // Credits for weak point
+                }
+
+                if (bossDefeated) {
+                    // Boss defeated!
+                    console.log('Boss defeated! Awarding bonus score.');
+                    FloatingTexts.spawn(canvas.width / 2, canvas.height / 3,
+                        `BOSS DEFEATED! +${currentBoss.scoreValue}`, '#FFD700', 36, 3);
+                    updateScore(currentBoss.scoreValue);
+                    // Big credit bonus for defeating boss (20% of boss score)
+                    const bossCredits = Math.ceil(currentBoss.scoreValue * 0.2);
+                    ShipUpgrades.addCurrency(bossCredits);
+                    FloatingTexts.spawn(canvas.width / 2, canvas.height / 3 + 50,
+                        `+${bossCredits} CREDITS!`, '#FFD700', 24, 3);
+                    Particles.explode(currentBoss.x, currentBoss.y, '#FF00FF', 50);
+                    Particles.explode(currentBoss.x, currentBoss.y, '#FFFF00', 40);
+                    ScreenShake.trigger(20, 0.5);
+
+                    // Drop multiple power-ups
+                    for (let i = 0; i < 3; i++) {
+                        const offsetX = (Math.random() - 0.5) * 100;
+                        const offsetY = (Math.random() - 0.5) * 100;
+                        const powerUp = new PowerUp(currentBoss.x + offsetX, currentBoss.y + offsetY);
+                        powerUp.type = PowerUp.getRandomType();
+                        powerUps.push(powerUp);
+                    }
+
+                    // Clear boss reference
+                    currentBoss = null;
+                    bossDefeatedThisLevel = true;
+                }
+                break;
+            }
+        }
+    }
+
+    // Check boss bullets hitting player
+    if (currentBoss && currentBoss.isAlive && ship && ship.isAlive && !ship.isInvulnerable) {
+        // Boss bullets are added to the main bullets array in boss.update
+        // They're already checked in the earlier ship-bullet collision section
+    }
+
+    // Check if player collides with boss body
+    if (currentBoss && currentBoss.isAlive && currentBoss.phase === Boss.PHASES.FIGHTING &&
+        ship && ship.isAlive && !ship.isInvulnerable) {
+        // Use elliptical collision for the saucer shape
+        // Boss visual is: width = radius, height = radius * 0.4
+        const dx = ship.x - currentBoss.x;
+        const dy = ship.y - currentBoss.y;
+        // Scale vertical distance to account for saucer's flat elliptical shape
+        const scaledDy = dy / 0.5; // Make vertical collision zone thinner (saucer shape)
+        const dist = Math.sqrt(dx * dx + scaledDy * scaledDy);
+
+        if (dist < ship.radius + currentBoss.radius) {
+            // Player crashed into boss
+            console.log('Boss collision detected!');
+            if (activePowerUps.shield > 0) {
+                activePowerUps.shield = 0;
+                console.log('Shield absorbed boss collision!');
+                ship.isInvulnerable = true;
+                ship.invulnerabilityTimer = 1;
+            } else {
+                handlePlayerDeath();
+            }
+        }
+    }
 }
 
 function handlePlayerDeath(forced = false) {
     let destroyed = forced;
+    const shipX = ship ? ship.x : WORLD_WIDTH / 2;
+    const shipY = ship ? ship.y : WORLD_HEIGHT / 2;
+
     if (ship && !forced) {
         destroyed = ship.destroy(audioManager, forced);
     }
@@ -1668,7 +2268,13 @@ function handlePlayerDeath(forced = false) {
     if (destroyed) {
         console.log(`Player death handled. Lives left: ${lives - 1}`);
         audioManager.stopThrustSound();
-        DynamicDifficulty.trackDeath();
+        DynamicDifficulty.onPlayerDeath(); // Immediate difficulty adjustment on death
+
+        // Visual effects
+        Particles.explode(shipX, shipY, '#FFFFFF', 30);
+        ScreenShake.trigger(15, 0.5);
+        ComboSystem.break();
+
         lives--;
         updateUI();
         if (lives <= 0) {
@@ -1694,6 +2300,12 @@ function respawnPlayer(isInitialSpawn = false) {
          respawnTimer = 0;
          audioManager.stopThrustSound();
 
+         // Make ship invulnerable after respawn (unless initial spawn)
+         if (!isInitialSpawn) {
+             ship.makeInvulnerable(3); // 3 seconds of invulnerability after respawn
+             console.log("Ship made invulnerable for 3 seconds");
+         }
+
          // Reset camera to player position
          Camera.reset(centerX, centerY, canvas.width, canvas.height);
     } else {
@@ -1713,8 +2325,29 @@ function levelUp() {
         audioManager.play('collectGreen'); // Satisfying chime
     }
 
-    // Create new asteroids for this level
-    createLevelAsteroids();
+    // Reset boss defeated flag for new level
+    bossDefeatedThisLevel = false;
+
+    // Check if this is a boss level
+    if (level > 1 && level % BOSS_LEVEL_INTERVAL === 0) {
+        // Spawn boss at top of visible area (in world coordinates)
+        const bossX = ship ? ship.x : WORLD_WIDTH / 2;
+        // Target Y is 150px below top of visible screen in world coords
+        const targetY = ship ? ship.y - canvas.height / 2 + 150 : WORLD_HEIGHT / 4;
+        const bossLevel = Math.floor(level / BOSS_LEVEL_INTERVAL);
+        currentBoss = new Boss(bossX, targetY, bossLevel);
+        console.log(`BOSS BATTLE! Spawning level ${bossLevel} boss at target y=${targetY}!`);
+
+        // Show boss warning
+        FloatingTexts.spawn(canvas.width / 2, canvas.height / 2 - 50,
+            'BOSS BATTLE!', '#FF0000', 48, 3);
+
+        // Fewer regular asteroids during boss fight
+        createLevelAsteroids(true); // Boss level modifier
+    } else {
+        // Create normal asteroids for this level
+        createLevelAsteroids();
+    }
 
     // Reset UFO spawn timer for new level
     resetUfoSpawnTimer();
@@ -1734,6 +2367,13 @@ function gameOver() {
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
     checkAndAddHighScore(finalScore);
+
+    // Save upgrade currency earned this session
+    ShipUpgrades.save(persistenceManager, currentUser);
+    console.log(`Saved ${ShipUpgrades.currency} upgrade credits.`);
+
+    // Clear boss if present
+    currentBoss = null;
 }
 
 function checkAndAddHighScore(currentScore) {
@@ -1903,6 +2543,90 @@ function drawAchievements() {
     ctx.font = '18px Arial';
     ctx.fillStyle = 'white';
     ctx.fillText("Press Space/Enter/Esc to return", canvas.width / 2, canvas.height - 40);
+}
+
+function drawUpgradesMenu() {
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.font = '36px Arial';
+    const titleY = canvas.height / 10;
+    ctx.fillText("SHIP UPGRADES", canvas.width / 2, titleY);
+
+    // Show currency
+    ctx.font = '24px Arial';
+    ctx.fillStyle = '#FFD700';
+    ctx.fillText(`Credits: ${ShipUpgrades.currency}`, canvas.width / 2, titleY + 40);
+
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'left';
+    const listStartY = titleY + 90;
+    const listLineHeight = 55;
+
+    const upgradeKeys = Object.keys(ShipUpgrades.upgrades);
+
+    upgradeKeys.forEach((key, index) => {
+        const upgrade = ShipUpgrades.upgrades[key];
+        const currentLevel = ShipUpgrades.levels[key];
+        const isMaxed = currentLevel >= upgrade.maxLevel;
+        const cost = isMaxed ? 'MAX' : upgrade.cost[currentLevel];
+        const canAfford = !isMaxed && ShipUpgrades.currency >= cost;
+        const isSelected = index === upgradeMenuIndex;
+
+        const yPos = listStartY + index * listLineHeight;
+        const nameX = canvas.width * 0.1;
+
+        // Selection indicator
+        if (isSelected) {
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+            ctx.fillRect(nameX - 10, yPos - 20, canvas.width * 0.8 + 20, listLineHeight - 5);
+        }
+
+        // Upgrade name
+        ctx.fillStyle = isSelected ? '#FFFF00' : '#FFFFFF';
+        ctx.font = 'bold 20px Arial';
+        ctx.fillText(upgrade.name, nameX, yPos);
+
+        // Level indicators
+        ctx.font = '16px Arial';
+        let levelText = '';
+        for (let i = 0; i < upgrade.maxLevel; i++) {
+            levelText += i < currentLevel ? '[*]' : '[ ]';
+        }
+        ctx.fillStyle = '#00FF00';
+        ctx.fillText(levelText, nameX + 200, yPos);
+
+        // Cost
+        ctx.textAlign = 'right';
+        if (isMaxed) {
+            ctx.fillStyle = '#888888';
+            ctx.fillText('MAXED', canvas.width * 0.9, yPos);
+        } else {
+            ctx.fillStyle = canAfford ? '#00FF00' : '#FF4444';
+            ctx.fillText(`Cost: ${cost}`, canvas.width * 0.9, yPos);
+        }
+        ctx.textAlign = 'left';
+
+        // Description
+        ctx.fillStyle = '#AAAAAA';
+        ctx.font = '14px Arial';
+        ctx.fillText(upgrade.description, nameX, yPos + 22);
+    });
+
+    // Back option
+    const backY = listStartY + upgradeKeys.length * listLineHeight;
+    const isBackSelected = upgradeMenuIndex === upgradeKeys.length;
+    ctx.fillStyle = isBackSelected ? '#FFFF00' : '#FFFFFF';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('< Back to Menu >', canvas.width / 2, backY);
+
+    ctx.fillStyle = '#888888';
+    ctx.font = '14px Arial';
+    ctx.fillText('Earn credits by collecting green asteroids', canvas.width / 2, canvas.height - 50);
+    ctx.fillText('Use UP/DOWN to navigate, ENTER to purchase', canvas.width / 2, canvas.height - 30);
 }
 
 function drawAchievementNotifications() {

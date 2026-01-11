@@ -46,10 +46,15 @@ canvas {
 
 #user-display,
 #score,
+#credits,
 #lives,
 #level {
     padding: 5px 10px;
     white-space: nowrap; /* Prevent wrapping */
+}
+
+#credits {
+    color: #FFD700; /* Gold color for credits */
 }
 
 /* Optional: Add specific spacing if needed */
