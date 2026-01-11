@@ -8,6 +8,7 @@ import { AudioManager } from './audio.js';
 import { PersistenceManager } from './persistence.js';
 import { AchievementManager } from './achievementManager.js';
 import { Achievements } from './achievements.js';
+import { PowerUp, PowerUpType } from './powerup.js';
 
 // Game States Enum
 const GameState = {
@@ -127,6 +128,219 @@ let ship;
 let asteroids = [];
 let bullets = [];
 let ufos = [];
+let powerUps = [];
+
+// Active power-up effects (tracks remaining duration)
+let activePowerUps = {
+    rapid_fire: 0,
+    triple_shot: 0,
+    shield: 0,
+    speed_boost: 0,
+    magnet: 0,
+    score_multiplier: 0
+};
+
+// Power-up spawn settings
+const POWERUP_SPAWN_CHANCE = 0.3; // 30% chance when destroying red asteroid/UFO
+const POWERUP_SPAWN_INTERVAL = 20; // Spawn random power-up every X seconds
+let powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
+
+// Dynamic Difficulty Adjustment System
+const DynamicDifficulty = {
+    // Performance tracking
+    sessionStartTime: 0,
+    deaths: 0,
+    shotsFired: 0,
+    shotsHit: 0,
+    greenAsteroidsCollected: 0,
+    greenAsteroidsSpawned: 0,
+    redAsteroidsDestroyed: 0,
+    scoreAtLastCheck: 0,
+    lastCheckTime: 0,
+    recentScoreRate: 0, // Points per second recently
+
+    // Performance score: -1 (struggling) to +1 (skilled), 0 = neutral
+    performanceScore: 0,
+
+    // Adjustment multipliers (applied on top of selected difficulty)
+    asteroidSpeedMod: 1.0,
+    ufoSpawnMod: 1.0,
+    ufoAccuracyMod: 1.0,
+    powerUpSpawnMod: 1.0,
+    greenRatioMod: 1.0,
+    extraLifeThresholdMod: 1.0,
+
+    // Settings
+    evaluationInterval: 30, // Seconds between performance evaluations
+    adjustmentSpeed: 0.1, // How fast adjustments change (0-1)
+
+    reset() {
+        this.sessionStartTime = Date.now();
+        this.deaths = 0;
+        this.shotsFired = 0;
+        this.shotsHit = 0;
+        this.greenAsteroidsCollected = 0;
+        this.greenAsteroidsSpawned = 0;
+        this.redAsteroidsDestroyed = 0;
+        this.scoreAtLastCheck = 0;
+        this.lastCheckTime = Date.now();
+        this.recentScoreRate = 0;
+        this.performanceScore = 0;
+        this.asteroidSpeedMod = 1.0;
+        this.ufoSpawnMod = 1.0;
+        this.ufoAccuracyMod = 1.0;
+        this.powerUpSpawnMod = 1.0;
+        this.greenRatioMod = 1.0;
+        this.extraLifeThresholdMod = 1.0;
+    },
+
+    trackDeath() {
+        this.deaths++;
+    },
+
+    trackShotFired() {
+        this.shotsFired++;
+    },
+
+    trackShotHit() {
+        this.shotsHit++;
+    },
+
+    trackGreenCollected() {
+        this.greenAsteroidsCollected++;
+    },
+
+    trackGreenSpawned(count = 1) {
+        this.greenAsteroidsSpawned += count;
+    },
+
+    trackRedDestroyed() {
+        this.redAsteroidsDestroyed++;
+    },
+
+    // Calculate current shooting accuracy (0-1)
+    getAccuracy() {
+        if (this.shotsFired === 0) return 0.5; // Default
+        return Math.min(1, this.shotsHit / this.shotsFired);
+    },
+
+    // Calculate collection efficiency (0-1)
+    getCollectionEfficiency() {
+        if (this.greenAsteroidsSpawned === 0) return 0.5; // Default
+        return Math.min(1, this.greenAsteroidsCollected / this.greenAsteroidsSpawned);
+    },
+
+    // Calculate deaths per minute
+    getDeathRate() {
+        const sessionMinutes = (Date.now() - this.sessionStartTime) / 60000;
+        if (sessionMinutes < 0.5) return 0; // Not enough data
+        return this.deaths / sessionMinutes;
+    },
+
+    // Evaluate performance and update adjustments
+    evaluate(currentScore) {
+        const now = Date.now();
+        const timeSinceLastCheck = (now - this.lastCheckTime) / 1000;
+
+        if (timeSinceLastCheck < this.evaluationInterval) return;
+
+        // Calculate score rate (points per second)
+        this.recentScoreRate = (currentScore - this.scoreAtLastCheck) / timeSinceLastCheck;
+        this.scoreAtLastCheck = currentScore;
+        this.lastCheckTime = now;
+
+        // Calculate performance metrics
+        const accuracy = this.getAccuracy();
+        const efficiency = this.getCollectionEfficiency();
+        const deathRate = this.getDeathRate();
+
+        // Calculate performance score components
+        // Positive = skilled, Negative = struggling
+        let scoreComponents = 0;
+        let componentCount = 0;
+
+        // Accuracy component: <30% struggling, >60% skilled
+        if (this.shotsFired > 10) {
+            scoreComponents += (accuracy - 0.45) * 2; // -0.9 to +1.1
+            componentCount++;
+        }
+
+        // Collection efficiency: <40% struggling, >70% skilled
+        if (this.greenAsteroidsSpawned > 5) {
+            scoreComponents += (efficiency - 0.55) * 2; // -1.1 to +0.9
+            componentCount++;
+        }
+
+        // Death rate: >2/min struggling, <0.5/min skilled
+        if ((now - this.sessionStartTime) > 60000) {
+            const deathComponent = (1.25 - deathRate) * 0.8; // High deaths = negative
+            scoreComponents += Math.max(-1, Math.min(1, deathComponent));
+            componentCount++;
+        }
+
+        // Score rate component (points per second)
+        // <5 pts/sec = struggling, >20 pts/sec = skilled
+        if (timeSinceLastCheck > 10) {
+            const rateComponent = (this.recentScoreRate - 12.5) / 12.5;
+            scoreComponents += Math.max(-1, Math.min(1, rateComponent));
+            componentCount++;
+        }
+
+        // Average all components
+        if (componentCount > 0) {
+            const targetScore = scoreComponents / componentCount;
+            // Smoothly adjust toward target
+            this.performanceScore += (targetScore - this.performanceScore) * this.adjustmentSpeed;
+            this.performanceScore = Math.max(-1, Math.min(1, this.performanceScore));
+        }
+
+        // Apply adjustments based on performance score
+        this.applyAdjustments();
+
+        console.log(`[DDA] Performance: ${this.performanceScore.toFixed(2)} | ` +
+            `Acc: ${(accuracy * 100).toFixed(0)}% | Eff: ${(efficiency * 100).toFixed(0)}% | ` +
+            `Deaths/min: ${deathRate.toFixed(1)} | Score/sec: ${this.recentScoreRate.toFixed(1)}`);
+    },
+
+    applyAdjustments() {
+        const p = this.performanceScore;
+
+        // Struggling (p < 0): Make game easier
+        // Skilled (p > 0): Make game harder
+
+        // Asteroid speed: 0.8x (struggling) to 1.3x (skilled)
+        this.asteroidSpeedMod = 1.0 + (p * 0.25);
+
+        // UFO spawn rate: 1.5x interval (struggling) to 0.6x interval (skilled)
+        this.ufoSpawnMod = 1.0 - (p * 0.4);
+
+        // UFO accuracy: 0.6x (struggling) to 1.2x (skilled)
+        this.ufoAccuracyMod = 1.0 + (p * 0.2);
+
+        // Power-up spawn: 1.5x rate (struggling) to 0.7x rate (skilled)
+        this.powerUpSpawnMod = 1.0 - (p * 0.3);
+
+        // Green asteroid ratio: +20% (struggling) to -10% (skilled)
+        this.greenRatioMod = 1.0 - (p * 0.15);
+
+        // Extra life threshold: 0.7x (struggling) to 1.3x (skilled)
+        this.extraLifeThresholdMod = 1.0 + (p * 0.3);
+    },
+
+    // Get display text for current adjustment level
+    getAdjustmentText() {
+        if (this.performanceScore < -0.3) return 'Assisting';
+        if (this.performanceScore > 0.3) return 'Challenging';
+        return 'Balanced';
+    },
+
+    getAdjustmentColor() {
+        if (this.performanceScore < -0.3) return '#00FF00'; // Green = helping
+        if (this.performanceScore > 0.3) return '#FF6600'; // Orange = challenging
+        return '#FFFFFF'; // White = neutral
+    }
+};
+
 let score = 0;
 let lives = Difficulty.MEDIUM.startingLives; // Default before selection
 let level = 1;
@@ -303,6 +517,234 @@ function drawStarfield() {
     });
 }
 
+// Draw radar mini-map
+function drawRadar() {
+    const radarSize = 120;
+    const radarX = canvas.width - radarSize - 15;
+    const radarY = canvas.height - radarSize - 15;
+    const radarCenterX = radarX + radarSize / 2;
+    const radarCenterY = radarY + radarSize / 2;
+    const radarRadius = radarSize / 2 - 5;
+
+    // Radar background
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = '#001100';
+    ctx.beginPath();
+    ctx.arc(radarCenterX, radarCenterY, radarRadius + 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Radar border
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = '#00FF00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(radarCenterX, radarCenterY, radarRadius + 5, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Radar grid lines
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = '#00FF00';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(radarCenterX - radarRadius, radarCenterY);
+    ctx.lineTo(radarCenterX + radarRadius, radarCenterY);
+    ctx.moveTo(radarCenterX, radarCenterY - radarRadius);
+    ctx.lineTo(radarCenterX, radarCenterY + radarRadius);
+    ctx.stroke();
+
+    // Scale factor to fit world into radar
+    const scaleX = radarRadius / (WORLD_WIDTH / 2);
+    const scaleY = radarRadius / (WORLD_HEIGHT / 2);
+    const scale = Math.min(scaleX, scaleY);
+
+    // Function to convert world position to radar position (relative to ship)
+    function worldToRadar(entityX, entityY) {
+        if (!ship) return null;
+
+        // Calculate relative position to ship
+        let relX = entityX - ship.x;
+        let relY = entityY - ship.y;
+
+        // Handle world wrapping - find shortest distance
+        if (relX > WORLD_WIDTH / 2) relX -= WORLD_WIDTH;
+        else if (relX < -WORLD_WIDTH / 2) relX += WORLD_WIDTH;
+        if (relY > WORLD_HEIGHT / 2) relY -= WORLD_HEIGHT;
+        else if (relY < -WORLD_HEIGHT / 2) relY += WORLD_HEIGHT;
+
+        // Scale to radar size
+        const radarRelX = relX * scale;
+        const radarRelY = relY * scale;
+
+        // Check if within radar range
+        const dist = Math.sqrt(radarRelX * radarRelX + radarRelY * radarRelY);
+        if (dist > radarRadius) return null;
+
+        return {
+            x: radarCenterX + radarRelX,
+            y: radarCenterY + radarRelY
+        };
+    }
+
+    ctx.globalAlpha = 1;
+
+    // Draw asteroids on radar
+    asteroids.forEach(asteroid => {
+        if (!asteroid.isAlive) return;
+        const pos = worldToRadar(asteroid.x, asteroid.y);
+        if (pos) {
+            ctx.fillStyle = asteroid.type === 'green' ? '#00FF00' : '#FF0000';
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+
+    // Draw UFOs on radar (purple)
+    ufos.forEach(ufo => {
+        if (!ufo.isAlive) return;
+        const pos = worldToRadar(ufo.x, ufo.y);
+        if (pos) {
+            ctx.fillStyle = '#FF00FF';
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+
+    // Draw power-ups on radar (yellow)
+    powerUps.forEach(powerUp => {
+        if (!powerUp.isAlive) return;
+        const pos = worldToRadar(powerUp.x, powerUp.y);
+        if (pos) {
+            ctx.fillStyle = '#FFFF00';
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+
+    // Draw player at center (white triangle)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.moveTo(radarCenterX, radarCenterY - 5);
+    ctx.lineTo(radarCenterX - 4, radarCenterY + 4);
+    ctx.lineTo(radarCenterX + 4, radarCenterY + 4);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+}
+
+// Draw active power-up indicators
+function drawActivePowerUps() {
+    const indicatorY = 50;
+    let indicatorX = 10;
+    const indicatorSpacing = 70;
+
+    ctx.save();
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'left';
+
+    const powerUpDisplayInfo = [
+        { key: 'rapid_fire', type: PowerUpType.RAPID_FIRE },
+        { key: 'triple_shot', type: PowerUpType.TRIPLE_SHOT },
+        { key: 'shield', type: PowerUpType.SHIELD },
+        { key: 'speed_boost', type: PowerUpType.SPEED_BOOST },
+        { key: 'magnet', type: PowerUpType.MAGNET },
+        { key: 'score_multiplier', type: PowerUpType.SCORE_MULTIPLIER }
+    ];
+
+    powerUpDisplayInfo.forEach(info => {
+        const remaining = activePowerUps[info.key];
+        if (remaining > 0) {
+            // Background bar
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(indicatorX, indicatorY, 60, 20);
+
+            // Progress bar
+            const progress = Math.min(remaining / info.type.duration, 1);
+            ctx.fillStyle = info.type.color;
+            ctx.globalAlpha = 0.7;
+            ctx.fillRect(indicatorX, indicatorY, 60 * progress, 20);
+
+            // Border
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = info.type.color;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(indicatorX, indicatorY, 60, 20);
+
+            // Symbol
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillText(info.type.symbol, indicatorX + 5, indicatorY + 14);
+
+            // Time remaining
+            ctx.fillText(Math.ceil(remaining) + 's', indicatorX + 30, indicatorY + 14);
+
+            indicatorX += indicatorSpacing;
+        }
+    });
+
+    ctx.restore();
+}
+
+// Activate a collected power-up
+function activatePowerUp(type) {
+    console.log(`Activating power-up: ${type.name}`);
+
+    switch (type.id) {
+        case 'rapid_fire':
+            activePowerUps.rapid_fire = type.duration;
+            if (ship) ship.shootCooldown = 0.1; // Faster shooting
+            break;
+        case 'triple_shot':
+            activePowerUps.triple_shot = type.duration;
+            break;
+        case 'shield':
+            activePowerUps.shield = type.duration;
+            break;
+        case 'speed_boost':
+            activePowerUps.speed_boost = type.duration;
+            break;
+        case 'magnet':
+            activePowerUps.magnet = type.duration;
+            break;
+        case 'extra_life':
+            lives++;
+            console.log(`Extra life! Lives: ${lives}`);
+            updateUI();
+            if (audioManager) audioManager.play('collectGreen');
+            break;
+        case 'score_multiplier':
+            activePowerUps.score_multiplier = type.duration;
+            break;
+    }
+}
+
+// Reset all power-ups (called when starting new game)
+function resetPowerUps() {
+    powerUps = [];
+    activePowerUps = {
+        rapid_fire: 0,
+        triple_shot: 0,
+        shield: 0,
+        speed_boost: 0,
+        magnet: 0,
+        score_multiplier: 0
+    };
+    powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
+}
+
+// Spawn a power-up at a position (e.g., from destroyed enemy)
+function spawnPowerUpAt(x, y) {
+    if (Math.random() < POWERUP_SPAWN_CHANCE) {
+        const type = PowerUp.getRandomType();
+        const powerUp = PowerUp.spawnType(x, y, type);
+        powerUps.push(powerUp);
+        console.log(`Power-up dropped: ${type.name} at (${x.toFixed(0)}, ${y.toFixed(0)})`);
+    }
+}
+
 // --- Initialization ---
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -379,6 +821,8 @@ function startGame() {
     bullets = [];
     asteroids = [];
     ufos = [];
+    resetPowerUps();
+    DynamicDifficulty.reset();
 
     // Generate starfield for the world
     generateStars();
@@ -546,7 +990,38 @@ function handleInput(deltaTime) {
             const firePressed = inputHandler.isPressed('fire');
             console.log(`PLAYING Input Check: firePressed=${firePressed}`); // Keep log active
             if (firePressed) {
+                const bulletCountBefore = bullets.length;
                 ship.fire(bullets, audioManager);
+                // Track shots fired for DDA
+                if (bullets.length > bulletCountBefore) {
+                    DynamicDifficulty.trackShotFired();
+                }
+
+                // Triple shot: add 2 more bullets at angles if power-up active and we fired
+                if (activePowerUps.triple_shot > 0 && bullets.length > bulletCountBefore) {
+                    const spreadAngle = 0.25; // radians (~15 degrees)
+                    const bulletSpeed = Bullet.PLAYER_SPEED;
+                    const noseX = ship.x + Math.cos(ship.rotation) * ship.radius;
+                    const noseY = ship.y + Math.sin(ship.rotation) * ship.radius;
+
+                    // Left bullet
+                    const leftAngle = ship.rotation - spreadAngle;
+                    bullets.push(new Bullet(
+                        noseX, noseY,
+                        Math.cos(leftAngle) * bulletSpeed,
+                        Math.sin(leftAngle) * bulletSpeed,
+                        true
+                    ));
+
+                    // Right bullet
+                    const rightAngle = ship.rotation + spreadAngle;
+                    bullets.push(new Bullet(
+                        noseX, noseY,
+                        Math.cos(rightAngle) * bulletSpeed,
+                        Math.sin(rightAngle) * bulletSpeed,
+                        true
+                    ));
+                }
             }
 
             if (inputHandler.consumeAction('hyperspace')) {
@@ -699,9 +1174,14 @@ function updateGame(deltaTime) {
 
     // Update UFOs and wrap their positions
     let visibleUfoExists = false;
+    // Create effective difficulty with DDA modifiers applied
+    const effectiveDifficulty = {
+        ...selectedDifficulty,
+        ufoAccuracy: Math.min(1, selectedDifficulty.ufoAccuracy * DynamicDifficulty.ufoAccuracyMod)
+    };
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
-             ufo.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager, selectedDifficulty, asteroids, Camera.x, Camera.y);
+             ufo.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
              wrapWorldPosition(ufo);
              if (ufo.isOnScreen) {
                  visibleUfoExists = true;
@@ -712,6 +1192,64 @@ function updateGame(deltaTime) {
     // Only play UFO hum when a UFO is actually visible on screen
     if (visibleUfoExists && !audioManager.isMuted) audioManager.startUfoHum();
     else audioManager.stopUfoHum();
+
+    // Update power-ups
+    powerUps.forEach(powerUp => {
+        powerUp.update(deltaTime, canvas.width, canvas.height);
+    });
+    powerUps = powerUps.filter(p => p.isAlive);
+
+    // Update active power-up timers
+    for (const key in activePowerUps) {
+        if (activePowerUps[key] > 0) {
+            const wasActive = activePowerUps[key] > 0;
+            activePowerUps[key] -= deltaTime;
+            if (activePowerUps[key] < 0) activePowerUps[key] = 0;
+
+            // Handle power-up expiry effects
+            if (wasActive && activePowerUps[key] <= 0) {
+                if (key === 'rapid_fire' && ship) {
+                    ship.shootCooldown = 0.25; // Reset to normal cooldown
+                    console.log('Rapid fire expired');
+                }
+            }
+        }
+    }
+
+    // Spawn random power-ups periodically (DDA modifier affects spawn rate)
+    powerUpSpawnTimer -= deltaTime;
+    if (powerUpSpawnTimer <= 0) {
+        const newPowerUp = PowerUp.spawnRandom(WORLD_WIDTH, WORLD_HEIGHT);
+        newPowerUp.type = PowerUp.getRandomType();
+        powerUps.push(newPowerUp);
+        // Apply DDA modifier: lower mod = faster spawns (helps struggling players)
+        powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL * DynamicDifficulty.powerUpSpawnMod;
+        console.log(`Spawned random power-up: ${newPowerUp.type.name}`);
+    }
+
+    // Magnet effect - attract green asteroids toward ship
+    if (activePowerUps.magnet > 0 && ship && ship.isAlive) {
+        asteroids.forEach(asteroid => {
+            if (asteroid.isAlive && asteroid.type === 'green') {
+                // Calculate direction to ship
+                let dx = ship.x - asteroid.x;
+                let dy = ship.y - asteroid.y;
+
+                // Handle wrapping
+                if (dx > WORLD_WIDTH / 2) dx -= WORLD_WIDTH;
+                else if (dx < -WORLD_WIDTH / 2) dx += WORLD_WIDTH;
+                if (dy > WORLD_HEIGHT / 2) dy -= WORLD_HEIGHT;
+                else if (dy < -WORLD_HEIGHT / 2) dy += WORLD_HEIGHT;
+
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > 20 && dist < 300) { // Attract within range
+                    const magnetForce = 100 / dist;
+                    asteroid.velX += (dx / dist) * magnetForce * deltaTime;
+                    asteroid.velY += (dy / dist) * magnetForce * deltaTime;
+                }
+            }
+        });
+    }
 
     checkCollisions();
 
@@ -728,6 +1266,9 @@ function updateGame(deltaTime) {
 
     const currentSnapshot = { score: score, level: level, user: currentUser };
     achievementManager.checkUnlockConditions(currentSnapshot);
+
+    // Evaluate player performance and adjust difficulty
+    DynamicDifficulty.evaluate(score);
 
     updateUI();
 }
@@ -802,17 +1343,42 @@ function renderGame() {
             asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
             ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
+            powerUps.forEach(powerUp => drawEntityWrapped(powerUp, ctx));
 
             ctx.restore();
 
+            // Draw shield effect around ship if active (in screen space)
+            if (ship && ship.isAlive && activePowerUps.shield > 0) {
+                const screenPos = Camera.worldToScreen(ship.x, ship.y);
+                ctx.strokeStyle = '#00FFFF';
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 100) * 0.3;
+                ctx.beginPath();
+                ctx.arc(screenPos.x, screenPos.y, ship.radius + 10, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+            }
+
             // Draw level up notification (screen-space, not world-space)
             drawLevelUpNotification();
+
+            // Draw HUD elements (screen-space)
+            drawRadar();
+            drawActivePowerUps();
 
             // Draw remaining asteroids count
             ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
             ctx.font = '14px Arial';
             ctx.textAlign = 'left';
             ctx.fillText(`Asteroids: ${asteroids.length}`, 10, canvas.height - 10);
+
+            // Draw Dynamic Difficulty Adjustment indicator
+            const ddaText = DynamicDifficulty.getAdjustmentText();
+            const ddaColor = DynamicDifficulty.getAdjustmentColor();
+            ctx.fillStyle = ddaColor;
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText(`Difficulty: ${ddaText}`, canvas.width - 140, canvas.height - 10);
 
             drawAchievementNotifications();
             break;
@@ -899,8 +1465,14 @@ function createLevelAsteroids() {
     const playerX = ship ? ship.x : WORLD_WIDTH / 2;
     const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
 
-    console.log(`Spawning ${numAsteroids} asteroids across ${WORLD_SCREENS_X}x${WORLD_SCREENS_Y} world`);
+    // Apply DDA modifiers
+    const speedMod = selectedDifficulty.asteroidSpeedMultiplier * DynamicDifficulty.asteroidSpeedMod;
+    // Base green probability is 60%, modified by DDA
+    const greenProbability = Math.min(0.85, Math.max(0.4, 0.6 * DynamicDifficulty.greenRatioMod));
 
+    console.log(`Spawning ${numAsteroids} asteroids (speed: ${speedMod.toFixed(2)}x, green%: ${(greenProbability * 100).toFixed(0)}%)`);
+
+    let greenCount = 0;
     for (let i = 0; i < numAsteroids; i++) {
         let x, y;
         let attempts = 0;
@@ -926,18 +1498,41 @@ function createLevelAsteroids() {
             size = Asteroid.Sizes.SMALL;
         }
 
-        asteroids.push(new Asteroid(x, y, size, null, selectedDifficulty.asteroidSpeedMultiplier));
+        // Determine asteroid type with DDA-adjusted probability
+        const isGreen = Math.random() < greenProbability;
+        const type = isGreen ? 'green' : 'red';
+        if (isGreen) greenCount++;
+
+        asteroids.push(new Asteroid(x, y, size, null, speedMod, type));
     }
+
+    // Track green asteroids spawned for DDA
+    DynamicDifficulty.trackGreenSpawned(greenCount);
 }
 
 function checkCollisions() {
+    // Check ship collecting power-ups (always check, even when invulnerable)
+    if (ship && ship.isAlive) {
+        for (const powerUp of powerUps) {
+            if (powerUp.isAlive && ship.collidesWith(powerUp)) {
+                console.log(`Collected power-up: ${powerUp.type.name}`);
+                activatePowerUp(powerUp.type);
+                powerUp.isAlive = false;
+            }
+        }
+    }
+
     if (ship && ship.isAlive && !ship.isInvulnerable) {
         for (const asteroid of asteroids) {
             if (asteroid.isAlive && ship.collidesWith(asteroid)) {
                 if (asteroid.isGreen()) {
                     // GREEN asteroid: Collect it for points!
                     console.log("Collision: Ship <-> Green Asteroid (Collected!)");
-                    const scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
+                    let scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
+                    // Apply score multiplier power-up
+                    if (activePowerUps.score_multiplier > 0) {
+                        scoreGained *= 2;
+                    }
                     updateScore(scoreGained);
                     asteroid.destroy();
                     // Play collection sound
@@ -945,31 +1540,50 @@ function checkCollisions() {
                         audioManager.play('collectGreen');
                     }
                     achievementManager.trackAsteroidCollected();
+                    DynamicDifficulty.trackGreenCollected();
                 } else {
-                    // RED asteroid: Lose a life!
-                    console.log("Collision: Ship <-> Red Asteroid (Damage!)");
-                    handlePlayerDeath();
-                    asteroid.split(asteroids, audioManager);
-                    return;
+                    // RED asteroid: Lose a life (unless shield is active)!
+                    if (activePowerUps.shield > 0) {
+                        console.log("Collision: Ship <-> Red Asteroid (Shield blocked!)");
+                        activePowerUps.shield = 0; // Shield breaks on impact
+                        asteroid.split(asteroids, audioManager);
+                    } else {
+                        console.log("Collision: Ship <-> Red Asteroid (Damage!)");
+                        handlePlayerDeath();
+                        asteroid.split(asteroids, audioManager);
+                        return;
+                    }
                 }
             }
         }
 
         for (const ufo of ufos) {
             if (ufo.isAlive && ship.collidesWith(ufo)) {
-                console.log("Collision: Ship <-> UFO");
-                handlePlayerDeath();
-                ufo.destroy(audioManager);
-                return;
+                if (activePowerUps.shield > 0) {
+                    console.log("Collision: Ship <-> UFO (Shield blocked!)");
+                    activePowerUps.shield = 0;
+                    ufo.destroy(audioManager);
+                } else {
+                    console.log("Collision: Ship <-> UFO");
+                    handlePlayerDeath();
+                    ufo.destroy(audioManager);
+                    return;
+                }
             }
         }
 
         for (const bullet of bullets) {
             if (bullet.isAlive && !bullet.isPlayerBullet && ship.collidesWith(bullet)) {
-                console.log("Collision: Ship <-> UFO Bullet");
-                handlePlayerDeath();
-                bullet.destroy();
-                return;
+                if (activePowerUps.shield > 0) {
+                    console.log("Collision: Ship <-> UFO Bullet (Shield blocked!)");
+                    activePowerUps.shield = 0;
+                    bullet.destroy();
+                } else {
+                    console.log("Collision: Ship <-> UFO Bullet");
+                    handlePlayerDeath();
+                    bullet.destroy();
+                    return;
+                }
             }
         }
     }
@@ -984,6 +1598,7 @@ function checkCollisions() {
             if (bullet.collidesWith(asteroid)) {
                 bullet.destroy();
 
+                DynamicDifficulty.trackShotHit(); // Track bullet hit
                 if (asteroid.isGreen()) {
                     // Shooting green asteroids: NO points! (wasteful - should collect instead)
                     console.log("Collision: Player Bullet <-> Green Asteroid (Wasted!)");
@@ -991,8 +1606,11 @@ function checkCollisions() {
                 } else {
                     // Shooting red asteroids: Good! They split but no points
                     console.log("Collision: Player Bullet <-> Red Asteroid (Destroyed!)");
+                    // Chance to drop power-up from red asteroids
+                    spawnPowerUpAt(asteroid.x, asteroid.y);
                     asteroid.split(asteroids, audioManager);
                     achievementManager.trackAsteroidDestroyed();
+                    DynamicDifficulty.trackRedDestroyed();
                 }
                 bulletHit = true;
                 break;
@@ -1005,8 +1623,13 @@ function checkCollisions() {
             if (bullet.collidesWith(ufo)) {
                 console.log("Collision: Player Bullet <-> UFO");
                 bullet.destroy();
+                DynamicDifficulty.trackShotHit(); // Track bullet hit
                 const scoreGained = Math.round(ufo.scoreValue * selectedDifficulty.scoreMultiplier);
                 updateScore(scoreGained);
+                // UFOs have higher chance to drop power-ups
+                if (Math.random() < 0.5) {
+                    spawnPowerUpAt(ufo.x, ufo.y);
+                }
                 ufo.destroy(audioManager);
                 achievementManager.trackUfoDestroyed();
                 break;
@@ -1045,6 +1668,7 @@ function handlePlayerDeath(forced = false) {
     if (destroyed) {
         console.log(`Player death handled. Lives left: ${lives - 1}`);
         audioManager.stopThrustSound();
+        DynamicDifficulty.trackDeath();
         lives--;
         updateUI();
         if (lives <= 0) {
@@ -1141,6 +1765,7 @@ function checkAndAddHighScore(currentScore) {
 function resetUfoSpawnTimer() {
     let interval = UFO_SPAWN_BASE_INTERVAL;
     interval *= selectedDifficulty.ufoSpawnMultiplier;
+    interval *= DynamicDifficulty.ufoSpawnMod; // Apply DDA modifier
     interval *= Math.max(0.5, 1 - (level * 0.05));
     ufoSpawnTimer = interval * randomRange(0.75, 1.25);
     console.log(`Next UFO spawn timer set to ~${interval.toFixed(1)}s`);
