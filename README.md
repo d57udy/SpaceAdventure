@@ -2,6 +2,8 @@
 
 A modified Asteroids game with unique gameplay mechanics - collect green asteroids for points while avoiding and destroying dangerous red asteroids!
 
+Try the game live: https://d57udy.github.io/SpaceAdventure/
+
 ## Gameplay
 
 Navigate your spaceship through an infinite asteroid field with two types of asteroids:
