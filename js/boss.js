@@ -40,6 +40,7 @@ export class Boss extends Entity {
         this.attackPattern = 0;
         this.attackTimer = 0;
         this.attackCooldown = 2 - Math.min(level * 0.1, 1); // Faster attacks at higher levels
+        this.attackRotation = 0; // multiplayer: index of the next ship to attack
 
         // Visual effects
         this.pulseTimer = 0;
@@ -92,8 +93,18 @@ export class Boss extends Entity {
         return points;
     }
 
-    update(deltaTime, canvasWidth, canvasHeight, ship, bullets, audioManager) {
+    /**
+     * `target` is either
+     *  - a ship (or null): single-player, exactly as before: the boss hovers in the upper part
+     *    of that ship's view and attacks it while it is alive; or
+     *  - { anchor: {x, y}, ships: [ship, ...] }: several players: the boss hovers around the
+     *    anchor (the shared camera centre) and rotates its attacks between the living ships.
+     */
+    update(deltaTime, canvasWidth, canvasHeight, target, bullets, audioManager) {
         if (!this.isAlive) return;
+        const multi = !!target && Array.isArray(target.ships);
+        const ship = multi ? this.nextAttackTarget(target.ships, false) : target;
+        const anchor = multi ? target.anchor : target;
 
         this.pulseTimer += deltaTime * 2;
         this.rotationAngle += deltaTime * 0.5;
@@ -113,7 +124,8 @@ export class Boss extends Entity {
                 this.updateEntering(deltaTime);
                 break;
             case Boss.PHASES.FIGHTING:
-                this.updateFighting(deltaTime, canvasWidth, canvasHeight, ship, bullets, audioManager);
+                this.updateFighting(deltaTime, canvasWidth, canvasHeight, ship, bullets, audioManager, anchor,
+                    multi ? target.ships : null);
                 break;
             case Boss.PHASES.DEFEATED:
                 this.updateDefeated(deltaTime);
@@ -146,7 +158,19 @@ export class Boss extends Entity {
         return this.phase === Boss.PHASES.ENTERING && this.entryTimer < 2;
     }
 
-    updateFighting(deltaTime, canvasWidth, canvasHeight, ship, bullets, audioManager) {
+    /**
+     * Next living ship in rotation (multiplayer). `advance` moves the rotation on, so each
+     * attack goes to the next player.
+     */
+    nextAttackTarget(ships, advance = true) {
+        const living = (ships || []).filter(s => s && s.isAlive);
+        if (living.length === 0) return null;
+        const target = living[this.attackRotation % living.length];
+        if (advance) this.attackRotation = (this.attackRotation + 1) % living.length;
+        return target;
+    }
+
+    updateFighting(deltaTime, canvasWidth, canvasHeight, ship, bullets, audioManager, anchor = ship, ships = null) {
         // Movement
         this.moveTimer += deltaTime;
         if (this.moveTimer >= this.moveDuration || this.targetOffsetX === null) {
@@ -156,9 +180,9 @@ export class Boss extends Entity {
             this.targetOffsetX = randomRange(-canvasWidth / 2 + this.radius + 50, canvasWidth / 2 - this.radius - 50);
             this.targetOffsetY = randomRange(-canvasHeight / 2 + this.radius + 50, -canvasHeight / 2 + canvasHeight * 0.4);
         }
-        if (ship) {
-            this.targetX = ship.x + this.targetOffsetX;
-            this.targetY = ship.y + this.targetOffsetY;
+        if (anchor) {
+            this.targetX = anchor.x + this.targetOffsetX;
+            this.targetY = anchor.y + this.targetOffsetY;
         }
 
         // Move toward target (shortest path in the wrapping world)
@@ -173,7 +197,7 @@ export class Boss extends Entity {
         this.attackTimer += deltaTime;
         if (this.attackTimer >= this.attackCooldown && ship && ship.isAlive) {
             this.attackTimer = 0;
-            this.executeAttack(ship, bullets, audioManager);
+            this.executeAttack(ships ? this.nextAttackTarget(ships) : ship, bullets, audioManager);
         }
     }
 

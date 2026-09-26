@@ -7,12 +7,19 @@ const BULLET_LIFETIME = 1.2; // Slightly longer lifetime to cross screen?
 const BULLET_RADIUS = 2;
 
 export class Bullet extends Entity {
-    constructor(x, y, velX, velY, isPlayerBullet = true) {
+    /**
+     * @param {boolean} isPlayerBullet false for UFO and boss bullets
+     * @param {string|null} ownerId id of the player who fired it (js/players.js), null for enemies
+     * @param {string|null} colour draw colour (multiplayer: the owner's colour); null = default
+     */
+    constructor(x, y, velX, velY, isPlayerBullet = true, ownerId = null, colour = null) {
         super(x, y, BULLET_RADIUS);
         this.velX = velX;
         this.velY = velY;
         this.lifeTimer = BULLET_LIFETIME;
         this.isPlayerBullet = isPlayerBullet; // Flag to identify bullet source
+        this.ownerId = ownerId;
+        this.colour = colour;
     }
 
     // Expose speed constants if needed elsewhere
@@ -40,7 +47,7 @@ export class Bullet extends Entity {
     draw(ctx) {
         if (!this.isAlive) return;
 
-        ctx.fillStyle = this.isPlayerBullet ? 'white' : 'lime'; // Different color for UFO bullets
+        ctx.fillStyle = this.colour || (this.isPlayerBullet ? 'white' : 'lime'); // Different color for UFO bullets
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
         ctx.fill();

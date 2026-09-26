@@ -26,6 +26,9 @@ export class PlayerShip extends Entity {
         this.blinkTimer = 0;
         this.canHyperspace = true;
         this.hyperspaceCooldownTimer = 0;
+        // Owner (js/players.js player id) and bullet colour, set by main.js; bullets carry them
+        this.ownerId = null;
+        this.bulletColour = null;
 
         // Make invulnerable on creation (spawn protection)
         this.makeInvulnerable(SHIP_INVULNERABILITY_DURATION);
@@ -63,7 +66,7 @@ export class PlayerShip extends Entity {
             const bulletVelY = Math.sin(this.rotation) * Bullet.PLAYER_SPEED;
             const noseX = this.x + Math.cos(this.rotation) * (this.radius);
             const noseY = this.y + Math.sin(this.rotation) * (this.radius);
-            bullets.push(new Bullet(noseX, noseY, bulletVelX, bulletVelY, true));
+            bullets.push(new Bullet(noseX, noseY, bulletVelX, bulletVelY, true, this.ownerId, this.bulletColour));
             this.shootTimer = this.shootCooldown;
             if (audioManager) {
                 audioManager.play('playerShoot');

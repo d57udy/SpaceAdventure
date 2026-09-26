@@ -5,6 +5,8 @@ const { Entity } = await import('../../js/entity.js');
 const { Bullet } = await import('../../js/bullet.js');
 const { Asteroid } = await import('../../js/asteroid.js');
 const { PowerUp, PowerUpType } = await import('../../js/powerup.js');
+const { PlayerShip } = await import('../../js/player.js');
+const { Boss } = await import('../../js/boss.js');
 
 afterEach(() => { Entity.worldWidth = 0; Entity.worldHeight = 0; });
 
@@ -17,6 +19,83 @@ test('Bullet: constructor and speed constants', () => {
     assert.equal(Bullet.PLAYER_SPEED, 500);
     assert.equal(Bullet.UFO_SPEED, 350);
     assert.ok(b instanceof Entity);
+});
+
+test('Bullet: owner and colour (multiplayer); defaults keep single-player bullets unowned and white', () => {
+    const b = new Bullet(0, 0, 1, 0);
+    assert.equal(b.ownerId, null);
+    assert.equal(b.colour, null);
+    const owned = new Bullet(0, 0, 1, 0, true, 'p2', '#FF9F1C');
+    assert.equal(owned.ownerId, 'p2');
+    assert.equal(owned.colour, '#FF9F1C');
+    const fills = [];
+    const ctx = { set fillStyle(v) { fills.push(v); }, beginPath() {}, arc() {}, fill() {} };
+    b.draw(ctx);
+    owned.draw(ctx);
+    new Bullet(0, 0, 1, 0, false).draw(ctx);
+    assert.deepEqual(fills, ['white', '#FF9F1C', 'lime']);
+});
+
+test('PlayerShip.fire: bullets carry the ship owner and bullet colour', () => {
+    const ship = new PlayerShip(100, 100);
+    const bullets = [];
+    ship.fire(bullets, null);
+    assert.equal(bullets.length, 1);
+    assert.equal(bullets[0].ownerId, null);
+    ship.ownerId = 'p1';
+    ship.bulletColour = '#00E5FF';
+    ship.shootTimer = 0;
+    ship.fire(bullets, null);
+    assert.equal(bullets[1].ownerId, 'p1');
+    assert.equal(bullets[1].colour, '#00E5FF');
+    assert.equal(bullets[1].isPlayerBullet, true);
+});
+
+function fightingBoss() {
+    const boss = new Boss(500, 500, 1);
+    boss.phase = Boss.PHASES.FIGHTING;
+    return boss;
+}
+
+test('Boss.update: a single ship (single-player shim) is both the hover anchor and the target', (t) => {
+    t.mock.method(Math, 'random', () => 0.5); // offsets at the middle of their ranges
+    const boss = fightingBoss();
+    const ship = { x: 520, y: 700, isAlive: true };
+    const bullets = [];
+    boss.attackTimer = boss.attackCooldown; // attack this frame
+    boss.update(0.01, 800, 800, ship, bullets, null);
+    assert.equal(boss.targetX, ship.x + boss.targetOffsetX);
+    assert.equal(boss.targetY, ship.y + boss.targetOffsetY);
+    assert.ok(bullets.length > 0, 'attacked the ship');
+    assert.ok(bullets.every(b => b.isPlayerBullet === false));
+    // A dead ship is not attacked
+    const quiet = fightingBoss();
+    const none = [];
+    quiet.attackTimer = quiet.attackCooldown;
+    quiet.update(0.01, 800, 800, { x: 520, y: 700, isAlive: false }, none, null);
+    assert.equal(none.length, 0);
+});
+
+test('Boss.update: with several ships it hovers around the anchor and rotates attacks between living ships', () => {
+    const boss = fightingBoss();
+    const a = { x: 100, y: 900, isAlive: true };
+    const b = { x: 900, y: 900, isAlive: true };
+    const dead = { x: 500, y: 100, isAlive: false };
+    const anchor = { x: 400, y: 400 };
+    const aimed = [];
+    boss.executeAttack = (target) => aimed.push(target);
+    for (let i = 0; i < 4; i++) {
+        boss.attackTimer = boss.attackCooldown;
+        boss.update(0.01, 800, 800, { anchor, ships: [a, dead, b] }, [], null);
+    }
+    assert.equal(boss.targetX, anchor.x + boss.targetOffsetX);
+    assert.equal(boss.targetY, anchor.y + boss.targetOffsetY);
+    assert.deepEqual(aimed, [a, b, a, b]);
+    // Nobody alive: no attack
+    aimed.length = 0;
+    boss.attackTimer = boss.attackCooldown;
+    boss.update(0.01, 800, 800, { anchor, ships: [dead] }, [], null);
+    assert.equal(aimed.length, 0);
 });
 
 test('Bullet: moves and expires after its lifetime', () => {

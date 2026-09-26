@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { wrapAroundEdges, degToRad, randomRange, wrapDelta } = await import('../../js/utils.js');
+const { wrapAroundEdges, degToRad, randomRange, wrapDelta, isNearAny } = await import('../../js/utils.js');
 
 test('wrapAroundEdges wraps each axis to the opposite edge', () => {
     const e = { x: -1, y: -1 };
@@ -68,4 +68,16 @@ test('wrapDelta result magnitude never exceeds size/2 for deltas within (-size, 
     for (let d = -776; d <= 776; d += 7) {
         assert.ok(Math.abs(wrapDelta(d, size)) <= size / 2, `d=${d}`);
     }
+});
+
+test('isNearAny measures across the world wrap (safe-spawn fix)', () => {
+    const ship = { x: 10, y: 10 };
+    // 20 px away across the corner of a 1200x900 world; straight-line distance would be ~1500
+    assert.equal(isNearAny(1195, 895, [ship], 300, 1200, 900), true);
+    assert.equal(isNearAny(600, 450, [ship], 300, 1200, 900), false);
+    // any of several points
+    assert.equal(isNearAny(600, 450, [ship, { x: 700, y: 450 }], 300, 1200, 900), true);
+    assert.equal(isNearAny(600, 450, [], 300, 1200, 900), false);
+    // no wrapping when the world size is 0
+    assert.equal(isNearAny(1195, 895, [ship], 300, 0, 0), false);
 });

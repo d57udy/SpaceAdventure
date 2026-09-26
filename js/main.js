@@ -2,7 +2,7 @@ import { PlayerShip } from './player.js';
 import { Asteroid } from './asteroid.js';
 import { Bullet } from './bullet.js';
 import { InputHandler } from './input.js';
-import { randomRange, wrapDelta } from './utils.js';
+import { randomRange, wrapDelta, isNearAny } from './utils.js';
 import { UFO } from './ufo.js';
 import { AudioManager } from './audio.js';
 import { PersistenceManager } from './persistence.js';
@@ -22,7 +22,7 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
-import { createPlayer, tickPowerUps, teamScore } from './players.js';
+import { createPlayer, tickPowerUps, teamScore, isLiving, livingPlayers, nearestLivingShip } from './players.js';
 
 // Game States Enum
 const GameState = {
@@ -1946,7 +1946,8 @@ function handleShipInput(p, deltaTime) {
             const noseX = ship.x + Math.cos(ship.rotation) * ship.radius;
             const noseY = ship.y + Math.sin(ship.rotation) * ship.radius;
             for (const angle of [ship.rotation - spreadAngle, ship.rotation + spreadAngle]) {
-                bullets.push(new Bullet(noseX, noseY, Math.cos(angle) * bulletSpeed, Math.sin(angle) * bulletSpeed, true));
+                bullets.push(new Bullet(noseX, noseY, Math.cos(angle) * bulletSpeed, Math.sin(angle) * bulletSpeed, true,
+                    ship.ownerId, ship.bulletColour));
             }
         }
     }
@@ -2224,7 +2225,7 @@ function updateGame(deltaTime) {
     };
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
-             ufo.update(deltaTime, viewWidth, viewHeight, p1().ship, bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
+             ufo.update(deltaTime, viewWidth, viewHeight, nearestLivingShip(ufo.x, ufo.y, players, WORLD_WIDTH, WORLD_HEIGHT), bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
              wrapWorldPosition(ufo);
              if (ufo.isOnScreen) {
                  visibleUfoExists = true;
@@ -2292,7 +2293,7 @@ function updateGame(deltaTime) {
 
     // Update boss if present
     if (currentBoss && currentBoss.isAlive) {
-        currentBoss.update(deltaTime, viewWidth, viewHeight, p1().ship, bullets, audioManager);
+        currentBoss.update(deltaTime, viewWidth, viewHeight, bossTarget(), bullets, audioManager);
         // Only wrap position during fighting phase (not during entry animation)
         if (currentBoss.phase === Boss.PHASES.FIGHTING) {
             wrapWorldPosition(currentBoss);
@@ -2810,9 +2811,9 @@ function createLevelAsteroids(isBossLevel = false) {
     if (isBossLevel) {
         numAsteroids = Math.floor(numAsteroids * 0.4); // 40% of normal asteroids during boss fight
     }
-    const ship = p1().ship;
-    const playerX = ship ? ship.x : WORLD_WIDTH / 2;
-    const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
+    // Keep new asteroids away from every living ship (the world centre when there is none)
+    const ships = livingPlayers(players).map(p => p.ship);
+    const avoid = ships.length ? ships : [{ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 }];
 
     // Apply DDA modifiers
     const speedMod = selectedDifficulty.asteroidSpeedMultiplier * DynamicDifficulty.asteroidSpeedMod;
@@ -2826,15 +2827,13 @@ function createLevelAsteroids(isBossLevel = false) {
         let x, y;
         let attempts = 0;
 
-        // Find a position that's not too close to the player
+        // Find a position that's not too close to any ship (wrap-aware: an asteroid just
+        // across the world edge is close too)
         do {
             x = randomRange(0, WORLD_WIDTH);
             y = randomRange(0, WORLD_HEIGHT);
             attempts++;
-        } while (
-            Math.sqrt((x - playerX) ** 2 + (y - playerY) ** 2) < SAFE_SPAWN_RADIUS * 2 &&
-            attempts < 20
-        );
+        } while (isNearAny(x, y, avoid, SAFE_SPAWN_RADIUS * 2, WORLD_WIDTH, WORLD_HEIGHT) && attempts < 20);
 
         // Mostly large asteroids at start of level (they split into smaller ones)
         const sizeRoll = Math.random();
@@ -3252,6 +3251,8 @@ function respawnPlayer(p, isInitialSpawn = false) {
          const centerY = WORLD_HEIGHT / 2;
 
          const ship = new PlayerShip(centerX, centerY);
+         ship.ownerId = p.id;
+         ship.bulletColour = players.length > 1 ? p.colour : null; // single-player bullets stay white
          p.ship = ship;
          applyShipModifiers(p);
          p.respawnTimer = 0;
@@ -3289,10 +3290,11 @@ function levelUp() {
     // Check if this is a boss level
     if (level > 1 && level % BOSS_LEVEL_INTERVAL === 0) {
         // Spawn boss at top of visible area (in world coordinates)
-        const ship = p1().ship;
-        const bossX = ship ? ship.x : WORLD_WIDTH / 2;
+        // (above the centre of the shared view: the ship in single-player)
+        const centre = cameraCentre();
+        const bossX = centre.x;
         // Target Y is 150px below top of visible screen in world coords
-        const targetY = ship ? ship.y - viewHeight / 2 + 150 : WORLD_HEIGHT / 4;
+        const targetY = centre.y - viewHeight / 2 + 150;
         const bossLevel = Math.floor(level / BOSS_LEVEL_INTERVAL);
         currentBoss = new Boss(bossX, targetY, bossLevel);
         console.log(`BOSS BATTLE! Spawning level ${bossLevel} boss at target y=${targetY}!`);
@@ -3376,7 +3378,9 @@ function resetUfoSpawnTimer() {
 }
 
 function updateUfoSpawning(deltaTime) {
-    if (currentGameState !== GameState.PLAYING || p1().respawnTimer > 0) return;
+    if (currentGameState !== GameState.PLAYING) return;
+    // Not while every ship is waiting to respawn
+    if (!players.some(p => p.respawnTimer <= 0 && isLiving(p))) return;
 
     if (ufos.length >= UFO.MaxActiveUFOs) return;
 
@@ -3384,9 +3388,10 @@ function updateUfoSpawning(deltaTime) {
     if (ufoSpawnTimer <= 0) {
         console.log("Attempting to spawn UFO");
         // Spawn UFO at a visible position near the edge of the current screen
-        const ship = p1().ship;
-        const playerX = ship ? ship.x : WORLD_WIDTH / 2;
-        const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
+        // Around the centre of the shared view (the ship in single-player)
+        const centre = cameraCentre();
+        const playerX = centre.x;
+        const playerY = centre.y;
 
         // Spawn at edge of visible area
         const spawnSide = Math.floor(Math.random() * 4); // 0=top, 1=right, 2=bottom, 3=left
@@ -3681,9 +3686,23 @@ function drawAchievementNotifications() {
     }
 }
 
-// The player who fired a bullet (single-player: player 1)
+// The player who fired a bullet (null for enemy bullets or a player who has left)
 function bulletOwner(bullet) {
-    return p1();
+    if (!bullet || !bullet.isPlayerBullet) return null;
+    return players.find(p => p.id === bullet.ownerId) || null;
+}
+
+// World point at the centre of the view
+function cameraCentre() {
+    return { x: Camera.x + viewWidth / 2, y: Camera.y + viewHeight / 2 };
+}
+
+// What the boss hovers around and attacks. Single-player passes the ship itself, exactly as
+// before; with more players the boss hovers around the camera centre and rotates its attacks
+// between the living ships (Boss.update accepts both).
+function bossTarget() {
+    if (players.length === 1) return p1().ship;
+    return { anchor: cameraCentre(), ships: livingPlayers(players).map(p => p.ship) };
 }
 
 // Every scoring event goes through here: the player's score and extra-life threshold, their

@@ -51,3 +51,12 @@ export function wrapDelta(delta, size) {
     if (delta < -size / 2) return delta + size;
     return delta;
 }
+
+/**
+ * True when (x, y) is closer than `radius` to any of `points`, measuring the shortest way
+ * across a W x H wrapping world (a point just across the world edge counts as close).
+ * @param {{x:number,y:number}[]} points
+ */
+export function isNearAny(x, y, points, radius, W, H) {
+    return points.some(p => Math.hypot(wrapDelta(x - p.x, W), wrapDelta(y - p.y, H)) < radius);
+}
