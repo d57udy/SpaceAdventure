@@ -402,3 +402,14 @@ test('defaults to navigator.getGamepads when not injected (absent in Node)', () 
     assert.doesNotThrow(() => p.poll('game'));
     assert.deepEqual(p.poll('game').pads, []);
 });
+
+test('a controller first seen by suppressHeld() is still reported as connected by the next poll', () => {
+    const { poller, pad } = setup();
+    pad.press(GP.A);
+    poller.suppressHeld(); // e.g. a state transition before the first poll
+    let r = poller.poll('menu');
+    assert.deepEqual(r.connected.map(c => c.index), [0]);
+    assert.ok(!only(r).pressed.has('menuSelect'), 'still suppressed');
+    r = poller.poll('menu');
+    assert.equal(r.connected.length, 0, 'announced once');
+});

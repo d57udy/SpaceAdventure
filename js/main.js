@@ -11,7 +11,7 @@ import { Achievements } from './achievements.js';
 import { PowerUp, PowerUpType } from './powerup.js';
 import { Boss } from './boss.js';
 import { Entity } from './entity.js';
-import { applyJoystickSteering } from './steering.js';
+import { applyJoystickSteering, angleDiff } from './steering.js';
 import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
 import { Particles } from './particles.js';
 import { createSettings } from './settings.js';
@@ -19,6 +19,8 @@ import { findPalette } from './palette.js';
 import { Haptics } from './haptics.js';
 import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
+import { GP, buttonGlyph, controllerName } from './gamepad.js';
+import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 
 // Game States Enum
 const GameState = {
@@ -31,6 +33,7 @@ const GameState = {
     UPGRADES: 'upgrades',
     HELP: 'help',
     SETTINGS: 'settings',
+    TUTORIAL_ASK: 'tutorial_ask', // "First time? Play the tutorial / Skip" before a first game
     GAME_OVER: 'game_over'
 };
 
@@ -654,8 +657,24 @@ const settings = createSettings();
 
 // Vibration (Android): follows the 'haptics' setting; independent of mute.
 const haptics = new Haptics({ enabled: () => settings.get('haptics') });
+// Controller rumble mirrors the vibration sites (js/gamepad.js RUMBLE_PATTERNS).
+const RUMBLE_FOR_HAPTIC = {
+    collect: 'collect', lifeLost: 'death', gameOver: 'death', bossWeakPoint: 'bossHit', bossDefeated: 'bossDefeated',
+};
 function vibrate(name) {
     try { haptics.play(name); } catch (e) { /* never let haptics break the game */ }
+    if (RUMBLE_FOR_HAPTIC[name]) rumble(RUMBLE_FOR_HAPTIC[name]);
+}
+// Rumble the most recently used controller ('Controller rumble' setting; no-op without one).
+const rumbleStats = { calls: 0, last: null };
+function rumble(kind) {
+    if (!inputHandler || !settings.get('rumble') || !gamepadSeen) return;
+    try {
+        if (inputHandler.gamepad.rumbleEvent(kind)) {
+            rumbleStats.calls++;
+            rumbleStats.last = kind;
+        }
+    } catch (e) { /* never let rumble break the game */ }
 }
 function stopVibration() {
     try { haptics.stop(); } catch (e) { /* ignore */ }
@@ -820,6 +839,10 @@ const settingsRows = [
     { id: 'sfxVolume', label: () => 'Sound effects', setting: 'sfxVolume' },
     { id: 'vibration', label: () => 'Vibration', setting: 'haptics', format: (v) => (v ? 'On' : 'Off'),
         visible: () => isTouchDevice && haptics.supported },
+    { id: 'rumble', label: () => 'Controller rumble', setting: 'rumble', format: (v) => (v ? 'On' : 'Off'),
+        visible: () => gamepadSeen },
+    { id: 'offerTutorial', label: () => 'Offer tutorial', setting: 'offerTutorial', format: (v) => (v ? 'On' : 'Off') },
+    { id: 'replayTutorial', label: () => 'Replay tutorial', select: () => replayTutorial() },
     { id: 'back', label: () => 'Back', select: () => returnToMenu() },
 ];
 
@@ -827,10 +850,247 @@ function startOrResume() {
     if (pausedGameExists) {
         console.log("Resuming paused game...");
         currentGameState = GameState.PLAYING;
+    } else if (shouldAskTutorial()) {
+        openTutorialAsk();
     } else {
         console.log("Executing startGame() from menu...");
         startGame();
     }
+}
+
+// --- Game controllers (js/gamepad.js via InputHandler) ---
+let gamepadSeen = false; // a controller has been connected this session (shows the rumble row)
+let toasts = []; // short canvas messages: { text, time }
+const TOAST_SECONDS = 2;
+function showToast(text) {
+    toasts.push({ text, time: TOAST_SECONDS });
+    if (toasts.length > 3) toasts.shift();
+}
+function usingGamepad() {
+    return !!inputHandler && inputHandler.lastInputSource === 'gamepad';
+}
+// Glyph for a controller button in the current controller's family (Ⓐ, ✕, …)
+const CIRCLED_LETTERS = { A: '\u24B6', B: '\u24B7', X: '\u24CD', Y: '\u24CE' };
+function padGlyph(button) {
+    const family = (inputHandler && inputHandler.gamepadInfo().family) || 'generic';
+    const glyph = buttonGlyph(family, button);
+    return CIRCLED_LETTERS[glyph] || glyph;
+}
+// Hint text for the device in use: controller glyphs once a controller was the last input.
+function inputHint(keyboard, touch, gamepad = null) {
+    if (gamepad && usingGamepad()) return typeof gamepad === 'function' ? gamepad() : gamepad;
+    return isTouchDevice ? touch : keyboard;
+}
+function inputContextFor(state) {
+    if (state === GameState.PLAYING) return 'game';
+    if (state === GameState.PAUSED) return 'pause';
+    return 'menu';
+}
+// Poll controllers (before taps and keys), then react to connects/disconnects.
+function pollControllers() {
+    inputHandler.setContext(inputContextFor(currentGameState));
+    inputHandler.pollGamepads();
+    for (const ev of inputHandler.consumeGamepadEvents()) {
+        const name = controllerName(ev.id);
+        if (ev.type === 'connected') {
+            gamepadSeen = true;
+            showToast(ev.mapping === 'standard' ? `${name} connected` : `${name} connected (unknown layout: buttons may differ)`);
+        } else {
+            showToast(`${name} disconnected`);
+            // Losing the controller mid-game would leave the ship uncontrolled: pause
+            if (currentGameState === GameState.PLAYING && inputHandler.lastInputSource === 'gamepad') pauseGame();
+        }
+    }
+    syncInputSourceClass();
+}
+// body.input-gamepad hides the touch controls while a controller is in use (until a touch)
+let inputSourceClass = null;
+function syncInputSourceClass() {
+    const pad = usingGamepad();
+    if (pad === inputSourceClass) return;
+    inputSourceClass = pad;
+    document.body.classList.toggle('input-gamepad', pad);
+}
+function updateToasts(dt) {
+    toasts.forEach(t => { t.time -= dt; });
+    toasts = toasts.filter(t => t.time > 0);
+}
+function drawToasts() {
+    if (toasts.length === 0) return;
+    ctx.save();
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    toasts.forEach((t, i) => {
+        const alpha = Math.min(1, t.time / 0.4);
+        const w = Math.min(viewWidth - 20, ctx.measureText(t.text).width + 30);
+        const y = viewHeight - 110 - i * 36;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillRect((viewWidth - w) / 2, y - 15, w, 30);
+        ctx.strokeStyle = '#66CCFF';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect((viewWidth - w) / 2, y - 15, w, 30);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(t.text, viewWidth / 2, y);
+    });
+    ctx.restore();
+}
+// Controller presses are not user gestures, so a controller-only player must tap or press
+// a key once before the browser allows sound.
+let userGestureSeen = false;
+function audioLocked() {
+    const ac = audioManager && audioManager.audioContext;
+    return !userGestureSeen && !!ac && ac.state !== 'running';
+}
+
+// --- First-game tutorial (js/tutorial.js) ---
+const tutorial = new Tutorial();
+let tutorialTarget = null; // the asteroid the current step is about
+let tutorialPending = []; // requests raised during collisions, handled after them
+let tutorialAskIndex = 0; // 0 = Play the tutorial, 1 = Skip
+let tutorialFireHeld = false; // fire press edge ('confirm' in the avoid step)
+let tutorialRespawns = 0; // crashes during training (no life lost), for the test hook
+
+function tutorialRecord() {
+    return currentUser && persistenceManager ? persistenceManager.loadTutorialState(currentUser) : null;
+}
+// Ask on a player's first Start (unless the 'Offer tutorial' setting is off); either answer
+// is remembered for that player. Reset Data brings the question back.
+function shouldAskTutorial() {
+    if (!settings.get('offerTutorial') || !currentUser) return false;
+    const rec = tutorialRecord();
+    return !(rec && (rec.asked || rec.done));
+}
+function openTutorialAsk() {
+    tutorialAskIndex = 0;
+    currentGameState = GameState.TUTORIAL_ASK;
+}
+function answerTutorialAsk(play) {
+    if (currentUser) {
+        persistenceManager.saveTutorialState(currentUser, { asked: true, done: false, skipped: !play, version: TUTORIAL_VERSION });
+    }
+    startGame({ tutorial: play });
+}
+function replayTutorial() {
+    pausedGameExists = false;
+    startGame({ tutorial: true });
+}
+function currentInputKind() {
+    return detectInputKind({
+        lastInputSource: inputHandler ? inputHandler.lastInputSource : null,
+        isTouchDevice,
+        controlMode: controlMode.id,
+    });
+}
+function queueTutorial(requests) {
+    if (requests && requests.length) tutorialPending.push(...requests);
+}
+function processTutorialRequests(requests = null) {
+    const list = requests || tutorialPending.splice(0);
+    for (const r of list) {
+        switch (r.type) {
+            case 'spawn': spawnTutorialTarget(r); break;
+            case 'message':
+            case 'hint':
+                FloatingTexts.spawn(viewWidth / 2, viewHeight * 0.62, r.text, '#FFD700', 22, 2.5);
+                break;
+            case 'respawnPlayer':
+                tutorialRespawns++;
+                ship = null;
+                respawnPlayer();
+                if (ship) ship.makeInvulnerable(r.invulnerableSeconds || 3);
+                break;
+            case 'finish': finishTutorial(!!r.skipped); break;
+            default: break; // 'step': the overlay and DOM classes follow tutorial.stepId
+        }
+    }
+}
+// Targets appear in front of the ship: a still green, a slowly drifting red.
+function spawnTutorialTarget(req) {
+    if (tutorialTarget && tutorialTarget.isAlive) tutorialTarget.destroy();
+    const angle = ship ? ship.rotation : -Math.PI / 2;
+    const ox = ship ? ship.x : WORLD_WIDTH / 2;
+    const oy = ship ? ship.y : WORLD_HEIGHT / 2;
+    const size = req.size === 'small' ? Asteroid.Sizes.SMALL : req.size === 'large' ? Asteroid.Sizes.LARGE : Asteroid.Sizes.MEDIUM;
+    const drift = req.drift || 0;
+    const target = new Asteroid(ox + Math.cos(angle) * req.distanceAhead, oy + Math.sin(angle) * req.distanceAhead,
+        size, { x: -Math.sin(angle) * drift, y: Math.cos(angle) * drift }, 1, req.kind === 'green' ? 'green' : 'red');
+    wrapWorldPosition(target);
+    asteroids.push(target);
+    tutorialTarget = target;
+}
+function tutorialTargetDistance() {
+    if (!tutorialTarget || !tutorialTarget.isAlive || !ship) return undefined;
+    const { dx, dy } = Entity.wrappedDelta(ship.x, ship.y, tutorialTarget.x, tutorialTarget.y);
+    return Math.hypot(dx, dy);
+}
+// Per frame while training (after collisions)
+function updateTutorial(dt) {
+    processTutorialRequests();
+    if (!tutorial.active) return;
+    processTutorialRequests(tutorial.update(dt, { inputKind: currentInputKind(), targetDistance: tutorialTargetDistance() }));
+    const step = tutorial.stepId;
+    if (tutorial.active && (step === 'collect' || step === 'shoot') && !(tutorialTarget && tutorialTarget.isAlive)) {
+        processTutorialRequests(tutorial.notify('targetLost'));
+    }
+}
+function skipTutorial() {
+    if (tutorial.active) processTutorialRequests(tutorial.skip());
+}
+// The one exit from training (finished or skipped): remember it and start a clean Level 1.
+function finishTutorial(skipped) {
+    if (currentUser) {
+        persistenceManager.saveTutorialState(currentUser, { asked: true, done: true, skipped, version: TUTORIAL_VERSION });
+    }
+    tutorial.reset();
+    tutorialPending = [];
+    tutorialTarget = null;
+    score = 0;
+    level = 1;
+    lives = selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives();
+    nextExtraLifeScore = EXTRA_LIFE_SCORE;
+    bullets = [];
+    asteroids = [];
+    ufos = [];
+    resetPowerUps();
+    DynamicDifficulty.reset();
+    ComboSystem.reset();
+    FloatingTexts.clear();
+    ScreenShake.reset();
+    currentBoss = null;
+    bossDefeatedThisLevel = false;
+    achievementManager.resetSessionStats();
+    ship = null;
+    respawnPlayer(true);
+    createLevelAsteroids();
+    resetUfoSpawnTimer();
+    levelUpNotificationTimer = LEVEL_UP_NOTIFICATION_DURATION;
+    syncTutorialDom();
+    updateUI();
+    console.log(`Tutorial ${skipped ? 'skipped' : 'completed'}; starting Level 1`);
+}
+// body.tutorial-step-<id> / body.tutorial-<inputKind> and .tutorial-highlight on the DOM
+// control being taught (touch buttons sit outside the canvas on tablets). CSS pulses it.
+let tutorialDomKey = '';
+function syncTutorialDom() {
+    const on = tutorial.active && (currentGameState === GameState.PLAYING || currentGameState === GameState.PAUSED);
+    const key = on ? `${tutorial.stepId}|${tutorial.inputKind}` : '';
+    if (key === tutorialDomKey) return;
+    tutorialDomKey = key;
+    const body = document.body;
+    [...body.classList].filter(c => c.startsWith('tutorial-')).forEach(c => body.classList.remove(c));
+    document.querySelectorAll('.tutorial-highlight').forEach(el => el.classList.remove('tutorial-highlight'));
+    if (!on) return;
+    body.classList.add('tutorial-active', `tutorial-step-${tutorial.stepId}`, `tutorial-${tutorial.inputKind}`);
+    const text = tutorial.text;
+    (text ? text.highlight : []).forEach(sel => {
+        const el = document.querySelector(sel);
+        if (el) el.classList.add('tutorial-highlight');
+    });
+}
+function getPauseMenuOptions() {
+    return tutorial.active ? [...pauseMenuOptions, 'Skip Tutorial'] : pauseMenuOptions;
 }
 
 function openHighScores() {
@@ -1345,6 +1605,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // user gesture; touchend/pointerup count as gestures, click may be suppressed on touch)
     const audioUnlockEvents = ['click', 'keydown', 'touchend', 'pointerup'];
     const resumeAudio = () => {
+        userGestureSeen = true;
         audioManager.resumeContext();
         audioUnlockEvents.forEach(evt => document.removeEventListener(evt, resumeAudio));
     };
@@ -1390,6 +1651,27 @@ document.addEventListener('DOMContentLoaded', () => {
         get music() { return music ? music.snapshot() : null; },
         get particles() { return Particles.countByShape(); },
         get joystick() { return inputHandler.getJoystick(); },
+        get lastInputSource() { return inputHandler.lastInputSource; },
+        get inputContext() { return inputHandler.context; },
+        get gamepad() {
+            const info = inputHandler.gamepadInfo();
+            return { connected: info.connected, id: info.id, family: info.family, mapping: info.mapping,
+                count: info.count, seen: gamepadSeen, rumbles: rumbleStats.calls, lastRumble: rumbleStats.last };
+        },
+        get toasts() { return toasts.map(t => t.text); },
+        get audioState() { return audioManager.audioContext ? audioManager.audioContext.state : 'none'; },
+        get tutorial() {
+            const rec = tutorialRecord();
+            return {
+                active: tutorial.active, step: tutorial.active ? tutorial.stepId : null, inputKind: tutorial.inputKind,
+                done: !!(rec && rec.done), asked: !!(rec && (rec.asked || rec.done)), skipped: !!(rec && rec.skipped),
+                progress: tutorial.progress, noProgress: tutorial.noProgress, respawns: tutorialRespawns,
+                target: tutorialTarget && tutorialTarget.isAlive
+                    ? { x: tutorialTarget.x, y: tutorialTarget.y, type: tutorialTarget.type, radius: tutorialTarget.radius } : null,
+                askIndex: tutorialAskIndex,
+            };
+        },
+        get pauseOptions() { return getPauseMenuOptions(); },
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
         get view() {
             return {
@@ -1429,8 +1711,9 @@ function loadUserData(username) {
     audioManager.stopUfoHum();
 }
 
-// Resets game variables for a new play session using selected difficulty
-function startGame() {
+// Resets game variables for a new play session using selected difficulty.
+// options.tutorial: start the Training wave (level 0, no asteroids) instead of Level 1.
+function startGame({ tutorial: withTutorial = false } = {}) {
     if (!currentUser) {
         console.error("Cannot start game without a user.");
         currentGameState = GameState.PROMPT_USER;
@@ -1466,7 +1749,16 @@ function startGame() {
 
     ship = null; // Always build a fresh ship (Restart would otherwise keep the old one)
     respawnPlayer(true); // Call respawn before creating asteroids
-    createLevelAsteroids();
+    tutorial.reset();
+    tutorialPending = [];
+    tutorialTarget = null;
+    tutorialFireHeld = false;
+    if (withTutorial) {
+        level = 0; // HUD shows "Training"; targets are spawned step by step
+        processTutorialRequests(tutorial.start());
+    } else {
+        createLevelAsteroids();
+    }
     resetUfoSpawnTimer();
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
@@ -1477,7 +1769,8 @@ function startGame() {
     pausedGameExists = false;
 
     // Show initial level notification
-    levelUpNotificationTimer = LEVEL_UP_NOTIFICATION_DURATION;
+    levelUpNotificationTimer = withTutorial ? 0 : LEVEL_UP_NOTIFICATION_DURATION;
+    syncTutorialDom();
 }
 
 // Function to handle username prompt input
@@ -1496,6 +1789,11 @@ function handlePromptInput() {
     }
     if (inputHandler.consumeAction('enter')) {
         submitUsername();
+    } else if (inputHandler.gamepadJustPressed('menuSelect')) {
+        // A controller can't type: Ⓐ accepts the typed name, or the default "PLAYER1"
+        if (sanitizeUsername(input.value).length < 3) input.value = 'PLAYER1';
+        submitUsername();
+        return;
     }
     promptInput = input.value;
 }
@@ -1705,7 +2003,7 @@ function updateUI() {
 
     if (scoreElement) scoreElement.textContent = `Score: ${score}`;
     if (livesElement) livesElement.textContent = `Lives: ${lives}`;
-    if (levelElement) levelElement.textContent = `Level: ${level}`;
+    if (levelElement) levelElement.textContent = `Level: ${tutorial.active ? 'Training' : level}`;
     if (creditsElement) creditsElement.textContent = `Credits: ${ShipUpgrades.currency}`;
     // Update user display, show placeholder if no user
     if (userElement) {
@@ -1753,6 +2051,8 @@ function syncStateTransition() {
 
 function handleInput(deltaTime) {
     syncStateTransition(); // Catches changes made outside the loop (e.g. auto-pause)
+    pollControllers(); // may pause (controller disconnected mid-game)
+    syncStateTransition();
     processTaps();
 
     if (currentGameState === GameState.PROMPT_USER) {
@@ -1766,6 +2066,18 @@ function handleInput(deltaTime) {
             navigateRows(currentMenuOptions, () => menuSelectionIndex, (i) => { menuSelectionIndex = i; });
             break;
 
+        case GameState.TUTORIAL_ASK:
+            if (inputHandler.consumeAction('escape')) {
+                answerTutorialAsk(false);
+                break;
+            }
+            if (inputHandler.consumeAction('menuUp') || inputHandler.consumeAction('menuLeft') ||
+                inputHandler.consumeAction('menuDown') || inputHandler.consumeAction('menuRight')) {
+                tutorialAskIndex = 1 - tutorialAskIndex;
+            }
+            if (inputHandler.consumeAction('menuSelect')) answerTutorialAsk(tutorialAskIndex === 0);
+            break;
+
         case GameState.SETTINGS:
             if (inputHandler.consumeAction('escape')) {
                 returnToMenu();
@@ -1774,9 +2086,16 @@ function handleInput(deltaTime) {
             navigateRows(visibleRows(settingsRows), () => settingsIndex, (i) => { settingsIndex = i; });
             break;
 
-        case GameState.PLAYING:
+        case GameState.PLAYING: {
             if (inputHandler.consumeAction('pause') || inputHandler.consumeAction('escape')) {
                 pauseGame();
+                break;
+            }
+            // Training: Enter or controller View skips it
+            const skipByEnter = inputHandler.consumeAction('enter');
+            const skipByPad = inputHandler.consumeAction('skipTutorial');
+            if ((skipByEnter || skipByPad) && tutorial.active) {
+                skipTutorial();
                 break;
             }
             if (!currentUser || !ship || !ship.isAlive) {
@@ -1785,6 +2104,7 @@ function handleInput(deltaTime) {
                 break;
             }
             const turnTime = deltaTime * ShipUpgrades.getTurnSpeedMult();
+            const rotationBefore = ship.rotation;
             if (inputHandler.isPressed('rotateLeft')) ship.rotate(-1, turnTime);
             if (inputHandler.isPressed('rotateRight')) ship.rotate(1, turnTime);
             const speedBoost = activePowerUps.speed_boost > 0 ? SPEED_BOOST_MULT : 1;
@@ -1792,6 +2112,15 @@ function handleInput(deltaTime) {
             const stickThrust = applyJoystickSteering(ship, stabilizeStick(inputHandler.getJoystick()), deltaTime, turnTime, thrustScale);
             if (inputHandler.isPressed('thrust')) ship.thrust(deltaTime * thrustScale);
             else if (!stickThrust) ship.isThrusting = false;
+
+            if (tutorial.active) {
+                const turned = angleDiff(rotationBefore, ship.rotation);
+                if (turned !== 0) queueTutorial(tutorial.notify('rotated', { delta: turned }));
+                if (ship.isThrusting) queueTutorial(tutorial.notify('thrusted', { dt: deltaTime }));
+                const fireHeld = inputHandler.isPressed('fire');
+                if (fireHeld && !tutorialFireHeld) queueTutorial(tutorial.notify('confirm'));
+                tutorialFireHeld = fireHeld;
+            }
 
             // Log fire button state and then attempt fire
             if (inputHandler.isPressed('fire')) {
@@ -1841,8 +2170,11 @@ function handleInput(deltaTime) {
             if (ship.isThrusting && !audioManager.isMuted) audioManager.startThrustSound();
             else audioManager.stopThrustSound();
             break;
+        }
 
-        case GameState.PAUSED:
+        case GameState.PAUSED: {
+            const pauseOptions = getPauseMenuOptions();
+            if (pauseMenuSelectionIndex >= pauseOptions.length) pauseMenuSelectionIndex = 0;
             if (inputHandler.consumeAction('pause') || inputHandler.consumeAction('escape')) {
                 console.log("Consumed pause/escape (to PLAYING)");
                 currentGameState = GameState.PLAYING;
@@ -1851,14 +2183,14 @@ function handleInput(deltaTime) {
             }
 
             if (inputHandler.consumeAction('menuUp')) {
-                pauseMenuSelectionIndex = (pauseMenuSelectionIndex - 1 + pauseMenuOptions.length) % pauseMenuOptions.length;
+                pauseMenuSelectionIndex = (pauseMenuSelectionIndex - 1 + pauseOptions.length) % pauseOptions.length;
             }
             if (inputHandler.consumeAction('menuDown')) {
-                pauseMenuSelectionIndex = (pauseMenuSelectionIndex + 1) % pauseMenuOptions.length;
+                pauseMenuSelectionIndex = (pauseMenuSelectionIndex + 1) % pauseOptions.length;
             }
 
             if (inputHandler.consumeAction('menuSelect')) {
-                const selection = pauseMenuOptions[pauseMenuSelectionIndex];
+                const selection = pauseOptions[pauseMenuSelectionIndex];
                 console.log(`Pause menu selection: ${selection}`);
                 switch (selection) {
                     case 'Resume':
@@ -1867,16 +2199,21 @@ function handleInput(deltaTime) {
                         break;
                     case 'Restart':
                         ShipUpgrades.save(persistenceManager, currentUser);
-                        startGame();
+                        startGame({ tutorial: tutorial.active }); // keeps the current mode
                         break;
                     case 'Main Menu':
                         currentGameState = GameState.MENU;
                         menuSelectionIndex = 0;
                         pausedGameExists = true; // Set the flag when returning to menu from pause
                         break;
+                    case 'Skip Tutorial':
+                        skipTutorial();
+                        currentGameState = GameState.PLAYING;
+                        break;
                 }
             }
             break;
+        }
 
         case GameState.HIGH_SCORES:
             if (inputHandler.consumeAction('menuSelect') || inputHandler.consumeAction('escape')) {
@@ -1936,6 +2273,10 @@ function handleInput(deltaTime) {
             break;
 
         case GameState.HELP:
+            if (inputHandler.consumeAction('key_T') || inputHandler.consumeAction('replayTutorial')) {
+                replayTutorial();
+                break;
+            }
             if (inputHandler.consumeAction('menuSelect') || inputHandler.consumeAction('escape')) {
                 currentGameState = GameState.MENU;
                 menuSelectionIndex = 0;
@@ -1964,8 +2305,10 @@ function handleInput(deltaTime) {
 }
 
 function updateGame(deltaTime) {
+    updateToasts(deltaTime);
     handleInput(deltaTime);
     syncStateTransition();
+    syncTutorialDom();
     inputHandler.endFrame();
     if (currentGameState !== GameState.MENU && currentGameState !== GameState.PROMPT_USER) {
         achievementManager.updateNotifications(deltaTime);
@@ -2057,8 +2400,8 @@ function updateGame(deltaTime) {
         }
     }
 
-    // Spawn random power-ups periodically (DDA modifier affects spawn rate)
-    powerUpSpawnTimer -= deltaTime;
+    // Spawn random power-ups periodically (DDA modifier affects spawn rate; none in training)
+    if (!tutorial.active) powerUpSpawnTimer -= deltaTime;
     if (powerUpSpawnTimer <= 0) {
         const newPowerUp = PowerUp.spawnRandom(WORLD_WIDTH, WORLD_HEIGHT);
         newPowerUp.type = PowerUp.getRandomType();
@@ -2098,19 +2441,25 @@ function updateGame(deltaTime) {
     asteroids = asteroids.filter(asteroid => asteroid.isAlive);
     ufos = ufos.filter(ufo => ufo.isAlive);
 
-    updateUfoSpawning(deltaTime);
+    if (tutorial.active) {
+        // Training: no UFOs, level-ups, achievements or difficulty changes; the tutorial
+        // spawns its own targets and may finish into Level 1 here.
+        updateTutorial(deltaTime);
+    } else {
+        updateUfoSpawning(deltaTime);
 
-    // Level up when all asteroids are cleared and boss is defeated (if present)
-    const bossCleared = !currentBoss || !currentBoss.isAlive;
-    if (asteroids.length === 0 && ufos.length === 0 && bossCleared && respawnTimer <= 0 && ship && ship.isAlive) {
-        levelUp();
+        // Level up when all asteroids are cleared and boss is defeated (if present)
+        const bossCleared = !currentBoss || !currentBoss.isAlive;
+        if (asteroids.length === 0 && ufos.length === 0 && bossCleared && respawnTimer <= 0 && ship && ship.isAlive) {
+            levelUp();
+        }
+
+        const currentSnapshot = { score: score, level: level, user: currentUser };
+        achievementManager.checkUnlockConditions(currentSnapshot);
+
+        // Evaluate player performance and adjust difficulty
+        DynamicDifficulty.evaluate(score);
     }
-
-    const currentSnapshot = { score: score, level: level, user: currentUser };
-    achievementManager.checkUnlockConditions(currentSnapshot);
-
-    // Evaluate player performance and adjust difficulty
-    DynamicDifficulty.evaluate(score);
 
     // Update visual effects systems
     ComboSystem.update(deltaTime);
@@ -2193,6 +2542,20 @@ function renderGame() {
             ctx.fillStyle = '#FFD700';
             ctx.font = 'bold 18px Arial';
             ctx.fillText(`Upgrade Credits: ${ShipUpgrades.currency}`, viewWidth / 2, viewHeight - 25);
+            if (usingGamepad()) {
+                ctx.font = '13px Arial';
+                ctx.fillStyle = '#AAAAAA';
+                ctx.fillText(`${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back   \u25C2 \u25B8 Change`, viewWidth / 2, viewHeight - 6);
+                if (audioLocked()) {
+                    ctx.font = '15px Arial';
+                    ctx.fillStyle = '#FFD700';
+                    ctx.fillText('Tap or press a key to enable sound', viewWidth / 2, menuStartY - 32);
+                }
+            }
+            break;
+
+        case GameState.TUTORIAL_ASK:
+            drawTutorialAsk();
             break;
 
         case GameState.PLAYING:
@@ -2245,13 +2608,13 @@ function renderGame() {
             ctx.textAlign = 'left';
             ctx.fillText(`Asteroids: ${asteroids.length}`, 10, viewHeight - 10);
 
-            // Draw Dynamic Difficulty Adjustment indicator
-            const ddaText = DynamicDifficulty.getAdjustmentText();
-            const ddaColor = DynamicDifficulty.getAdjustmentColor();
-            ctx.fillStyle = ddaColor;
-            ctx.font = '12px Arial';
-            ctx.textAlign = 'left';
-            ctx.fillText(`Difficulty: ${ddaText}`, 130, viewHeight - 10);
+            // Draw Dynamic Difficulty Adjustment indicator (not during training)
+            if (!tutorial.active) {
+                ctx.fillStyle = DynamicDifficulty.getAdjustmentColor();
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'left';
+                ctx.fillText(`Difficulty: ${DynamicDifficulty.getAdjustmentText()}`, 130, viewHeight - 10);
+            }
 
             // Draw combo indicator
             if (ComboSystem.count >= 2) {
@@ -2280,6 +2643,8 @@ function renderGame() {
 
             // Draw floating texts (screen-space)
             FloatingTexts.draw(ctx);
+
+            if (tutorial.active) drawTutorialOverlay();
 
             // Draw boss warning if boss is entering (limited time)
             if (currentBoss && currentBoss.isAlive && currentBoss.shouldShowWarning()) {
@@ -2336,12 +2701,15 @@ function renderGame() {
         case GameState.HELP:
             drawHelpScreen();
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
+            // Registered after the full-screen region: taps are checked last-to-first
+            drawHelpReplayButton();
             break;
 
         case GameState.GAME_OVER:
             drawCenterText("GAME OVER", `Final Score: ${finalScore}`);
             ctx.font = '20px Arial';
-            ctx.fillText(isTouchDevice ? "Tap for Menu" : "Press Space or Enter for Menu", viewWidth / 2, viewHeight / 2 + 60);
+            ctx.fillText(inputHint("Press Space or Enter for Menu", "Tap for Menu", () => `Press ${padGlyph(GP.A)} for Menu`),
+                viewWidth / 2, viewHeight / 2 + 60);
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
             break;
         default:
@@ -2352,6 +2720,196 @@ function renderGame() {
     if (currentGameState === GameState.PLAYING || currentGameState === GameState.PAUSED) {
         drawAchievementNotifications();
     }
+    drawToasts();
+}
+
+// Wrap text into lines no wider than maxWidth (current ctx.font)
+function wrapText(text, maxWidth) {
+    const words = String(text).split(' ');
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+        const next = line ? `${line} ${word}` : word;
+        if (line && ctx.measureText(next).width > maxWidth) {
+            lines.push(line);
+            line = word;
+        } else {
+            line = next;
+        }
+    }
+    if (line) lines.push(line);
+    return lines;
+}
+
+function drawButtonBox(x, y, w, h, label, selected, font = 'bold 20px Arial') {
+    ctx.fillStyle = selected ? 'rgba(255, 255, 0, 0.25)' : 'rgba(255, 255, 255, 0.08)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = selected ? '#FFFF00' : 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
+    ctx.font = font;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + w / 2, y + h / 2);
+    ctx.textBaseline = 'alphabetic';
+}
+
+// "First time? Play the tutorial / Skip" (tap, Enter/Esc, or controller Ⓐ/Ⓑ)
+function drawTutorialAsk() {
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.font = '40px Arial';
+    ctx.fillText('SPACE ADVENTURE', viewWidth / 2, viewHeight / 6);
+
+    const w = Math.min(460, viewWidth - 40);
+    const h = 270;
+    const x = (viewWidth - w) / 2;
+    const y = Math.max(viewHeight / 6 + 30, (viewHeight - h) / 2);
+    ctx.fillStyle = 'rgba(0, 20, 40, 0.9)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#66CCFF';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 30px Arial';
+    ctx.fillText('First time?', viewWidth / 2, y + 45);
+    ctx.font = '16px Arial';
+    ctx.fillStyle = '#CCCCCC';
+    ctx.fillText('A short training flight shows you how to play.', viewWidth / 2, y + 75);
+
+    const bw = w - 60;
+    const bh = 50;
+    const labels = ['Play the tutorial', 'Skip'];
+    labels.forEach((label, i) => {
+        const by = y + 100 + i * (bh + 12);
+        drawButtonBox(x + 30, by, bw, bh, label, i === tutorialAskIndex);
+        addTapRegion(x + 30, by, bw, bh, () => {
+            tutorialAskIndex = i;
+            inputHandler.triggerAction('menuSelect');
+        });
+    });
+
+    ctx.textAlign = 'center';
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#888888';
+    ctx.fillText(inputHint('UP/DOWN to choose, ENTER to confirm, ESC to skip', 'Tap an option',
+        () => `${padGlyph(GP.A)} Play the tutorial   ${padGlyph(GP.B)} Skip`), viewWidth / 2, y + h - 18);
+}
+
+// Training banner (top of the canvas, below the HUD line): title, instruction, progress
+// dots and a Skip button; plus an arrow at the screen edge pointing at an off-screen target.
+// The camera keeps the ship at the centre, so the banner never covers it.
+function drawTutorialOverlay() {
+    const text = tutorial.text;
+    if (!text) return;
+    const margin = 10;
+    const x = margin;
+    const w = viewWidth - margin * 2;
+    const top = 48;
+    const skipW = tutorial.noProgress ? 110 : 90;
+    const skipH = tutorial.noProgress ? 46 : 38;
+    const bodyFont = viewWidth < 500 ? '16px Arial' : '19px Arial';
+    ctx.save();
+    ctx.font = bodyFont;
+    const lines = wrapText(text.body, w - skipW - 40);
+    const h = 58 + lines.length * 24 + 14;
+
+    ctx.fillStyle = 'rgba(0, 10, 30, 0.72)';
+    ctx.fillRect(x, top, w, h);
+    ctx.strokeStyle = 'rgba(102, 204, 255, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, top, w, h);
+
+    // Title and progress dots
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#66CCFF';
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText('TRAINING', x + 15, top + 22);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText(text.title, x + 15, top + 48);
+    const { index, count } = tutorial.progress;
+    const titleW = ctx.measureText(text.title).width;
+    for (let i = 0; i < count; i++) {
+        ctx.beginPath();
+        ctx.arc(x + 30 + titleW + i * 16, top + 41, 5, 0, Math.PI * 2);
+        if (i < index) { ctx.fillStyle = '#66CCFF'; ctx.fill(); }
+        else if (i === index) { ctx.fillStyle = '#FFFF00'; ctx.fill(); }
+        else { ctx.strokeStyle = '#888888'; ctx.lineWidth = 1.5; ctx.stroke(); }
+    }
+
+    // Instruction
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = bodyFont;
+    lines.forEach((line, i) => ctx.fillText(line, x + 15, top + 76 + i * 24));
+
+    // Skip button (more prominent after a while without progress)
+    const sx = x + w - skipW - 10;
+    const sy = top + (h - skipH) / 2;
+    ctx.fillStyle = tutorial.noProgress ? 'rgba(255, 215, 0, 0.35)' : 'rgba(255, 255, 255, 0.12)';
+    ctx.fillRect(sx, sy, skipW, skipH);
+    ctx.strokeStyle = tutorial.noProgress ? '#FFD700' : 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(sx, sy, skipW, skipH);
+    ctx.fillStyle = tutorial.noProgress ? '#FFD700' : '#FFFFFF';
+    ctx.font = 'bold 17px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Skip \u25B8', sx + skipW / 2, sy + skipH / 2);
+    ctx.font = '11px Arial';
+    ctx.fillStyle = '#AAAAAA';
+    const skipKey = inputHint('Enter', '', () => padGlyph(GP.VIEW));
+    if (skipKey) ctx.fillText(skipKey, sx + skipW / 2, sy + skipH + 9);
+    addTapRegion(sx - 6, sy - 6, skipW + 12, skipH + 12, () => skipTutorial());
+    ctx.restore();
+
+    drawTutorialTargetArrow(top + h);
+}
+
+function drawTutorialTargetArrow(bannerBottom) {
+    if (!tutorialTarget || !tutorialTarget.isAlive || !ship) return;
+    const { dx, dy } = Entity.wrappedDelta(ship.x, ship.y, tutorialTarget.x, tutorialTarget.y);
+    const cx = viewWidth / 2;
+    const cy = viewHeight / 2;
+    const r = tutorialTarget.radius;
+    const sx = cx + dx;
+    const sy = cy + dy;
+    const minX = 30, maxX = viewWidth - 30, minY = bannerBottom + 25, maxY = viewHeight - 30;
+    if (sx + r > 0 && sx - r < viewWidth && sy + r > bannerBottom && sy - r < viewHeight) return; // visible
+    // Point on the inset rectangle along the ray from the ship
+    const tx = dx > 0 ? (maxX - cx) / dx : dx < 0 ? (minX - cx) / dx : Infinity;
+    const ty = dy > 0 ? (maxY - cy) / dy : dy < 0 ? (minY - cy) / dy : Infinity;
+    const t = Math.min(tx, ty);
+    const ax = cx + dx * t;
+    const ay = cy + dy * t;
+    const angle = Math.atan2(dy, dx);
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(angle);
+    ctx.globalAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 150);
+    ctx.fillStyle = tutorialTarget.isGreen() ? palette.collect : palette.hazard;
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-10, -12);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-10, 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+}
+
+// Help screen: "▶ Replay tutorial" (also T or controller Y)
+function drawHelpReplayButton() {
+    const w = Math.min(300, viewWidth * 0.6);
+    const h = 40;
+    const x = (viewWidth - w) / 2;
+    const y = viewHeight - 105;
+    const key = inputHint(' (T)', '', () => ` (${padGlyph(GP.Y)})`);
+    drawButtonBox(x, y, w, h, `\u25B6 Replay tutorial${key}`, false, 'bold 17px Arial');
+    addTapRegion(x, y, w, h, () => replayTutorial());
 }
 
 function drawCenterText(line1, line2 = null) {
@@ -2392,7 +2950,7 @@ function updateMusic() {
             state: currentGameState,
             bossActive: !!(currentBoss && currentBoss.isAlive),
             lives,
-            tutorialActive: false,
+            tutorialActive: tutorial.active,
         });
     } catch (e) { /* keep the previous mood */ }
     withMusic(m => { m.setMood(musicMood); m.update(); });
@@ -2483,7 +3041,14 @@ function checkCollisions() {
                 touching = ship.collidesWith(asteroid);
             }
             if (touching) {
-                if (asteroid.isGreen()) {
+                if (asteroid.isGreen() && tutorial.active) {
+                    // Training: collect without score, credits, combo or achievements
+                    asteroid.destroy();
+                    Particles.collect(asteroid.x, asteroid.y, palette.collect);
+                    if (audioManager) audioManager.play('collectGreen');
+                    vibrate('collect');
+                    queueTutorial(tutorial.notify('collectedGreen'));
+                } else if (asteroid.isGreen()) {
                     // GREEN asteroid: Collect it for points!
                     console.log("Collision: Ship <-> Green Asteroid (Collected!)");
 
@@ -2602,6 +3167,13 @@ function checkCollisions() {
                     console.log("Collision: Player Bullet <-> Green Asteroid (Wasted!)");
                     Particles.spawn(asteroid.x, asteroid.y, 8, palette.collect, 90, 0.4, 2); // wasted crystal
                     asteroid.split(asteroids, audioManager); // Just destroys, no children
+                    if (tutorial.active) queueTutorial(tutorial.notify('shotGreen'));
+                } else if (tutorial.active) {
+                    // Training: the red target is gone; no power-ups, achievements or DDA
+                    Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
+                    asteroid.split(asteroids, audioManager);
+                    rumble('redDestroyed');
+                    queueTutorial(tutorial.notify('destroyedRed'));
                 } else {
                     // Shooting red asteroids: Good! They split but no points
                     console.log("Collision: Player Bullet <-> Red Asteroid (Destroyed!)");
@@ -2611,6 +3183,7 @@ function checkCollisions() {
                     asteroid.split(asteroids, audioManager);
                     achievementManager.trackAsteroidDestroyed();
                     DynamicDifficulty.trackRedDestroyed();
+                    rumble('redDestroyed');
                 }
                 bulletHit = true;
                 break;
@@ -2768,6 +3341,16 @@ function handlePlayerDeath(forced = false) {
 
     if (ship && !forced) {
         destroyed = ship.destroy(audioManager, forced);
+    }
+
+    if (destroyed && tutorial.active) {
+        // Training: gentle mistakes. No life lost; respawn at once, protected for 3 s.
+        audioManager.stopThrustSound();
+        Particles.explode(shipX, shipY, '#FFFFFF', 30);
+        ScreenShake.trigger(8, 0.3);
+        vibrate('shieldHit');
+        queueTutorial(tutorial.notify('died'));
+        return;
     }
 
     if (destroyed) {
@@ -3021,7 +3604,8 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
     ctx.textAlign = 'center';
     ctx.font = '18px Arial';
     ctx.fillStyle = 'white';
-    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 40);
+    ctx.fillText(inputHint("Press Space/Enter/Esc to return", "Tap to return",
+        () => `Press ${padGlyph(GP.A)} or ${padGlyph(GP.B)} to return`), viewWidth / 2, viewHeight - 40);
 }
 
 function drawAchievements() {
@@ -3055,7 +3639,8 @@ function drawAchievements() {
     ctx.textAlign = 'center';
     ctx.font = '18px Arial';
     ctx.fillStyle = 'white';
-    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 40);
+    ctx.fillText(inputHint("Press Space/Enter/Esc to return", "Tap to return",
+        () => `Press ${padGlyph(GP.A)} or ${padGlyph(GP.B)} to return`), viewWidth / 2, viewHeight - 40);
 }
 
 // One centred line of text with a small asteroid icon in front of it (menu description)
@@ -3111,8 +3696,9 @@ function drawSettingsScreen() {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#888888';
     ctx.font = '14px Arial';
-    ctx.fillText(isTouchDevice ? 'Tap the left or right side of a setting to change it'
-        : 'UP/DOWN to choose, LEFT/RIGHT or ENTER to change, ESC to go back', viewWidth / 2, viewHeight - 30);
+    ctx.fillText(inputHint('UP/DOWN to choose, LEFT/RIGHT or ENTER to change, ESC to go back',
+        'Tap the left or right side of a setting to change it',
+        () => `\u25C2 \u25B8 Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`), viewWidth / 2, viewHeight - 30);
 }
 
 function drawUpgradesMenu() {
@@ -3205,7 +3791,8 @@ function drawUpgradesMenu() {
     ctx.fillStyle = '#888888';
     ctx.font = '14px Arial';
     ctx.fillText(`Earn credits by collecting ${palette.collectWord.toLowerCase()} crystals`, viewWidth / 2, viewHeight - 50);
-    ctx.fillText(isTouchDevice ? 'Tap an upgrade to purchase it' : 'Use UP/DOWN to navigate, ENTER to purchase (or click)', viewWidth / 2, viewHeight - 30);
+    ctx.fillText(inputHint('Use UP/DOWN to navigate, ENTER to purchase (or click)', 'Tap an upgrade to purchase it',
+        () => `${padGlyph(GP.A)} Buy   ${padGlyph(GP.B)} Back`), viewWidth / 2, viewHeight - 30);
 }
 
 function drawAchievementNotifications() {
@@ -3250,7 +3837,7 @@ function drawPauseMenu() {
     ctx.font = '24px Arial';
     const pauseStartY = titleY + 60;
     const pauseLineHeight = 40;
-    pauseMenuOptions.forEach((option, index) => {
+    getPauseMenuOptions().forEach((option, index) => {
         ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
         const itemY = pauseStartY + index * pauseLineHeight;
         ctx.fillText(option, viewWidth / 2, itemY);
@@ -3262,7 +3849,8 @@ function drawPauseMenu() {
 
     ctx.font = '16px Arial';
     ctx.fillStyle = 'lightgray';
-    ctx.fillText(isTouchDevice ? "(Tap an option)" : "(Press P or Esc to Resume)", viewWidth / 2, viewHeight * 0.75 - 20);
+    ctx.fillText(inputHint("(Press P or Esc to Resume)", "(Tap an option)",
+        () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Resume`), viewWidth / 2, viewHeight * 0.75 - 20);
 }
 
 // Small saucer icon matching UFO.draw (Help screen)
@@ -3329,7 +3917,18 @@ function drawHelpScreen() {
     const controlsX = rulesX;
     const keysX = viewWidth / 2;
 
-    const controls = isTouchDevice && controlMode === ControlMode.JOYSTICK ? [
+    const A = padGlyph(GP.A);
+    const B = padGlyph(GP.B);
+    const controls = usingGamepad() ? [
+        { action: 'Steer', keys: 'Left stick (push fully to fly)' },
+        { action: 'Rotate / Thrust', keys: 'D-pad \u2190 \u2192 / D-pad \u2191 or LT' },
+        { action: 'Fire', keys: `${A} or RT` },
+        { action: 'Hyperspace (Risky!)', keys: `${B} or D-pad \u2193` },
+        { action: 'Pause Game', keys: 'Start (Menu button)' },
+        { action: 'Skip tutorial / Mute', keys: 'View (in game / in menus)' },
+        { action: 'Menus', keys: `Stick or D-pad, ${A} select, ${B} back` },
+        { action: 'Sound', keys: 'Tap or press a key once to enable' },
+    ] : isTouchDevice && controlMode === ControlMode.JOYSTICK ? [
         { action: 'Steer', keys: 'Drag on the left half of the screen' },
         { action: 'Thrust Forward', keys: 'Drag further out' },
         { action: 'Fire', keys: 'Red button' },
@@ -3354,6 +3953,7 @@ function drawHelpScreen() {
         { action: 'Pause Game', keys: 'P / Escape' },
         { action: 'Toggle Mute', keys: 'M' },
         { action: 'Colours, sound, music', keys: 'Menu > Settings' },
+        { action: 'Game controller', keys: 'Press any button to connect' },
     ];
 
     controls.forEach((ctrl, index) => {
@@ -3363,7 +3963,8 @@ function drawHelpScreen() {
 
     ctx.textAlign = 'center';
     ctx.font = '16px Arial';
-    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 30);
+    ctx.fillText(inputHint("Press Space/Enter/Esc to return", "Tap to return",
+        () => `${padGlyph(GP.B)} Back   ${padGlyph(GP.Y)} Replay tutorial`), viewWidth / 2, viewHeight - 30);
 }
 
 // The username text field itself is a DOM form (see index.html) so touch devices get
@@ -3378,6 +3979,13 @@ function drawUserPrompt() {
     ctx.fillStyle = '#AAAAAA';
     ctx.fillText(isTouchDevice ? "Tap the box, type a name, then tap OK" : "Type a name, then press Enter",
         viewWidth / 2, viewHeight * 0.7);
+    if (usingGamepad()) {
+        // A controller can't type
+        ctx.fillStyle = '#FFD700';
+        ctx.font = '16px Arial';
+        ctx.fillText('Use keyboard or touch to enter a name', viewWidth / 2, viewHeight * 0.7 + 30);
+        ctx.fillText(`or press ${padGlyph(GP.A)} to play as PLAYER1`, viewWidth / 2, viewHeight * 0.7 + 52);
+    }
 }
 
 // Export necessary functions/variables if using modules elsewhere

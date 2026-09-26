@@ -18,11 +18,14 @@ export const MENU_LABELS = [
 export const difficultyText = (name) => `Difficulty: ${name}`;
 
 // Settings screen rows (Controls only on touch devices; Vibration only on touch devices
-// whose browser has navigator.vibrate, see touchSettingsRows)
-export const SETTINGS_ROWS_TOUCH = ['controls', 'colours', 'sound', 'music', 'musicVolume', 'sfxVolume', 'back'];
-export const SETTINGS_ROWS_DESKTOP = ['colours', 'sound', 'music', 'musicVolume', 'sfxVolume', 'back'];
+// whose browser has navigator.vibrate, see touchSettingsRows; Controller rumble only once a
+// controller has been seen)
+const TUTORIAL_ROWS = ['offerTutorial', 'replayTutorial'];
+export const SETTINGS_ROWS_TOUCH = ['controls', 'colours', 'sound', 'music', 'musicVolume', 'sfxVolume', ...TUTORIAL_ROWS, 'back'];
+export const SETTINGS_ROWS_DESKTOP = ['colours', 'sound', 'music', 'musicVolume', 'sfxVolume', ...TUTORIAL_ROWS, 'back'];
 export const touchSettingsRows = (withVibration) => (withVibration
-  ? [...SETTINGS_ROWS_TOUCH.slice(0, -1), 'vibration', 'back'] : SETTINGS_ROWS_TOUCH);
+  ? ['controls', 'colours', 'sound', 'music', 'musicVolume', 'sfxVolume', 'vibration', ...TUTORIAL_ROWS, 'back']
+  : SETTINGS_ROWS_TOUCH);
 
 export const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
 export const PALETTE_KEY = 'spaceAdventure_palette';
@@ -31,6 +34,8 @@ export const HAPTICS_KEY = 'spaceAdventure_haptics';
 export const MUSIC_TUNE_KEY = 'spaceAdventure_musicTune';
 export const MUSIC_VOLUME_KEY = 'spaceAdventure_musicVolume';
 export const SFX_VOLUME_KEY = 'spaceAdventure_sfxVolume';
+export const OFFER_TUTORIAL_KEY = 'spaceAdventure_offerTutorial';
+export const RUMBLE_KEY = 'spaceAdventure_rumble';
 export const TUNE_LABELS = { off: 'Off', synthwave: 'Synthwave', ambient: 'Ambient', chiptune: 'Chiptune' };
 export const CONTROL_LABELS = { joystick: 'Drag to Steer', buttons: 'Buttons' };
 export const PALETTE_LABELS = { standard: 'Standard', safe: 'Colour-safe' };
@@ -46,6 +51,7 @@ export function snap(page) {
       isTouchDevice: g.isTouchDevice, world: g.world, view: g.view, ship: g.ship, counts: g.counts,
       tapRegions: g.tapRegions, controlMode: g.controlMode, joystick: g.joystick,
       settings: g.settings, settingsIndex: g.settingsIndex, settingsRows: g.settingsRows, palette: g.palette,
+      tutorial: g.tutorial, gamepad: g.gamepad, lastInputSource: g.lastInputSource,
     };
   });
 }
@@ -87,12 +93,18 @@ export async function waitForState(page, state, timeout = 5000) {
  *   recordText:  true -> record the strings drawn with fillText on the canvas (see drawnTexts).
  *   vibrate:     true -> install a recording navigator.vibrate stub before load (also on
  *                WebKit, which lacks the API); calls land in window.__vibrations (see vibrations).
+ *   tutorial:    false (default) -> seed the real device setting "Offer tutorial: Off", so
+ *                pressing Start goes straight to Level 1 as before the tutorial existed;
+ *                true -> leave it at its default (On): a new player's first Start asks.
+ *   gamepads:    [{ id, mapping }] -> install fake controllers (see installGamepads).
  * Returns the array that page errors are pushed into.
  */
-export async function openFresh(page, { controlMode = null, storage = {}, recordText = false, vibrate = false } = {}) {
+export async function openFresh(page, {
+  controlMode = null, storage = {}, recordText = false, vibrate = false, tutorial = false, gamepads = null,
+} = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
-  const seed = { ...storage };
+  const seed = { ...(tutorial ? {} : { [OFFER_TUTORIAL_KEY]: 'false' }), ...storage };
   if (controlMode) seed[CONTROL_MODE_KEY] = controlMode;
   // Clear storage once per test (not on reloads the test itself performs)
   await page.addInitScript((entries) => {
@@ -125,10 +137,92 @@ export async function openFresh(page, { controlMode = null, storage = {}, record
       });
     });
   }
+  if (gamepads) await installGamepads(page, gamepads);
   await page.goto('/');
   await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: 10000 });
   return errors;
 }
+
+/**
+ * Fake game controllers (a browser API stub, never game state): navigator.getGamepads()
+ * returns window.__pads, standard-mapping pads whose buttons/axes the test changes with
+ * padPress/padRelease/padStick/padDisconnect. Rumble requests land in window.__rumbles.
+ * Like real browsers, a pad is only listed after its first button press (padPress).
+ */
+export async function installGamepads(page, pads = [{}]) {
+  await page.addInitScript((defs) => {
+    window.__rumbles = [];
+    window.__padDefs = defs.map((d, i) => ({
+      id: d.id || 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)',
+      mapping: d.mapping === undefined ? 'standard' : d.mapping,
+      index: i,
+    }));
+    window.__pads = defs.map(() => null);
+    window.__makePad = (i) => {
+      const def = window.__padDefs[i];
+      return {
+        id: def.id, index: i, mapping: def.mapping, connected: true, timestamp: performance.now(),
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, touched: false, value: 0 })),
+        axes: [0, 0, 0, 0],
+        vibrationActuator: {
+          type: 'dual-rumble',
+          playEffect(type, params) { window.__rumbles.push({ pad: i, type, ...params }); return Promise.resolve('complete'); },
+        },
+      };
+    };
+    Object.defineProperty(navigator, 'getGamepads', {
+      configurable: true,
+      value: () => window.__pads.slice(),
+    });
+  }, pads);
+}
+
+/** Press (and hold) a controller button (standard index; value for triggers). */
+export function padPress(page, button, { pad = 0, value = 1 } = {}) {
+  return page.evaluate(([b, i, v]) => {
+    if (!window.__pads[i]) window.__pads[i] = window.__makePad(i);
+    window.__pads[i].buttons[b] = { pressed: v > 0.5, touched: true, value: v };
+    window.__pads[i].timestamp = performance.now();
+  }, [button, pad, value]);
+}
+
+export function padRelease(page, button, { pad = 0 } = {}) {
+  return page.evaluate(([b, i]) => {
+    if (!window.__pads[i]) return;
+    window.__pads[i].buttons[b] = { pressed: false, touched: false, value: 0 };
+    window.__pads[i].timestamp = performance.now();
+  }, [button, pad]);
+}
+
+/** Press a button for a few game frames, then release it. */
+export async function padTap(page, button, opts = {}) {
+  await padPress(page, button, opts);
+  await frames(page, 3);
+  await padRelease(page, button, opts);
+  await frames(page, 2);
+}
+
+export function padStick(page, x, y, { pad = 0 } = {}) {
+  return page.evaluate(([ax, ay, i]) => {
+    if (!window.__pads[i]) window.__pads[i] = window.__makePad(i);
+    window.__pads[i].axes[0] = ax;
+    window.__pads[i].axes[1] = ay;
+  }, [x, y, pad]);
+}
+
+export function padDisconnect(page, { pad = 0 } = {}) {
+  return page.evaluate((i) => { window.__pads[i] = null; }, pad);
+}
+
+export function rumbles(page) {
+  return page.evaluate(() => window.__rumbles.slice());
+}
+
+/** Standard-mapping button indices (by position). */
+export const PAD = {
+  A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, VIEW: 8, MENU: 9,
+  UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15,
+};
 
 /** Patterns recorded by the openFresh({ vibrate: true }) stub. */
 export function vibrations(page) {

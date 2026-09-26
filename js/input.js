@@ -1,12 +1,31 @@
-// Unified input: keyboard, on-screen touch buttons (pointer events, multi-touch)
-// and taps/clicks on the canvas (used for menu selection).
+// Unified input: keyboard, on-screen touch buttons (pointer events, multi-touch),
+// taps/clicks on the canvas (used for menu selection) and game controllers (js/gamepad.js).
+import { GamepadPoller, mergePads } from './gamepad.js';
+
+const INACTIVE_STICK = Object.freeze({ active: false, angle: 0, magnitude: 0 });
+export const INPUT_CONTEXTS = Object.freeze(['game', 'menu', 'pause']);
+
 export class InputHandler {
     // options.getLogicalSize: () => ({ width, height }) of the canvas in game (logical) pixels.
     // Taps are mapped into that space; without it they stay in CSS pixels. (The backing
     // store is larger than the logical size on HiDPI screens, so canvas.width is not used.)
-    constructor(canvas = null, { getLogicalSize = null } = {}) {
+    // options.gamepadPoller: a GamepadPoller (injected in tests); defaults to one reading
+    // navigator.getGamepads().
+    constructor(canvas = null, { getLogicalSize = null, gamepadPoller = null } = {}) {
         this.canvas = canvas;
         this.getLogicalSize = getLogicalSize;
+        // Game controllers: polled once per frame by pollGamepads(). Every controller is
+        // reported separately by the poller (for local multiplayer later); single-player
+        // merges them, so any controller drives the one ship.
+        this.gamepad = gamepadPoller || new GamepadPoller();
+        this.context = 'menu'; // 'game' | 'menu' | 'pause': selects the controller mapping
+        this.gamepadHeld = new Set(); // continuous actions held on a controller this frame
+        this.gamepadPressed = new Set(); // actions newly pressed on a controller this frame
+        this.gamepadStick = INACTIVE_STICK; // left stick (game context only)
+        this.gamepadResult = null; // last per-pad poll result { pads, activeIndex, ... }
+        this.gamepadMerged = null; // last merged result (single-player)
+        this.gamepadEvents = []; // { type: 'connected' | 'disconnected', index, id, family, mapping }
+        this.lastInputSource = null; // 'keyboard' | 'touch' | 'mouse' | 'gamepad'
         this.keys = {}; // Continuous state from the keyboard (thrust, rotate, fire)
         this.singlePressActions = {}; // Consumable actions (hyperspace, pause, menu nav, typing)
         this.keyProcessed = {}; // Prevents keyboard auto-repeat for single press
@@ -92,6 +111,7 @@ export class InputHandler {
         const target = event.target;
         if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
 
+        if (isPressed) this.lastInputSource = 'keyboard';
         const actions = this.actionForKey[event.key];
         if (!actions) return;
 
@@ -144,6 +164,7 @@ export class InputHandler {
     }
 
     handlePointerDown(event) {
+        this.lastInputSource = event.pointerType === 'mouse' ? 'mouse' : 'touch';
         const zone = event.target.closest ? event.target.closest('.joystick-zone') : null;
         if (zone) {
             event.preventDefault();
@@ -213,9 +234,16 @@ export class InputHandler {
 
     // Current stick state: angle in radians (0 = right, y down like the canvas) and
     // magnitude 0..1 (clamped at joystickRadius).
+    // Falls back to the controller's left stick while playing (a touch stick wins).
     getJoystick() {
         const j = this.joystick;
-        if (j.pointerId === null) return { active: false, angle: 0, magnitude: 0 };
+        if (j.pointerId === null) {
+            const g = this.gamepadStick;
+            if (this.context === 'game' && g && g.active) {
+                return { active: true, angle: g.angle, magnitude: g.magnitude, source: 'gamepad' };
+            }
+            return { active: false, angle: 0, magnitude: 0 };
+        }
         const dx = j.x - j.originX;
         const dy = j.y - j.originY;
         const dist = Math.hypot(dx, dy);
@@ -248,8 +276,80 @@ export class InputHandler {
         knob.style.transform = `translate(calc(-50% + ${Math.cos(angle) * r}px), calc(-50% + ${Math.sin(angle) * r}px))`;
     }
 
+    // --- Game controllers ---
+
+    // Which controller mapping applies ('game' while playing, 'pause', 'menu' elsewhere)
+    setContext(context) {
+        if (!INPUT_CONTEXTS.includes(context)) context = 'menu';
+        if (context === this.context) return;
+        this.context = context;
+        if (context !== 'game') this.gamepadStick = INACTIVE_STICK;
+    }
+
+    // Poll every controller once per frame (before taps and key handling). Held actions feed
+    // isPressed(), new presses the one-shot queue (continuous ones are latched so a quick
+    // press still counts). Returns { result (per pad), merged }.
+    pollGamepads() {
+        let result;
+        try {
+            result = this.gamepad.poll(this.context);
+        } catch (e) {
+            return { result: null, merged: null };
+        }
+        const merged = mergePads(result);
+        this.gamepadResult = result;
+        this.gamepadMerged = merged;
+        for (const c of result.connected) this.gamepadEvents.push({ type: 'connected', ...c });
+        for (const d of result.disconnected) this.gamepadEvents.push({ type: 'disconnected', ...d });
+        this.gamepadHeld = new Set([...merged.held].filter(a => this.isContinuous(a)));
+        this.gamepadPressed = merged.pressed;
+        this.gamepadStick = this.context === 'game' ? merged.stick : INACTIVE_STICK;
+        for (const action of merged.pressed) {
+            if (this.isContinuous(action)) this.latched.add(action);
+            else this.singlePressActions[action] = true;
+        }
+        if (result.anyInput) this.lastInputSource = 'gamepad';
+        return { result, merged };
+    }
+
+    // Connect/disconnect events since the last call.
+    consumeGamepadEvents() {
+        const out = this.gamepadEvents;
+        this.gamepadEvents = [];
+        return out;
+    }
+
+    // Was this action newly pressed on a controller during the last poll?
+    gamepadJustPressed(action) {
+        return this.gamepadPressed.has(action);
+    }
+
+    // { connected, id, family, mapping, index, count } for the most recently active controller
+    gamepadInfo() {
+        const r = this.gamepadResult;
+        const pads = r ? r.pads : [];
+        const lead = pads.find(p => p.index === r.activeIndex) || pads[0] || null;
+        return {
+            connected: pads.length > 0,
+            count: pads.length,
+            index: lead ? lead.index : null,
+            id: lead ? lead.id : null,
+            family: lead ? lead.family : null,
+            mapping: lead ? lead.mapping : null,
+        };
+    }
+
+    // Ignore controller buttons/stick directions held right now until they are released
+    suppressGamepad() {
+        try { this.gamepad.suppressHeld(); } catch (e) { /* ignore */ }
+        this.gamepadHeld = new Set();
+        this.gamepadPressed = new Set();
+        this.gamepadStick = INACTIVE_STICK;
+    }
+
     // Release everything (window blur, tab hidden, state changes)
     releaseAll() {
+        this.suppressGamepad();
         for (const action in this.keys) this.keys[action] = false;
         for (const action in this.keyProcessed) this.keyProcessed[action] = false;
         for (const action of this.pointerActions.values()) this.setButtonActive(action, false);
@@ -265,6 +365,9 @@ export class InputHandler {
         this.pendingTaps.length = 0;
         this.charQueue.length = 0;
         this.latched.clear();
+        // Controller buttons held now (e.g. the Ⓐ that pressed "Start") must not act again
+        // in the next screen until they are released and pressed again.
+        this.suppressGamepad();
     }
 
     // Called once per game frame after input has been read
@@ -279,7 +382,7 @@ export class InputHandler {
 
     // Check continuous state (keyboard or any finger holding the button)
     isPressed(action) {
-        if (this.keys[action] || this.latched.has(action)) return true;
+        if (this.keys[action] || this.latched.has(action) || this.gamepadHeld.has(action)) return true;
         for (const held of this.pointerActions.values()) {
             if (held === action) return true;
         }

@@ -629,3 +629,168 @@ test('updateJoystickVisual positions base and knob when the elements exist', () 
     assert.equal(base.style.top, '');
     assert.equal(knob.style.transform, '');
 });
+
+// --- Game controllers ------------------------------------------------------
+
+const { GamepadPoller, GP } = await import('../../js/gamepad.js');
+
+class FakePad {
+    constructor(index = 0, id = 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)') {
+        this.index = index;
+        this.id = id;
+        this.mapping = 'standard';
+        this.connected = true;
+        this.buttons = Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }));
+        this.axes = [0, 0, 0, 0];
+    }
+    press(b, value = 1) { this.buttons[b] = { pressed: value > 0.5, value }; return this; }
+    release(b) { this.buttons[b] = { pressed: false, value: 0 }; return this; }
+    stick(x, y) { this.axes[0] = x; this.axes[1] = y; return this; }
+}
+
+function setupPads(pads = [new FakePad()]) {
+    const env = { list: pads, t: 0 };
+    const poller = new GamepadPoller({ getGamepads: () => env.list, now: () => env.t });
+    const { input, doc } = setup(null, { gamepadPoller: poller });
+    return { env, input, doc, pad: pads[0] };
+}
+
+function joystickZone() {
+    const zone = { closest: (sel) => (sel === '.joystick-zone' ? zone : null) };
+    return zone;
+}
+
+test('gamepad: held A fires in the game context; a new press is latched for the frame', () => {
+    const { input, pad } = setupPads();
+    input.setContext('game');
+    pad.press(GP.A);
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), true);
+    input.endFrame();
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), true, 'still held');
+    pad.release(GP.A);
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), false);
+});
+
+test('gamepad: menu presses feed one-shot actions (A = menuSelect, B = escape)', () => {
+    const { input, pad } = setupPads();
+    input.setContext('menu');
+    pad.press(GP.A);
+    input.pollGamepads();
+    assert.equal(input.consumeAction('menuSelect'), true);
+    assert.equal(input.consumeAction('menuSelect'), false);
+    assert.equal(input.gamepadJustPressed('menuSelect'), true);
+    input.pollGamepads();
+    assert.equal(input.consumeAction('menuSelect'), false, 'held is not a new press');
+    pad.release(GP.A).press(GP.B);
+    input.pollGamepads();
+    assert.equal(input.consumeAction('escape'), true);
+    assert.equal(input.isPressed('fire'), false, 'no fire outside the game context');
+});
+
+test('gamepad: Ⓐ that selected Start does not fire after the state change (clearPending suppresses it)', () => {
+    const { input, pad } = setupPads();
+    input.setContext('menu');
+    pad.press(GP.A);
+    input.pollGamepads();
+    assert.equal(input.consumeAction('menuSelect'), true);
+    input.clearPending(); // state transition
+    input.setContext('game');
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), false);
+    pad.release(GP.A);
+    input.pollGamepads();
+    pad.press(GP.A);
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), true, 'a fresh press fires');
+});
+
+test('gamepad: releaseAll() also suppresses held controller buttons', () => {
+    const { input, pad } = setupPads();
+    input.setContext('game');
+    pad.press(GP.RT);
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), true);
+    input.releaseAll();
+    assert.equal(input.isPressed('fire'), false);
+    input.endFrame();
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), false);
+});
+
+test('getJoystick(): controller stick while playing; the touch stick wins when both are active', () => {
+    const { input, pad } = setupPads();
+    pad.stick(0.7, 0);
+    input.setContext('menu');
+    input.pollGamepads();
+    assert.equal(input.getJoystick().active, false, 'menus use the stick for navigation only');
+    input.setContext('game');
+    input.pollGamepads();
+    const j = input.getJoystick();
+    assert.equal(j.active, true);
+    assert.ok(Math.abs(j.angle) < 1e-9);
+    assert.ok(Math.abs(j.magnitude - (0.7 - 0.15) / 0.85) < 1e-9);
+    // A finger on the drag-to-steer zone takes over
+    input.handlePointerDown(pointerEvent(joystickZone(), 5, { clientX: 100, clientY: 100 }));
+    input.handlePointerMove(pointerEvent(null, 5, { clientX: 100, clientY: 160 }));
+    const t = input.getJoystick();
+    assert.ok(Math.abs(t.angle - Math.PI / 2) < 1e-9, 'touch stick points down');
+    input.handlePointerUp(pointerEvent(null, 5));
+    assert.equal(input.getJoystick().source, 'gamepad');
+});
+
+test('lastInputSource follows keyboard, touch, mouse and controller input', () => {
+    const { input, pad, win } = { ...setupPads() };
+    assert.equal(input.lastInputSource, null);
+    globalThis.window.dispatch('keydown', keyEvent('ArrowUp'));
+    assert.equal(input.lastInputSource, 'keyboard');
+    input.handlePointerDown(pointerEvent({}, 1));
+    assert.equal(input.lastInputSource, 'touch');
+    input.handlePointerDown(pointerEvent({}, 2, { pointerType: 'mouse' }));
+    assert.equal(input.lastInputSource, 'mouse');
+    input.pollGamepads();
+    assert.equal(input.lastInputSource, 'mouse', 'an idle controller does not take over');
+    pad.press(GP.B);
+    input.pollGamepads();
+    assert.equal(input.lastInputSource, 'gamepad');
+    void win;
+});
+
+test('gamepad connect/disconnect events and info', () => {
+    const { input, env } = setupPads();
+    input.pollGamepads();
+    let ev = input.consumeGamepadEvents();
+    assert.deepEqual(ev.map(e => e.type), ['connected']);
+    assert.equal(ev[0].family, 'xbox');
+    assert.deepEqual(input.gamepadInfo(), {
+        connected: true, count: 1, index: 0, id: env.list[0].id, family: 'xbox', mapping: 'standard',
+    });
+    assert.deepEqual(input.consumeGamepadEvents(), []);
+    env.list = [null];
+    input.pollGamepads();
+    ev = input.consumeGamepadEvents();
+    assert.deepEqual(ev.map(e => e.type), ['disconnected']);
+    assert.equal(input.gamepadInfo().connected, false);
+});
+
+test('two controllers are merged in single-player: either one drives the ship', () => {
+    const a = new FakePad(0);
+    const b = new FakePad(1, 'DualSense Wireless Controller');
+    const { input } = setupPads([a, b]);
+    input.setContext('game');
+    b.press(GP.LT);
+    a.press(GP.RT);
+    input.pollGamepads();
+    assert.equal(input.isPressed('thrust'), true);
+    assert.equal(input.isPressed('fire'), true);
+    assert.equal(input.gamepadResult.pads.length, 2, 'per-pad results are kept');
+});
+
+test('setContext() ignores unknown contexts (falls back to menu)', () => {
+    const { input } = setupPads();
+    input.setContext('game');
+    input.setContext('bogus');
+    assert.equal(input.context, 'menu');
+});

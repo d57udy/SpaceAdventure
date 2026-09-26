@@ -202,6 +202,7 @@ export class GamepadPoller {
             prevStickDirs: new Set(),
             repeatAt: new Map(),
             lastActive: -Infinity,
+            announced: false, // 'connected' reported yet (suppressHeld can create the state first)
         };
     }
 
@@ -226,6 +227,9 @@ export class GamepadPoller {
             if (!st) {
                 st = this._newState(gp);
                 this.states.set(index, st);
+            }
+            if (!st.announced) {
+                st.announced = true;
                 connected.push({ index, id: st.id, family: st.family, mapping: gp.mapping || '' });
             }
 

@@ -308,3 +308,30 @@ body.controls-joystick .touch-right .thrust {
 .touch-btn.fire.active {
     background-color: rgba(255, 80, 80, 0.6);
 }
+
+/* --- Game controller in use: hide the touch controls until the next touch --- */
+body.input-gamepad .touch-controls {
+    display: none !important;
+}
+
+/* --- Tutorial: pulse the on-screen control being taught (never blocks touches) --- */
+@keyframes tutorial-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.9); }
+    50% { box-shadow: 0 0 0 14px rgba(255, 215, 0, 0); }
+}
+
+.tutorial-highlight,
+body.tutorial-joystick.tutorial-step-steer .joystick-base,
+body.tutorial-joystick.tutorial-step-thrust .joystick-base,
+body.tutorial-buttons.tutorial-step-steer #touch-left-btn,
+body.tutorial-buttons.tutorial-step-steer #touch-right-btn,
+body.tutorial-buttons.tutorial-step-thrust #touch-thrust-btn,
+body.tutorial-joystick.tutorial-step-shoot #touch-fire-btn,
+body.tutorial-buttons.tutorial-step-shoot #touch-fire-btn {
+    animation: tutorial-pulse 1.1s ease-out infinite;
+    border-color: #FFD700;
+}
+
+.joystick-base.tutorial-highlight {
+    opacity: 1;
+}

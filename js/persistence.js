@@ -1,6 +1,7 @@
 const HIGH_SCORES_BASE_KEY = 'asteroids_highScores';
 const ACHIEVEMENTS_BASE_KEY = 'asteroids_achievements';
 const UPGRADES_BASE_KEY = 'asteroids_upgrades';
+const TUTORIAL_BASE_KEY = 'asteroids_tutorial';
 const CURRENT_USER_KEY = 'asteroids_currentUser';
 const USER_LIST_KEY = 'asteroids_userList'; // Key for storing known usernames
 
@@ -260,6 +261,42 @@ export class PersistenceManager {
         return null;
     }
 
+    // --- Tutorial (first-game training) ---
+    // { asked, done, skipped, version } per user; null when never offered (or corrupt).
+    saveTutorialState(username, { asked = true, done = false, skipped = false, version = 1 } = {}) {
+        const key = this._getUserSpecificKey(TUTORIAL_BASE_KEY, username);
+        if (!key || !this.isLocalStorageAvailable()) return;
+        try {
+            localStorage.setItem(key, JSON.stringify({
+                asked: !!asked, done: !!done, skipped: !!skipped,
+                version: Number.isFinite(Number(version)) ? Number(version) : 1,
+            }));
+        } catch (error) {
+            console.error(`Error saving tutorial state for ${username}:`, error);
+        }
+    }
+
+    loadTutorialState(username) {
+        const key = this._getUserSpecificKey(TUTORIAL_BASE_KEY, username);
+        if (!key || !this.isLocalStorageAvailable()) return null;
+        try {
+            const stored = localStorage.getItem(key);
+            if (!stored) return null;
+            const data = JSON.parse(stored);
+            if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+            const version = Number(data.version);
+            return {
+                asked: data.asked === true || data.done === true,
+                done: data.done === true,
+                skipped: data.skipped === true,
+                version: Number.isFinite(version) ? version : 1,
+            };
+        } catch (error) {
+            console.error(`Error loading tutorial state for ${username}:`, error);
+            return null;
+        }
+    }
+
     // --- Reset ---
     resetUserData(username) {
         if (!username || !this.isLocalStorageAvailable()) return;
@@ -268,7 +305,9 @@ export class PersistenceManager {
             const hsKey = this._getUserSpecificKey(HIGH_SCORES_BASE_KEY, username);
             const acKey = this._getUserSpecificKey(ACHIEVEMENTS_BASE_KEY, username);
             const upKey = this._getUserSpecificKey(UPGRADES_BASE_KEY, username);
+            const tuKey = this._getUserSpecificKey(TUTORIAL_BASE_KEY, username);
             if (hsKey) localStorage.removeItem(hsKey);
+            if (tuKey) localStorage.removeItem(tuKey); // the tutorial is offered again
             if (acKey) localStorage.removeItem(acKey);
             if (upKey) localStorage.removeItem(upKey);
             console.log(`Data reset for user: ${username}`);

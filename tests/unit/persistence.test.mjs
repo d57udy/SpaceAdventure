@@ -225,3 +225,35 @@ test('resetUserData with different casing also clears the matching current user'
     assert.deepEqual(pm.loadHighScores('bob'), []); // data is gone...
     assert.equal(pm.getCurrentUser(), null);        // ...but current user remains 'bob'
 });
+
+test('tutorial state round-trips per user (key upper-cased) and defaults to null', () => {
+    const pm = new PersistenceManager();
+    assert.equal(pm.loadTutorialState('bob'), null);
+    pm.saveTutorialState('bob', { asked: true, done: false, version: 1 });
+    assert.ok(storage.map.has('asteroids_tutorial_BOB'));
+    assert.deepEqual(pm.loadTutorialState('BOB'), { asked: true, done: false, skipped: false, version: 1 });
+    pm.saveTutorialState('bob', { done: true, skipped: true, version: 1 });
+    assert.deepEqual(pm.loadTutorialState('bob'), { asked: true, done: true, skipped: true, version: 1 });
+    assert.equal(pm.loadTutorialState('alice'), null, 'other users are unaffected');
+});
+
+test('corrupt tutorial state loads as null (or sanitised)', () => {
+    const pm = new PersistenceManager();
+    for (const bad of ['{nope', '[1,2]', 'null', '42']) {
+        storage.setItem('asteroids_tutorial_BOB', bad);
+        assert.equal(pm.loadTutorialState('bob'), null, bad);
+    }
+    storage.setItem('asteroids_tutorial_BOB', JSON.stringify({ done: 'yes', version: 'x' }));
+    assert.deepEqual(pm.loadTutorialState('bob'), { asked: false, done: false, skipped: false, version: 1 });
+    assert.equal(pm.loadTutorialState(null), null);
+});
+
+test('resetUserData removes the tutorial state so the tutorial is offered again', () => {
+    const pm = new PersistenceManager();
+    pm.setCurrentUser('bob');
+    pm.saveTutorialState('bob', { done: true });
+    pm.saveTutorialState('alice', { done: true });
+    pm.resetUserData('bob');
+    assert.equal(pm.loadTutorialState('bob'), null);
+    assert.ok(pm.loadTutorialState('alice').done);
+});
