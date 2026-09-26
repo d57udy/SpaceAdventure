@@ -24,7 +24,7 @@ export function snap(page) {
       state: g.state, user: g.user, score: g.score, lives: g.lives, level: g.level,
       menuIndex: g.menuIndex, menuOptions: g.menuOptions, difficulty: g.difficulty,
       pauseIndex: g.pauseIndex, upgradeIndex: g.upgradeIndex, isMuted: g.isMuted,
-      isTouchDevice: g.isTouchDevice, world: g.world, ship: g.ship, counts: g.counts,
+      isTouchDevice: g.isTouchDevice, world: g.world, view: g.view, ship: g.ship, counts: g.counts,
       tapRegions: g.tapRegions, controlMode: g.controlMode, joystick: g.joystick,
     };
   });
@@ -117,12 +117,17 @@ export async function loginWithKeyboard(page, name = 'TESTER') {
   await expect.poll(() => hook(page, 'tapRegions.length')).toBeGreaterThan(0);
 }
 
-/** Canvas pixel coordinates -> page (CSS) coordinates. */
+/**
+ * Logical canvas coordinates (game pixels, as in tapRegions) -> page (CSS) coordinates.
+ * Uses the hook's logical view size, not canvas.width: the backing store is larger than
+ * the logical size on HiDPI screens (e.g. 2x on an iPad).
+ */
 export async function canvasToPage(page, x, y) {
   return page.evaluate(([cx, cy]) => {
     const c = document.getElementById('gameCanvas');
     const r = c.getBoundingClientRect();
-    return { x: r.left + cx * (r.width / c.width), y: r.top + cy * (r.height / c.height) };
+    const v = window.__spaceAdventure.view;
+    return { x: r.left + cx * (r.width / v.width), y: r.top + cy * (r.height / v.height) };
   }, [x, y]);
 }
 

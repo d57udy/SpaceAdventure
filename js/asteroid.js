@@ -111,19 +111,27 @@ export class Asteroid extends Entity {
             ctx.translate(this.x, this.y);
             ctx.rotate(this.rotation);
 
-            // Outer glow
-            ctx.shadowColor = '#00FF00';
-            ctx.shadowBlur = 15 * pulseIntensity;
-            ctx.strokeStyle = `rgba(0, 255, 0, ${0.6 + 0.4 * pulseIntensity})`;
-            ctx.fillStyle = `rgba(0, 180, 0, ${glowAlpha})`;
-            ctx.lineWidth = 2;
-
             ctx.beginPath();
             ctx.moveTo(this.shapeVertices[0].x, this.shapeVertices[0].y);
             for (let i = 1; i < this.shapeVertices.length; i++) {
                 ctx.lineTo(this.shapeVertices[i].x, this.shapeVertices[i].y);
             }
             ctx.closePath();
+
+            // Outer glow: wide low-alpha strokes of the same path. Much cheaper than
+            // shadowBlur (a per-draw Gaussian blur, costly on HiDPI backing stores) and it
+            // scales the same in every browser.
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = `rgba(0, 255, 0, ${0.12 * pulseIntensity})`;
+            ctx.lineWidth = 2 + 14 * pulseIntensity;
+            ctx.stroke();
+            ctx.strokeStyle = `rgba(0, 255, 0, ${0.22 * pulseIntensity})`;
+            ctx.lineWidth = 2 + 7 * pulseIntensity;
+            ctx.stroke();
+
+            ctx.strokeStyle = `rgba(0, 255, 0, ${0.6 + 0.4 * pulseIntensity})`;
+            ctx.fillStyle = `rgba(0, 180, 0, ${glowAlpha})`;
+            ctx.lineWidth = 2;
             ctx.fill();
             ctx.stroke();
 

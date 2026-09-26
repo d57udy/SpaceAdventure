@@ -12,6 +12,7 @@ import { PowerUp, PowerUpType } from './powerup.js';
 import { Boss } from './boss.js';
 import { Entity } from './entity.js';
 import { applyJoystickSteering } from './steering.js';
+import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
 
 // Game States Enum
 const GameState = {
@@ -384,7 +385,7 @@ const ComboSystem = {
             if (this.count === milestone && milestone > this.lastMilestone) {
                 this.lastMilestone = milestone;
                 const bonus = milestone * 100;
-                FloatingTexts.spawn(canvas.width / 2, canvas.height / 3,
+                FloatingTexts.spawn(viewWidth / 2, viewHeight / 3,
                     `${milestone} STREAK! +${bonus}`, '#FFD700', 36);
                 return { streakBonus: bonus, milestone };
             }
@@ -394,7 +395,7 @@ const ComboSystem = {
 
     break() {
         if (this.count >= 5) {
-            FloatingTexts.spawn(canvas.width / 2, canvas.height / 2,
+            FloatingTexts.spawn(viewWidth / 2, viewHeight / 2,
                 'Combo Lost!', '#FF4444', 24);
         }
         this.count = 0;
@@ -763,6 +764,12 @@ const WORLD_SCREENS_X = 1.5; // World is 1.5 screens wide
 const WORLD_SCREENS_Y = 1.5; // World is 1.5 screens tall
 let WORLD_WIDTH = 800 * WORLD_SCREENS_X;  // Will be set properly after canvas init
 let WORLD_HEIGHT = 600 * WORLD_SCREENS_Y; // Will be set properly after canvas init
+let viewWidth = 800, viewHeight = 800;   // logical (CSS) pixels: all game code uses these
+let renderScale = 1;                     // backing pixels per CSS pixel (capped dpr)
+let renderScaleCap = MAX_RENDER_SCALE;   // lowered by the adaptive fallback when frames are slow
+let canvasSized = false;
+let lastLandscape = false;                // window orientation at the last resize
+let backingSize = 0;                     // canvas backing-store width/height in device pixels
 
 // Level progression settings
 const BASE_ASTEROIDS_PER_LEVEL = 10; // Starting asteroids at level 1
@@ -798,8 +805,8 @@ function drawEntityWrapped(entity, ctx) {
     const originalY = entity.y;
 
     // Get camera position in world coordinates (normalized)
-    const camCenterX = Camera.x + canvas.width / 2;
-    const camCenterY = Camera.y + canvas.height / 2;
+    const camCenterX = Camera.x + viewWidth / 2;
+    const camCenterY = Camera.y + viewHeight / 2;
 
     // Check all 9 possible wrapped positions (3x3 grid)
     // This ensures entity appears correctly when near world edges
@@ -813,8 +820,8 @@ function drawEntityWrapped(entity, ctx) {
             const screenY = wrappedY - Camera.y;
             const margin = entity.radius ? entity.radius * 2 : 50;
 
-            if (screenX > -margin && screenX < canvas.width + margin &&
-                screenY > -margin && screenY < canvas.height + margin) {
+            if (screenX > -margin && screenX < viewWidth + margin &&
+                screenY > -margin && screenY < viewHeight + margin) {
                 // Temporarily move entity to wrapped position and draw
                 entity.x = wrappedX;
                 entity.y = wrappedY;
@@ -841,8 +848,8 @@ function drawLevelUpNotification() {
     ctx.fillStyle = `rgba(0, 0, 0, ${0.7 * alpha})`;
     const boxWidth = 300;
     const boxHeight = 100;
-    const boxX = (canvas.width - boxWidth) / 2;
-    const boxY = (canvas.height - boxHeight) / 2 - 50;
+    const boxX = (viewWidth - boxWidth) / 2;
+    const boxY = (viewHeight - boxHeight) / 2 - 50;
     ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
 
     // Draw border
@@ -855,12 +862,12 @@ function drawLevelUpNotification() {
     ctx.font = 'bold 36px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`LEVEL ${level}`, canvas.width / 2, boxY + 35);
+    ctx.fillText(`LEVEL ${level}`, viewWidth / 2, boxY + 35);
 
     // Draw "Clear all asteroids!" subtitle
     ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
     ctx.font = '16px Arial';
-    ctx.fillText('Clear all asteroids to advance!', canvas.width / 2, boxY + 70);
+    ctx.fillText('Clear all asteroids to advance!', viewWidth / 2, boxY + 70);
 
     ctx.restore();
 }
@@ -873,51 +880,73 @@ const stars = [];
 function generateStars() {
     stars.length = 0;
     for (let i = 0; i < STAR_COUNT; i++) {
+        const brightness = Math.random() * 0.5 + 0.5;
         stars.push({
             x: Math.random() * 10000 - 5000, // Wide range for infinite world
             y: Math.random() * 10000 - 5000,
             size: Math.random() * 2 + 0.5,
-            brightness: Math.random() * 0.5 + 0.5,
+            brightness,
+            // Brightness bucket for batched drawing (see drawStarfield)
+            level: Math.min(STAR_BRIGHTNESS_LEVELS - 1, Math.floor((brightness - 0.5) * 2 * STAR_BRIGHTNESS_LEVELS)),
             layer: Math.random() < 0.7 ? 0.3 : 0.6 // Parallax layer (0.3 = far, 0.6 = near)
         });
     }
 }
 
+// Background gradient, cached per resize (resizeCanvas clears it) instead of rebuilt every frame
+let backgroundGradient = null;
+const STAR_BRIGHTNESS_LEVELS = 6; // Stars are drawn in one path per brightness level
+
 // Draw parallax starfield background
 function drawStarfield() {
-    // Dark space gradient background
-    const gradient = ctx.createRadialGradient(
-        canvas.width / 2, canvas.height / 2, 0,
-        canvas.width / 2, canvas.height / 2, canvas.width
-    );
-    gradient.addColorStop(0, '#0A0A20');
-    gradient.addColorStop(1, '#050510');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Dark space gradient background (also covers the whole view, so no black fill is needed)
+    if (!backgroundGradient) {
+        backgroundGradient = ctx.createRadialGradient(
+            viewWidth / 2, viewHeight / 2, 0,
+            viewWidth / 2, viewHeight / 2, viewWidth
+        );
+        backgroundGradient.addColorStop(0, '#0A0A20');
+        backgroundGradient.addColorStop(1, '#050510');
+    }
+    ctx.fillStyle = backgroundGradient;
+    ctx.fillRect(0, 0, viewWidth, viewHeight);
 
     // Draw stars with parallax effect using continuous parallax offset
-    // This ensures smooth scrolling even when ship/camera wraps
-    stars.forEach(star => {
-        // Apply parallax based on layer using continuous parallax tracking
-        const parallaxX = star.x - Camera.parallaxX * star.layer;
-        const parallaxY = star.y - Camera.parallaxY * star.layer;
-
-        // Wrap stars to keep them visible (seamless tiling)
-        const screenX = ((parallaxX % canvas.width) + canvas.width) % canvas.width;
-        const screenY = ((parallaxY % canvas.height) + canvas.height) % canvas.height;
-
-        ctx.fillStyle = `rgba(255, 255, 255, ${star.brightness})`;
+    // This ensures smooth scrolling even when ship/camera wraps.
+    // Batched: one path and one fill per brightness level instead of one per star.
+    for (let level = 0; level < STAR_BRIGHTNESS_LEVELS; level++) {
         ctx.beginPath();
-        ctx.arc(screenX, screenY, star.size, 0, Math.PI * 2);
+        let any = false;
+        for (let i = 0; i < stars.length; i++) {
+            const star = stars[i];
+            if (star.level !== level) continue;
+            // Apply parallax based on layer using continuous parallax tracking
+            const parallaxX = star.x - Camera.parallaxX * star.layer;
+            const parallaxY = star.y - Camera.parallaxY * star.layer;
+
+            // Wrap stars to keep them visible (seamless tiling)
+            const screenX = ((parallaxX % viewWidth) + viewWidth) % viewWidth;
+            const screenY = ((parallaxY % viewHeight) + viewHeight) % viewHeight;
+
+            ctx.moveTo(screenX + star.size, screenY);
+            ctx.arc(screenX, screenY, star.size, 0, Math.PI * 2);
+            any = true;
+        }
+        if (!any) continue;
+        ctx.fillStyle = `rgba(255, 255, 255, ${starLevelBrightness(level)})`;
         ctx.fill();
-    });
+    }
+}
+
+function starLevelBrightness(level) {
+    return 0.5 + (0.5 * (level + 0.5)) / STAR_BRIGHTNESS_LEVELS;
 }
 
 // Draw radar mini-map
 function drawRadar() {
-    const radarSize = Math.round(Math.max(70, Math.min(120, canvas.width * 0.2))); // Smaller on phones
-    const radarX = canvas.width - radarSize - 15;
-    const radarY = canvas.height - radarSize - 15;
+    const radarSize = Math.round(Math.max(70, Math.min(120, viewWidth * 0.2))); // Smaller on phones
+    const radarX = viewWidth - radarSize - 15;
+    const radarY = viewHeight - radarSize - 15;
     const radarCenterX = radarX + radarSize / 2;
     const radarCenterY = radarY + radarSize / 2;
     const radarRadius = radarSize / 2 - 5;
@@ -1156,7 +1185,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('resize', resizeCanvas);
 
     // Initialize Managers
-    inputHandler = new InputHandler(canvas);
+    inputHandler = new InputHandler(canvas, { getLogicalSize: () => ({ width: viewWidth, height: viewHeight }) });
     setupTouchSupport();
     loadControlMode();
     setupUserPromptForm();
@@ -1213,6 +1242,14 @@ document.addEventListener('DOMContentLoaded', () => {
         get controlMode() { return controlMode.id; },
         get joystick() { return inputHandler.getJoystick(); },
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
+        get view() {
+            return {
+                width: viewWidth, height: viewHeight, scale: renderScale,
+                backingWidth: backingSize, backingHeight: backingSize,
+                dpr: window.devicePixelRatio || 1,
+                scaleCap: renderScaleCap, downgrades: renderPerf.downgrades, avgFrameMs: renderPerf.lastAvgMs,
+            };
+        },
         get ship() { return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY, isAlive: ship.isAlive, isThrusting: ship.isThrusting } : null; },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
         get tapRegions() { return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })); },
@@ -1276,7 +1313,7 @@ function startGame() {
     generateStars();
 
     // Initialize camera at center of the world
-    Camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, canvas.width, canvas.height);
+    Camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, viewWidth, viewHeight);
 
     ship = null; // Always build a fresh ship (Restart would otherwise keep the old one)
     respawnPlayer(true); // Call respawn before creating asteroids
@@ -1396,40 +1433,117 @@ function pauseGame() {
 // --- Main Update and Render Loop ---
 
 function resizeCanvas() {
-    // Make canvas fill most of the smaller dimension
-    const size = Math.min(window.innerWidth, window.innerHeight) * 0.9;
-    if (canvas.width > 0 && size < 50) return; // Ignore transient tiny/zero sizes (would zero the world)
-    // A rotation can leave a held stick off-screen; make the player put the finger down again
-    if (inputHandler) inputHandler.releaseJoystick();
-    const oldWorldWidth = WORLD_WIDTH;
-    const oldWorldHeight = WORLD_HEIGHT;
-    canvas.width = Math.floor(size);
-    canvas.height = Math.floor(size);
+    // Logical (CSS) size: a square of 90% of the smaller window side. Backing store: that
+    // times devicePixelRatio (capped), so lines and text are sharp on retina tablets.
+    const dpr = window.devicePixelRatio || 1;
+    const size = computeCanvasSize(window.innerWidth, window.innerHeight, dpr, renderScaleCap);
+    if (canvas.width > 0 && size.css < 50) return; // Ignore transient tiny/zero sizes (would zero the world)
+    const cssChanged = size.css !== viewWidth || size.css !== viewHeight || !canvasSized;
+    const backingChanged = canvas.width !== size.backing || canvas.height !== size.backing;
+    const landscape = window.innerWidth > window.innerHeight;
+    const orientationChanged = canvasSized && landscape !== lastLandscape;
+    lastLandscape = landscape;
 
-    // Update world dimensions based on canvas size
-    WORLD_WIDTH = canvas.width * WORLD_SCREENS_X;
-    WORLD_HEIGHT = canvas.height * WORLD_SCREENS_Y;
-    Entity.worldWidth = WORLD_WIDTH;
-    Entity.worldHeight = WORLD_HEIGHT;
+    // A rotation re-lays out the page and can leave a held stick off-screen; make the player
+    // put the finger down again. Toolbar collapses and DPR-only changes (zoom, other monitor,
+    // adaptive fallback) keep the stick.
+    if ((cssChanged || orientationChanged) && inputHandler) inputHandler.releaseJoystick();
 
-    // A resize mid-game (e.g. rotating a tablet) changes the world size: scale every
-    // entity's position so nothing ends up outside the world.
-    if (oldWorldWidth > 0 && oldWorldHeight > 0 &&
-        (oldWorldWidth !== WORLD_WIDTH || oldWorldHeight !== WORLD_HEIGHT)) {
-        const sx = WORLD_WIDTH / oldWorldWidth;
-        const sy = WORLD_HEIGHT / oldWorldHeight;
-        const entities = [ship, currentBoss, ...asteroids, ...bullets, ...ufos, ...powerUps];
-        entities.forEach(entity => {
-            if (!entity) return;
-            entity.x *= sx;
-            entity.y *= sy;
-            wrapWorldPosition(entity);
-        });
-        if (ship) Camera.reset(ship.x, ship.y, canvas.width, canvas.height);
+    // iOS fires many resize events (e.g. toolbar collapse); resizing clears the canvas, so skip no-ops
+    if (!cssChanged && !backingChanged && renderScale === size.scale) return;
+    canvasSized = true;
+
+    canvas.style.width = `${size.css}px`;
+    canvas.style.height = `${size.css}px`;
+    if (backingChanged) {
+        canvas.width = size.backing;
+        canvas.height = size.backing;
+    }
+    backingSize = size.backing;
+    viewWidth = size.css;
+    viewHeight = size.css;
+    renderScale = size.scale;
+    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    backgroundGradient = null; // Rebuilt for the new view size on the next frame
+    watchDevicePixelRatio();
+
+    if (cssChanged) {
+        const oldWorldWidth = WORLD_WIDTH;
+        const oldWorldHeight = WORLD_HEIGHT;
+        // World dimensions come from the logical size only (identical at any DPR)
+        WORLD_WIDTH = viewWidth * WORLD_SCREENS_X;
+        WORLD_HEIGHT = viewHeight * WORLD_SCREENS_Y;
+        Entity.worldWidth = WORLD_WIDTH;
+        Entity.worldHeight = WORLD_HEIGHT;
+
+        // A resize mid-game (e.g. rotating a tablet) changes the world size: scale every
+        // entity's position so nothing ends up outside the world.
+        if (oldWorldWidth > 0 && oldWorldHeight > 0 &&
+            (oldWorldWidth !== WORLD_WIDTH || oldWorldHeight !== WORLD_HEIGHT)) {
+            const sx = WORLD_WIDTH / oldWorldWidth;
+            const sy = WORLD_HEIGHT / oldWorldHeight;
+            const entities = [ship, currentBoss, ...asteroids, ...bullets, ...ufos, ...powerUps];
+            entities.forEach(entity => {
+                if (!entity) return;
+                entity.x *= sx;
+                entity.y *= sy;
+                wrapWorldPosition(entity);
+            });
+            if (ship) Camera.reset(ship.x, ship.y, viewWidth, viewHeight);
+        }
     }
 
-    console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
+    console.log(`Canvas resized to: ${viewWidth}x${viewHeight} CSS px, backing ${canvas.width}x${canvas.height} (scale ${renderScale.toFixed(3)})`);
     console.log(`World size: ${WORLD_WIDTH}x${WORLD_HEIGHT}`);
+}
+
+// Re-run resizeCanvas when devicePixelRatio changes without a resize event (browser zoom,
+// moving the window to a monitor with another pixel density).
+let dprMediaQuery = null;
+function watchDevicePixelRatio() {
+    if (typeof window.matchMedia !== 'function') return;
+    const dpr = window.devicePixelRatio || 1;
+    if (dprMediaQuery && dprMediaQuery.dpr === dpr) return;
+    if (dprMediaQuery) dprMediaQuery.mql.removeEventListener?.('change', dprMediaQuery.onChange);
+    const mql = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    const onChange = () => resizeCanvas();
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else if (mql.addListener) mql.addListener(onChange); // Older Safari
+    dprMediaQuery = { dpr, mql, onChange };
+}
+
+// Adaptive render-scale fallback: if frames are slow while playing (average over 22 ms for
+// 3 s), lower the backing-store cap to 1.5, then 1, for the rest of the session.
+const SLOW_FRAME_MS = 22;
+const SLOW_FRAME_WINDOW_S = 3;
+const RENDER_SCALE_STEPS = [MAX_RENDER_SCALE, 1.5, 1];
+const renderPerf = { windowTime: 0, windowFrames: 0, lastAvgMs: 0, downgrades: 0 };
+function trackRenderPerformance(rawDeltaTime) {
+    if (currentGameState !== GameState.PLAYING || !(rawDeltaTime > 0) || rawDeltaTime > 0.25) {
+        // Only measure steady gameplay; a paused tab or long hitch restarts the window
+        renderPerf.windowTime = 0;
+        renderPerf.windowFrames = 0;
+        return;
+    }
+    renderPerf.windowTime += rawDeltaTime;
+    renderPerf.windowFrames++;
+    if (renderPerf.windowTime < SLOW_FRAME_WINDOW_S) return;
+    const avgMs = (renderPerf.windowTime / renderPerf.windowFrames) * 1000;
+    renderPerf.lastAvgMs = avgMs;
+    renderPerf.windowTime = 0;
+    renderPerf.windowFrames = 0;
+    if (avgMs <= SLOW_FRAME_MS || renderScale <= 1) return;
+    lowerRenderScaleCap();
+}
+
+function lowerRenderScaleCap() {
+    const next = RENDER_SCALE_STEPS.find(step => step < renderScale - 1e-9);
+    if (next === undefined) return false;
+    renderScaleCap = next;
+    renderPerf.downgrades++;
+    console.log(`[render] Frames are slow, lowering render scale cap to ${renderScaleCap}`);
+    resizeCanvas();
+    return true;
 }
 
 function updateUI() {
@@ -1456,7 +1570,7 @@ function addTapRegion(x, y, w, h, onTap) {
     tapRegions.push({ x, y, w, h, onTap });
 }
 function addFullScreenTap(onTap) {
-    addTapRegion(0, 0, canvas.width, canvas.height, onTap);
+    addTapRegion(0, 0, viewWidth, viewHeight, onTap);
 }
 // Route a canvas tap to the topmost region under it
 function processTaps() {
@@ -1713,7 +1827,7 @@ function handleInput(deltaTime) {
                         const key = upgradeKeys[upgradeMenuIndex];
                         if (ShipUpgrades.purchase(key, persistenceManager, currentUser)) {
                             console.log(`Purchased upgrade: ${key}`);
-                            FloatingTexts.spawn(canvas.width / 2, canvas.height / 2,
+                            FloatingTexts.spawn(viewWidth / 2, viewHeight / 2,
                                 'Upgrade Purchased!', '#00FF00', 28);
                         }
                     }
@@ -1797,11 +1911,11 @@ function updateGame(deltaTime) {
     }
 
     if (ship && ship.isAlive && respawnTimer <= 0) {
-        ship.update(deltaTime, canvas.width, canvas.height, audioManager);
+        ship.update(deltaTime, viewWidth, viewHeight, audioManager);
         // Wrap player position in bounded world
         wrapWorldPosition(ship);
         // Update camera to follow player
-        Camera.update(ship.x, ship.y, canvas.width, canvas.height);
+        Camera.update(ship.x, ship.y, viewWidth, viewHeight);
     }
 
     // Update asteroids and wrap their positions
@@ -1817,7 +1931,7 @@ function updateGame(deltaTime) {
 
     // Update bullets and wrap their positions
     bullets.forEach(bullet => {
-        bullet.update(deltaTime, canvas.width, canvas.height);
+        bullet.update(deltaTime, viewWidth, viewHeight);
         wrapWorldPosition(bullet);
     });
 
@@ -1830,7 +1944,7 @@ function updateGame(deltaTime) {
     };
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
-             ufo.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
+             ufo.update(deltaTime, viewWidth, viewHeight, ship, bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
              wrapWorldPosition(ufo);
              if (ufo.isOnScreen) {
                  visibleUfoExists = true;
@@ -1844,7 +1958,7 @@ function updateGame(deltaTime) {
 
     // Update power-ups
     powerUps.forEach(powerUp => {
-        powerUp.update(deltaTime, canvas.width, canvas.height);
+        powerUp.update(deltaTime, viewWidth, viewHeight);
     });
     powerUps = powerUps.filter(p => p.isAlive);
 
@@ -1928,7 +2042,7 @@ function updateGame(deltaTime) {
 
     // Update boss if present
     if (currentBoss && currentBoss.isAlive) {
-        currentBoss.update(deltaTime, canvas.width, canvas.height, ship, bullets, audioManager);
+        currentBoss.update(deltaTime, viewWidth, viewHeight, ship, bullets, audioManager);
         // Only wrap position during fighting phase (not during entry animation)
         if (currentBoss.phase === Boss.PHASES.FIGHTING) {
             wrapWorldPosition(currentBoss);
@@ -1939,8 +2053,14 @@ function updateGame(deltaTime) {
 }
 
 function renderGame() {
-    ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Logical-pixel transform every frame (also recovers from any unbalanced save/restore);
+    // the camera translate composes on top of it.
+    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    // The starfield's gradient covers the whole view while playing/paused
+    if (currentGameState !== GameState.PLAYING && currentGameState !== GameState.PAUSED) {
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, viewWidth, viewHeight);
+    }
     tapRegions = [];
 
     // console.log(`[renderGame] Current state: ${currentGameState}`); // Optional: Log state every frame
@@ -1952,14 +2072,14 @@ function renderGame() {
             ctx.fillStyle = 'white';
             ctx.textAlign = 'center';
             ctx.font = '48px Arial';
-            ctx.fillText("SPACE ADVENTURE", canvas.width / 2, canvas.height / 6);
+            ctx.fillText("SPACE ADVENTURE", viewWidth / 2, viewHeight / 6);
 
             // Game description
             ctx.font = '14px Arial';
             ctx.fillStyle = '#00FF00';
-            ctx.fillText("Collect GREEN asteroids for points!", canvas.width / 2, canvas.height / 6 + 35);
+            ctx.fillText("Collect GREEN asteroids for points!", viewWidth / 2, viewHeight / 6 + 35);
             ctx.fillStyle = '#CC0000';
-            ctx.fillText("Avoid RED asteroids - shoot them to survive!", canvas.width / 2, canvas.height / 6 + 55);
+            ctx.fillText("Avoid RED asteroids - shoot them to survive!", viewWidth / 2, viewHeight / 6 + 55);
             ctx.fillStyle = 'white';
 
             ctx.font = '20px Arial';
@@ -1970,8 +2090,8 @@ function renderGame() {
             currentMenuOptions.push(...Object.values(Difficulty)); // Add difficulties
 
             // Fit all items between the description and the player/credits footer
-            const menuStartY = canvas.height * 0.38;
-            const menuLineHeight = Math.min(30, (canvas.height - 75 - menuStartY) / currentMenuOptions.length);
+            const menuStartY = viewHeight * 0.38;
+            const menuLineHeight = Math.min(30, (viewHeight - 75 - menuStartY) / currentMenuOptions.length);
 
             // Adjust index bounds safely before rendering
              if (menuSelectionIndex >= currentMenuOptions.length) {
@@ -1994,9 +2114,9 @@ function renderGame() {
                     }
                 }
                 const itemY = menuStartY + index * menuLineHeight;
-                ctx.fillText(text, canvas.width / 2, itemY);
+                ctx.fillText(text, viewWidth / 2, itemY);
                 // Tapping an item highlights and selects it
-                addTapRegion(canvas.width * 0.2, itemY - menuLineHeight * 0.7, canvas.width * 0.6, menuLineHeight, () => {
+                addTapRegion(viewWidth * 0.2, itemY - menuLineHeight * 0.7, viewWidth * 0.6, menuLineHeight, () => {
                     menuSelectionIndex = index;
                     inputHandler.triggerAction('menuSelect');
                 });
@@ -2005,10 +2125,10 @@ function renderGame() {
             // Show current user and credits at bottom
             ctx.font = '16px Arial';
             ctx.fillStyle = '#888888';
-            ctx.fillText(`Player: ${currentUser || 'None'}`, canvas.width / 2, canvas.height - 50);
+            ctx.fillText(`Player: ${currentUser || 'None'}`, viewWidth / 2, viewHeight - 50);
             ctx.fillStyle = '#FFD700';
             ctx.font = 'bold 18px Arial';
-            ctx.fillText(`Upgrade Credits: ${ShipUpgrades.currency}`, canvas.width / 2, canvas.height - 25);
+            ctx.fillText(`Upgrade Credits: ${ShipUpgrades.currency}`, viewWidth / 2, viewHeight - 25);
             break;
 
         case GameState.PLAYING:
@@ -2059,7 +2179,7 @@ function renderGame() {
             ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
             ctx.font = '14px Arial';
             ctx.textAlign = 'left';
-            ctx.fillText(`Asteroids: ${asteroids.length}`, 10, canvas.height - 10);
+            ctx.fillText(`Asteroids: ${asteroids.length}`, 10, viewHeight - 10);
 
             // Draw Dynamic Difficulty Adjustment indicator
             const ddaText = DynamicDifficulty.getAdjustmentText();
@@ -2067,7 +2187,7 @@ function renderGame() {
             ctx.fillStyle = ddaColor;
             ctx.font = '12px Arial';
             ctx.textAlign = 'left';
-            ctx.fillText(`Difficulty: ${ddaText}`, 130, canvas.height - 10);
+            ctx.fillText(`Difficulty: ${ddaText}`, 130, viewHeight - 10);
 
             // Draw combo indicator
             if (ComboSystem.count >= 2) {
@@ -2078,19 +2198,19 @@ function renderGame() {
                 // Combo count and multiplier
                 ctx.fillStyle = '#FFD700';
                 ctx.font = 'bold 24px Arial';
-                ctx.fillText(`${ComboSystem.count}x COMBO`, canvas.width / 2, 80);
+                ctx.fillText(`${ComboSystem.count}x COMBO`, viewWidth / 2, 80);
 
                 // Multiplier indicator
                 if (ComboSystem.multiplier > 1) {
                     ctx.fillStyle = '#FF6600';
                     ctx.font = 'bold 18px Arial';
-                    ctx.fillText(`${ComboSystem.multiplier}x SCORE`, canvas.width / 2, 105);
+                    ctx.fillText(`${ComboSystem.multiplier}x SCORE`, viewWidth / 2, 105);
                 }
 
                 // Timer bar
                 const timerWidth = 100 * (ComboSystem.timer / ComboSystem.maxTime);
                 ctx.fillStyle = '#FFD700';
-                ctx.fillRect(canvas.width / 2 - 50, 115, timerWidth, 4);
+                ctx.fillRect(viewWidth / 2 - 50, 115, timerWidth, 4);
                 ctx.globalAlpha = 1;
             }
 
@@ -2103,7 +2223,7 @@ function renderGame() {
                 ctx.font = 'bold 36px Arial';
                 ctx.textAlign = 'center';
                 ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 200) * 0.5;
-                ctx.fillText('WARNING: BOSS APPROACHING!', canvas.width / 2, canvas.height / 2);
+                ctx.fillText('WARNING: BOSS APPROACHING!', viewWidth / 2, viewHeight / 2);
                 ctx.globalAlpha = 1;
             }
 
@@ -2153,7 +2273,7 @@ function renderGame() {
         case GameState.GAME_OVER:
             drawCenterText("GAME OVER", `Final Score: ${finalScore}`);
             ctx.font = '20px Arial';
-            ctx.fillText(isTouchDevice ? "Tap for Menu" : "Press Space or Enter for Menu", canvas.width / 2, canvas.height / 2 + 60);
+            ctx.fillText(isTouchDevice ? "Tap for Menu" : "Press Space or Enter for Menu", viewWidth / 2, viewHeight / 2 + 60);
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
             break;
         default:
@@ -2170,10 +2290,10 @@ function drawCenterText(line1, line2 = null) {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '48px Arial';
-    ctx.fillText(line1, canvas.width / 2, canvas.height / 2 - (line2 ? 20 : 0));
+    ctx.fillText(line1, viewWidth / 2, viewHeight / 2 - (line2 ? 20 : 0));
     if (line2) {
         ctx.font = '24px Arial';
-        ctx.fillText(line2, canvas.width / 2, canvas.height / 2 + 20);
+        ctx.fillText(line2, viewWidth / 2, viewHeight / 2 + 20);
     }
 }
 
@@ -2187,6 +2307,7 @@ function gameLoop(timestamp = 0) {
     const deltaTime = Math.min(rawDeltaTime, 1 / 20);
     lastTime = timestamp;
     try {
+        trackRenderPerformance(rawDeltaTime);
         updateGame(deltaTime);
         renderGame();
     } catch (error) {
@@ -2478,13 +2599,13 @@ function checkCollisions() {
                 if (bossDefeated) {
                     // Boss defeated!
                     console.log('Boss defeated! Awarding bonus score.');
-                    FloatingTexts.spawn(canvas.width / 2, canvas.height / 3,
+                    FloatingTexts.spawn(viewWidth / 2, viewHeight / 3,
                         `BOSS DEFEATED! +${currentBoss.scoreValue}`, '#FFD700', 36, 3);
                     updateScore(currentBoss.scoreValue);
                     // Big credit bonus for defeating boss (20% of boss score)
                     const bossCredits = Math.ceil(currentBoss.scoreValue * 0.2);
                     ShipUpgrades.addCurrency(bossCredits);
-                    FloatingTexts.spawn(canvas.width / 2, canvas.height / 3 + 50,
+                    FloatingTexts.spawn(viewWidth / 2, viewHeight / 3 + 50,
                         `+${bossCredits} CREDITS!`, '#FFD700', 24, 3);
                     Particles.explode(currentBoss.x, currentBoss.y, '#FF00FF', 50);
                     Particles.explode(currentBoss.x, currentBoss.y, '#FFFF00', 40);
@@ -2596,7 +2717,7 @@ function respawnPlayer(isInitialSpawn = false) {
          }
 
          // Reset camera to player position
-         Camera.reset(centerX, centerY, canvas.width, canvas.height);
+         Camera.reset(centerX, centerY, viewWidth, viewHeight);
     } else {
         console.log("Respawning Player - Conditions NOT Met");
     }
@@ -2622,13 +2743,13 @@ function levelUp() {
         // Spawn boss at top of visible area (in world coordinates)
         const bossX = ship ? ship.x : WORLD_WIDTH / 2;
         // Target Y is 150px below top of visible screen in world coords
-        const targetY = ship ? ship.y - canvas.height / 2 + 150 : WORLD_HEIGHT / 4;
+        const targetY = ship ? ship.y - viewHeight / 2 + 150 : WORLD_HEIGHT / 4;
         const bossLevel = Math.floor(level / BOSS_LEVEL_INTERVAL);
         currentBoss = new Boss(bossX, targetY, bossLevel);
         console.log(`BOSS BATTLE! Spawning level ${bossLevel} boss at target y=${targetY}!`);
 
         // Show boss warning
-        FloatingTexts.spawn(canvas.width / 2, canvas.height / 2 - 50,
+        FloatingTexts.spawn(viewWidth / 2, viewHeight / 2 - 50,
             'BOSS BATTLE!', '#FF0000', 48, 3);
 
         // Fewer regular asteroids during boss fight
@@ -2719,20 +2840,20 @@ function updateUfoSpawning(deltaTime) {
 
         switch (spawnSide) {
             case 0: // Top
-                ufoX = playerX + randomRange(-canvas.width / 2, canvas.width / 2);
-                ufoY = playerY - canvas.height / 2 - 20;
+                ufoX = playerX + randomRange(-viewWidth / 2, viewWidth / 2);
+                ufoY = playerY - viewHeight / 2 - 20;
                 break;
             case 1: // Right
-                ufoX = playerX + canvas.width / 2 + 20;
-                ufoY = playerY + randomRange(-canvas.height / 2, canvas.height / 2);
+                ufoX = playerX + viewWidth / 2 + 20;
+                ufoY = playerY + randomRange(-viewHeight / 2, viewHeight / 2);
                 break;
             case 2: // Bottom
-                ufoX = playerX + randomRange(-canvas.width / 2, canvas.width / 2);
-                ufoY = playerY + canvas.height / 2 + 20;
+                ufoX = playerX + randomRange(-viewWidth / 2, viewWidth / 2);
+                ufoY = playerY + viewHeight / 2 + 20;
                 break;
             case 3: // Left
-                ufoX = playerX - canvas.width / 2 - 20;
-                ufoY = playerY + randomRange(-canvas.height / 2, canvas.height / 2);
+                ufoX = playerX - viewWidth / 2 - 20;
+                ufoY = playerY + randomRange(-viewHeight / 2, viewHeight / 2);
                 break;
         }
 
@@ -2741,7 +2862,7 @@ function updateUfoSpawning(deltaTime) {
         ufoY = ((ufoY % WORLD_HEIGHT) + WORLD_HEIGHT) % WORLD_HEIGHT;
 
         // Create UFO at the calculated position
-        const ufo = new UFO(canvas.width, canvas.height, playerX, playerY);
+        const ufo = new UFO(viewWidth, viewHeight, playerX, playerY);
         ufo.x = ufoX;
         ufo.y = ufoY;
         ufos.push(ufo);
@@ -2757,20 +2878,20 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '36px Arial';
-    const titleY = canvas.height / 6;
-    ctx.fillText("HIGH SCORES (ALL USERS)", canvas.width / 2, titleY);
+    const titleY = viewHeight / 6;
+    ctx.fillText("HIGH SCORES (ALL USERS)", viewWidth / 2, titleY);
 
     ctx.font = '20px Arial';
     const listStartY = titleY + 60;
     const listLineHeight = 30;
-    const rankX = canvas.width / 6;
-    const nameX = canvas.width / 3;
-    const scoreX = canvas.width * 4 / 5;
+    const rankX = viewWidth / 6;
+    const nameX = viewWidth / 3;
+    const scoreX = viewWidth * 4 / 5;
     const achievementSymbol = '*'; // Symbol for achievements
 
     if (!scoresToDisplay || scoresToDisplay.length === 0) {
         ctx.textAlign = 'center';
-        ctx.fillText("No scores yet!", canvas.width / 2, listStartY);
+        ctx.fillText("No scores yet!", viewWidth / 2, listStartY);
     } else {
         // Limit to MAX_HIGH_SCORES for display
         const scoresToShow = scoresToDisplay.slice(0, MAX_HIGH_SCORES);
@@ -2798,23 +2919,23 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
     ctx.textAlign = 'center';
     ctx.font = '18px Arial';
     ctx.fillStyle = 'white';
-    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), canvas.width / 2, canvas.height - 40);
+    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 40);
 }
 
 function drawAchievements() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '36px Arial';
-    const titleY = canvas.height / 8;
-    ctx.fillText("ACHIEVEMENTS", canvas.width / 2, titleY);
+    const titleY = viewHeight / 8;
+    ctx.fillText("ACHIEVEMENTS", viewWidth / 2, titleY);
 
     ctx.font = '18px Arial';
     ctx.textAlign = 'left';
     const listStartY = titleY + 50;
     const listLineHeight = 45;
-    const nameX = canvas.width / 8;
-    const descX = canvas.width / 8;
-    const statusX = canvas.width * 7 / 8;
+    const nameX = viewWidth / 8;
+    const descX = viewWidth / 8;
+    const statusX = viewWidth * 7 / 8;
 
     const allAchievements = achievementManager.getAllAchievementsStatus();
 
@@ -2832,23 +2953,23 @@ function drawAchievements() {
     ctx.textAlign = 'center';
     ctx.font = '18px Arial';
     ctx.fillStyle = 'white';
-    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), canvas.width / 2, canvas.height - 40);
+    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 40);
 }
 
 function drawUpgradesMenu() {
     ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, viewWidth, viewHeight);
 
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '36px Arial';
-    const titleY = canvas.height / 10;
-    ctx.fillText("SHIP UPGRADES", canvas.width / 2, titleY);
+    const titleY = viewHeight / 10;
+    ctx.fillText("SHIP UPGRADES", viewWidth / 2, titleY);
 
     // Show currency
     ctx.font = '24px Arial';
     ctx.fillStyle = '#FFD700';
-    ctx.fillText(`Credits: ${ShipUpgrades.currency}`, canvas.width / 2, titleY + 40);
+    ctx.fillText(`Credits: ${ShipUpgrades.currency}`, viewWidth / 2, titleY + 40);
 
     ctx.font = '18px Arial';
     ctx.textAlign = 'left';
@@ -2866,8 +2987,8 @@ function drawUpgradesMenu() {
         const isSelected = index === upgradeMenuIndex;
 
         const yPos = listStartY + index * listLineHeight;
-        const nameX = canvas.width * 0.1;
-        addTapRegion(nameX - 10, yPos - 20, canvas.width * 0.8 + 20, listLineHeight - 5, () => {
+        const nameX = viewWidth * 0.1;
+        addTapRegion(nameX - 10, yPos - 20, viewWidth * 0.8 + 20, listLineHeight - 5, () => {
             upgradeMenuIndex = index;
             inputHandler.triggerAction('menuSelect');
         });
@@ -2875,7 +2996,7 @@ function drawUpgradesMenu() {
         // Selection indicator
         if (isSelected) {
             ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
-            ctx.fillRect(nameX - 10, yPos - 20, canvas.width * 0.8 + 20, listLineHeight - 5);
+            ctx.fillRect(nameX - 10, yPos - 20, viewWidth * 0.8 + 20, listLineHeight - 5);
         }
 
         // Upgrade name
@@ -2896,10 +3017,10 @@ function drawUpgradesMenu() {
         ctx.textAlign = 'right';
         if (isMaxed) {
             ctx.fillStyle = '#888888';
-            ctx.fillText('MAXED', canvas.width * 0.9, yPos);
+            ctx.fillText('MAXED', viewWidth * 0.9, yPos);
         } else {
             ctx.fillStyle = canAfford ? '#00FF00' : '#FF4444';
-            ctx.fillText(`Cost: ${cost}`, canvas.width * 0.9, yPos);
+            ctx.fillText(`Cost: ${cost}`, viewWidth * 0.9, yPos);
         }
         ctx.textAlign = 'left';
 
@@ -2915,31 +3036,31 @@ function drawUpgradesMenu() {
     ctx.fillStyle = isBackSelected ? '#FFFF00' : '#FFFFFF';
     ctx.font = 'bold 20px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('< Back to Menu >', canvas.width / 2, backY);
-    addTapRegion(canvas.width * 0.25, backY - 25, canvas.width * 0.5, 40, () => {
+    ctx.fillText('< Back to Menu >', viewWidth / 2, backY);
+    addTapRegion(viewWidth * 0.25, backY - 25, viewWidth * 0.5, 40, () => {
         upgradeMenuIndex = upgradeKeys.length;
         inputHandler.triggerAction('menuSelect');
     });
 
     ctx.fillStyle = '#888888';
     ctx.font = '14px Arial';
-    ctx.fillText('Earn credits by collecting green asteroids', canvas.width / 2, canvas.height - 50);
-    ctx.fillText(isTouchDevice ? 'Tap an upgrade to purchase it' : 'Use UP/DOWN to navigate, ENTER to purchase (or click)', canvas.width / 2, canvas.height - 30);
+    ctx.fillText('Earn credits by collecting green asteroids', viewWidth / 2, viewHeight - 50);
+    ctx.fillText(isTouchDevice ? 'Tap an upgrade to purchase it' : 'Use UP/DOWN to navigate, ENTER to purchase (or click)', viewWidth / 2, viewHeight - 30);
 }
 
 function drawAchievementNotifications() {
     const notifications = achievementManager.getActiveNotifications();
     if (notifications.length > 0) {
-        const startY = canvas.height * 0.85;
+        const startY = viewHeight * 0.85;
         const lineHeight = 30;
         ctx.textAlign = 'center';
         ctx.font = 'bold 20px Arial';
         ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillRect(0, startY - 25, canvas.width, notifications.length * lineHeight + 15);
+        ctx.fillRect(0, startY - 25, viewWidth, notifications.length * lineHeight + 15);
 
         notifications.forEach((ach, index) => {
             ctx.fillStyle = 'yellow';
-            ctx.fillText(`Achievement Unlocked: ${ach.name}`, canvas.width / 2, startY + index * lineHeight);
+            ctx.fillText(`Achievement Unlocked: ${ach.name}`, viewWidth / 2, startY + index * lineHeight);
         });
     }
 }
@@ -2958,13 +3079,13 @@ function updateScore(amount) {
 
 function drawPauseMenu() {
     ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-    ctx.fillRect(canvas.width * 0.25, canvas.height * 0.25, canvas.width * 0.5, canvas.height * 0.5);
+    ctx.fillRect(viewWidth * 0.25, viewHeight * 0.25, viewWidth * 0.5, viewHeight * 0.5);
 
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '36px Arial';
-    const titleY = canvas.height * 0.35;
-    ctx.fillText("PAUSED", canvas.width / 2, titleY);
+    const titleY = viewHeight * 0.35;
+    ctx.fillText("PAUSED", viewWidth / 2, titleY);
 
     ctx.font = '24px Arial';
     const pauseStartY = titleY + 60;
@@ -2972,8 +3093,8 @@ function drawPauseMenu() {
     pauseMenuOptions.forEach((option, index) => {
         ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
         const itemY = pauseStartY + index * pauseLineHeight;
-        ctx.fillText(option, canvas.width / 2, itemY);
-        addTapRegion(canvas.width * 0.25, itemY - pauseLineHeight * 0.7, canvas.width * 0.5, pauseLineHeight, () => {
+        ctx.fillText(option, viewWidth / 2, itemY);
+        addTapRegion(viewWidth * 0.25, itemY - pauseLineHeight * 0.7, viewWidth * 0.5, pauseLineHeight, () => {
             pauseMenuSelectionIndex = index;
             inputHandler.triggerAction('menuSelect');
         });
@@ -2981,20 +3102,20 @@ function drawPauseMenu() {
 
     ctx.font = '16px Arial';
     ctx.fillStyle = 'lightgray';
-    ctx.fillText(isTouchDevice ? "(Tap an option)" : "(Press P or Esc to Resume)", canvas.width / 2, canvas.height * 0.75 - 20);
+    ctx.fillText(isTouchDevice ? "(Tap an option)" : "(Press P or Esc to Resume)", viewWidth / 2, viewHeight * 0.75 - 20);
 }
 
 function drawHelpScreen() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '28px Arial';
-    const titleY = canvas.height / 12;
-    ctx.fillText("SPACE ADVENTURE - HELP", canvas.width / 2, titleY);
+    const titleY = viewHeight / 12;
+    ctx.fillText("SPACE ADVENTURE - HELP", viewWidth / 2, titleY);
 
     // Game rules section
     ctx.font = '16px Arial';
     ctx.textAlign = 'left';
-    const rulesX = canvas.width / 10;
+    const rulesX = viewWidth / 10;
     let rulesY = titleY + 40;
 
     ctx.fillStyle = '#00FF00';
@@ -3024,7 +3145,7 @@ function drawHelpScreen() {
     const helpStartY = rulesY + 25;
     const helpLineHeight = 22;
     const controlsX = rulesX;
-    const keysX = canvas.width / 2;
+    const keysX = viewWidth / 2;
 
     const controls = isTouchDevice && controlMode === ControlMode.JOYSTICK ? [
         { action: 'Steer', keys: 'Drag on the left half of the screen' },
@@ -3056,7 +3177,7 @@ function drawHelpScreen() {
 
     ctx.textAlign = 'center';
     ctx.font = '16px Arial';
-    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), canvas.width / 2, canvas.height - 30);
+    ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 30);
 }
 
 // The username text field itself is a DOM form (see index.html) so touch devices get
@@ -3065,12 +3186,12 @@ function drawUserPrompt() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '40px Arial';
-    ctx.fillText("SPACE ADVENTURE", canvas.width / 2, canvas.height / 6);
+    ctx.fillText("SPACE ADVENTURE", viewWidth / 2, viewHeight / 6);
 
     ctx.font = '18px Arial';
     ctx.fillStyle = '#AAAAAA';
     ctx.fillText(isTouchDevice ? "Tap the box, type a name, then tap OK" : "Type a name, then press Enter",
-        canvas.width / 2, canvas.height * 0.7);
+        viewWidth / 2, viewHeight * 0.7);
 }
 
 // Export necessary functions/variables if using modules elsewhere

@@ -32,9 +32,9 @@ function installFakes() {
 installFakes();
 const { InputHandler } = await import('../../js/input.js');
 
-function setup(canvas = null) {
+function setup(canvas = null, options = undefined) {
     const env = installFakes();
-    const input = new InputHandler(canvas);
+    const input = new InputHandler(canvas, options);
     return { ...env, input };
 }
 
@@ -297,14 +297,32 @@ function makeCanvas() {
     return canvas;
 }
 
-test('pointerdown on the canvas pushes a tap scaled to canvas pixels', () => {
+test('canvas taps map to logical pixels regardless of the backing-store size', () => {
+    // Backing 1600x1200 (HiDPI), CSS rect 800x600 at (100, 50), logical 800x600
     const canvas = makeCanvas();
-    const { doc, input } = setup(canvas);
+    const { doc, input } = setup(canvas, { getLogicalSize: () => ({ width: 800, height: 600 }) });
     const ev = pointerEvent(canvas, 1, { clientX: 300, clientY: 200 });
     doc.dispatch('pointerdown', ev);
     assert.equal(ev.defaultPrevented, true);
-    assert.deepEqual(input.consumeTap(), { x: 400, y: 300 });
+    assert.deepEqual(input.consumeTap(), { x: 200, y: 150 });
     assert.equal(input.consumeTap(), null);
+    canvas.width = 800; canvas.height = 600; // backing size is irrelevant
+    doc.dispatch('pointerdown', pointerEvent(canvas, 2, { clientX: 300, clientY: 200 }));
+    assert.deepEqual(input.consumeTap(), { x: 200, y: 150 });
+});
+
+test('canvas taps scale to a logical size different from the CSS size', () => {
+    const canvas = makeCanvas();
+    const { doc, input } = setup(canvas, { getLogicalSize: () => ({ width: 400, height: 300 }) });
+    doc.dispatch('pointerdown', pointerEvent(canvas, 1, { clientX: 300, clientY: 200 }));
+    assert.deepEqual(input.consumeTap(), { x: 100, y: 75 });
+});
+
+test('canvas taps without a logical-size provider fall back to CSS pixels', () => {
+    const canvas = makeCanvas();
+    const { doc, input } = setup(canvas);
+    doc.dispatch('pointerdown', pointerEvent(canvas, 1, { clientX: 300, clientY: 200 }));
+    assert.deepEqual(input.consumeTap(), { x: 200, y: 150 });
 });
 
 test('canvas taps: non-primary mouse buttons and zero-size rects are ignored', () => {

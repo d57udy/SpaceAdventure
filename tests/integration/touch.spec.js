@@ -681,6 +681,29 @@ test.describe('touch: joystick and viewport changes', () => {
   });
 });
 
+test.describe('touch: joystick and toolbar resizes', () => {
+  test('a resize that keeps the canvas size and orientation (toolbar collapse) keeps the stick', async ({ page, browserName }) => {
+    await openFresh(page);
+    await loginWithTouch(page);
+    await startByTap(page);
+    const f = new Fingers(page, browserName);
+    await f.downAt(1, await zonePoint(page));
+    await f.moveBy(1, 0, -55);
+    await expect.poll(() => hook(page, 'joystick.active')).toBe(true);
+    const vp = page.viewportSize();
+    const before = await hook(page, 'view');
+    // Grow the longer side a little (like Safari's toolbar collapsing): min side unchanged
+    const grow = vp.width > vp.height ? { width: vp.width + 40, height: vp.height } : { width: vp.width, height: vp.height + 40 };
+    await page.setViewportSize(grow);
+    await page.waitForTimeout(200);
+    const after = await hook(page, 'view');
+    expect([after.width, after.height, after.backingWidth]).toEqual([before.width, before.height, before.backingWidth]);
+    expect(await hook(page, 'joystick.active')).toBe(true);
+    await f.releaseAll();
+    await expect.poll(() => hook(page, 'joystick.active')).toBe(false);
+  });
+});
+
 test.describe('touch: joystick screenshots for review', () => {
   test('joystick mode while dragging', async ({ page, browserName }, testInfo) => {
     const name = testInfo.project.name;

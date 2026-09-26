@@ -1,13 +1,17 @@
 // Unified input: keyboard, on-screen touch buttons (pointer events, multi-touch)
 // and taps/clicks on the canvas (used for menu selection).
 export class InputHandler {
-    constructor(canvas = null) {
+    // options.getLogicalSize: () => ({ width, height }) of the canvas in game (logical) pixels.
+    // Taps are mapped into that space; without it they stay in CSS pixels. (The backing
+    // store is larger than the logical size on HiDPI screens, so canvas.width is not used.)
+    constructor(canvas = null, { getLogicalSize = null } = {}) {
         this.canvas = canvas;
+        this.getLogicalSize = getLogicalSize;
         this.keys = {}; // Continuous state from the keyboard (thrust, rotate, fire)
         this.singlePressActions = {}; // Consumable actions (hyperspace, pause, menu nav, typing)
         this.keyProcessed = {}; // Prevents keyboard auto-repeat for single press
         this.pointerActions = new Map(); // pointerId -> action held by an on-screen button
-        this.pendingTaps = []; // Taps/clicks on the canvas in canvas pixel coordinates
+        this.pendingTaps = []; // Taps/clicks on the canvas in logical canvas coordinates
         this.charQueue = []; // Typed characters in order (username entry)
         this.latched = new Set(); // Continuous actions pressed this frame (so quick taps still count)
         // Drag-to-steer virtual joystick: a finger pressed in the .joystick-zone becomes the
@@ -164,9 +168,12 @@ export class InputHandler {
             if (event.pointerType === 'mouse' && event.button !== 0) return;
             const rect = this.canvas.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return;
+            const logical = this.getLogicalSize ? this.getLogicalSize() : null;
+            const sx = logical && logical.width > 0 ? logical.width / rect.width : 1;
+            const sy = logical && logical.height > 0 ? logical.height / rect.height : 1;
             this.pendingTaps.push({
-                x: (event.clientX - rect.left) * (this.canvas.width / rect.width),
-                y: (event.clientY - rect.top) * (this.canvas.height / rect.height),
+                x: (event.clientX - rect.left) * sx,
+                y: (event.clientY - rect.top) * sy,
             });
         }
     }

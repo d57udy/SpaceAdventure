@@ -3,16 +3,16 @@ import { defineConfig, devices } from '@playwright/test';
 // Browser integration / UAT tests for Space Adventure.
 //
 // Projects:
-//   desktop-chromium       keyboard + mouse, 1280x800         -> smoke + keyboard specs
-//   ipad-webkit            iPad (gen 7) portrait, WebKit      -> smoke + touch specs
-//   ipad-webkit-landscape  iPad (gen 7) landscape, WebKit     -> smoke + touch specs
-//   ipad-chromium-touch    Chromium, hasTouch, 1024x768       -> smoke + touch specs
+//   desktop-chromium       keyboard + mouse, 1280x800, DPR 1  -> smoke + hidpi + keyboard specs
+//   ipad-webkit            iPad (gen 7) portrait, WebKit, DPR 2  -> smoke + hidpi + touch specs
+//   ipad-webkit-landscape  iPad (gen 7) landscape, WebKit, DPR 2 -> smoke + hidpi + touch specs
+//   ipad-chromium-touch    Chromium, hasTouch, 1024x768, DPR 1 -> smoke + hidpi + touch specs
 //
 // Only tests/integration is scanned; tests/unit is owned by a separate runner.
 const PORT = 8082;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'keyboard.spec.js'];
-const TOUCH_SPECS = ['smoke.spec.js', 'touch.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js'];
+const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js'];
 
 export default defineConfig({
   testDir: './tests/integration',
