@@ -133,13 +133,29 @@ test.describe('Saucer', () => {
     expect(ship.velY).toBe(0);
 
     // Fire held: one shot at once, the next only after 1 s
+    // (game time from the round clock, watched every frame, so a slow machine can't skew it)
     await padPress(page, PAD.A);
-    await expect.poll(() => hook(page, 'saucer.ufo.shots')).toBe(1);
-    await page.waitForTimeout(500);
-    expect(await hook(page, 'saucer.ufo.shots')).toBe(1);
-    expect(await hook(page, 'saucer.ufo.cooldown')).toBeGreaterThan(0);
-    await expect.poll(() => hook(page, 'saucer.ufo.shots'), { timeout: 2000 }).toBe(2);
+    const shotTimes = await page.evaluate(() => new Promise((resolve) => {
+      const g = window.__spaceAdventure;
+      const times = [];
+      let last = g.saucer.ufo.shots;
+      const start = g.mode.elapsed;
+      const tick = () => {
+        const u = g.saucer.ufo;
+        if (u && u.shots !== last) {
+          last = u.shots;
+          times.push(g.mode.elapsed);
+        }
+        if (times.length >= 3 || g.mode.elapsed - start > 4) resolve(times);
+        else requestAnimationFrame(tick);
+      };
+      tick();
+    }));
     await padRelease(page, PAD.A);
+    expect(shotTimes.length).toBe(3);
+    expect(shotTimes[1] - shotTimes[0]).toBeGreaterThan(0.95);
+    expect(shotTimes[1] - shotTimes[0]).toBeLessThan(1.1);
+    expect(shotTimes[2] - shotTimes[1]).toBeGreaterThan(0.95);
     expect(await hook(page, 'bulletsByOwner')).toEqual({}); // saucer shots are enemy bullets
     expect(s.errors).toEqual([]);
   });
