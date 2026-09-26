@@ -1209,6 +1209,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get upgradeIndex() { return upgradeMenuIndex; },
         get isMuted() { return audioManager.isMuted; },
         get isTouchDevice() { return isTouchDevice; },
+        get loopErrors() { return loopErrorCount; },
         get controlMode() { return controlMode.id; },
         get joystick() { return inputHandler.getJoystick(); },
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
@@ -1397,6 +1398,7 @@ function pauseGame() {
 function resizeCanvas() {
     // Make canvas fill most of the smaller dimension
     const size = Math.min(window.innerWidth, window.innerHeight) * 0.9;
+    if (canvas.width > 0 && size < 50) return; // Ignore transient tiny/zero sizes (would zero the world)
     // A rotation can leave a held stick off-screen; make the player put the finger down again
     if (inputHandler) inputHandler.releaseJoystick();
     const oldWorldWidth = WORLD_WIDTH;
@@ -1637,8 +1639,10 @@ function handleInput(deltaTime) {
             }
 
             if (inputHandler.consumeAction('hyperspace')) {
-                if (ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager)) {
-                    if (!ship.isAlive) handlePlayerDeath(true);
+                if (ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager) && !ship.isAlive) {
+                    handlePlayerDeath(true); // May set ship = null (respawn pending)
+                    audioManager.stopThrustSound();
+                    break;
                 }
             }
             if (ship.isThrusting && !audioManager.isMuted) audioManager.startThrustSound();
@@ -2175,13 +2179,20 @@ function drawCenterText(line1, line2 = null) {
 
 // The Main Game Loop
 let lastTime = 0;
+let loopErrorCount = 0;
 function gameLoop(timestamp = 0) {
+    // Schedule the next frame first so one bad frame can never stop the game for good
+    requestAnimationFrame(gameLoop);
     const rawDeltaTime = (timestamp - lastTime) / 1000;
     const deltaTime = Math.min(rawDeltaTime, 1 / 20);
     lastTime = timestamp;
-    updateGame(deltaTime);
-    renderGame();
-    requestAnimationFrame(gameLoop);
+    try {
+        updateGame(deltaTime);
+        renderGame();
+    } catch (error) {
+        loopErrorCount++;
+        if (loopErrorCount <= 5) console.error('[gameLoop] frame error (game continues):', error);
+    }
 }
 
 // --- Helper Functions ---

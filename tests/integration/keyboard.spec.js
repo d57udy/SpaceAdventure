@@ -408,6 +408,24 @@ test.describe('keyboard: gameplay', () => {
       return Math.hypot(s.ship.x - s0.x, s.ship.y - s0.y) > 20 ? 'moved' : 'still';
     }).not.toBe('still');
   });
+
+  // Regression: a failed jump used to null the ship and then read ship.isThrusting,
+  // throwing inside the game loop and freezing the game for good.
+  test('a failed hyperspace jump costs a life and the game keeps running (no freeze)', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    const lives0 = await hook(page, 'lives');
+    // Force the 10% self-destruct roll, just for the jump
+    await page.evaluate(() => { window.__realRandom = Math.random; Math.random = () => 0.01; });
+    await page.keyboard.press('h');
+    await expect.poll(() => hook(page, 'lives')).toBe(lives0 - 1);
+    await page.evaluate(() => { Math.random = window.__realRandom; });
+    // The ship respawns after the 2 s delay, which only happens if frames keep running
+    await expect.poll(() => hook(page, 'ship.isAlive'), { timeout: 6000 }).toBe(true);
+    expect(await hook(page, 'state')).toBe('playing');
+    expect(await hook(page, 'loopErrors')).toBe(0);
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('keyboard: Controls menu item', () => {
