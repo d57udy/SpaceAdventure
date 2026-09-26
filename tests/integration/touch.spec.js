@@ -2,8 +2,21 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, snap, hook, isPressed, waitForState, loginWithTouch, tapMenuItem,
-  tapRegionCenter, tapAt, Fingers, rectsOverlap, CONTROL_MODE_KEY,
+  tapRegionCenter, tapRegionPoint, tapAt, Fingers, rectsOverlap, CONTROL_MODE_KEY, MENU,
+  settingsRowIndex,
 } from './helpers.js';
+
+/** From the menu: open Settings, tap the centre of a row (cycles it), then tap Back. */
+async function toggleSettingByTap(page, id) {
+  await tapMenuItem(page, 'Settings');
+  await waitForState(page, 'settings');
+  await tapAt(page, await tapRegionCenter(page, await settingsRowIndex(page, id)));
+  await expect.poll(() => hook(page, 'settingsIndex')).toBe(await settingsRowIndex(page, id));
+  return async () => {
+    await tapAt(page, await tapRegionCenter(page, await settingsRowIndex(page, 'back')));
+    await waitForState(page, 'menu');
+  };
+}
 
 const BUTTONS = {
   rotateLeft: '#touch-left-btn',
@@ -79,14 +92,20 @@ test.describe('touch: prompt and menu', () => {
     expect(s.counts.asteroids).toBeGreaterThan(0);
   });
 
-  test('tapping a difficulty selects it', async ({ page }) => {
+  test('tapping the left/right part of the Difficulty row cycles it', async ({ page }) => {
     await openFresh(page);
     await loginWithTouch(page);
-    await tapMenuItem(page, 'Easy');
+    expect(await hook(page, 'difficulty')).toBe('medium');
+    await tapAt(page, await tapRegionPoint(page, MENU.DIFFICULTY, 0.1));
     await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
-    await tapMenuItem(page, 'Hard');
+    await tapAt(page, await tapRegionPoint(page, MENU.DIFFICULTY, 0.9));
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
+    await tapAt(page, await tapRegionPoint(page, MENU.DIFFICULTY, 0.9));
     await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
+    await tapMenuItem(page, 'Difficulty'); // centre tap cycles forward (wraps)
+    await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
     expect(await hook(page, 'state')).toBe('menu');
+    expect(await hook(page, 'menuIndex')).toBe(MENU.DIFFICULTY);
   });
 
   for (const [label, state] of [['Help', 'help'], ['High Scores', 'high_scores'], ['Achievements', 'achievements']]) {
@@ -390,27 +409,29 @@ test.describe('touch: control scheme selection', () => {
     for (const sel of Object.values(BUTTONS)) await expect(page.locator(sel)).toBeVisible();
   });
 
-  test('tapping Controls in the menu switches the scheme (and it applies in game)', async ({ page }) => {
+  test('changing Controls in Settings switches the scheme (and it applies in game)', async ({ page }) => {
     await openFresh(page);
     await loginWithTouch(page);
-    await tapMenuItem(page, 'Controls');
+    let back = await toggleSettingByTap(page, 'controls');
     await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
     await expect(page.locator('body')).toHaveClass(/controls-buttons/);
     await expect(page.locator('body')).not.toHaveClass(/controls-joystick/);
-    expect(await hook(page, 'state')).toBe('menu');
+    expect(await hook(page, 'state')).toBe('settings');
     expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBe('buttons');
+    await back();
     await startByTap(page);
     await expect(page.locator(BUTTONS.thrust)).toBeVisible();
     await expect(page.locator('#joystick-zone')).toBeHidden();
 
-    // Pause -> Main Menu -> Controls -> Resume: switches mid-game
+    // Pause -> Main Menu -> Settings -> Controls -> Back -> Resume: switches mid-game
     await page.locator(BUTTONS.pause).tap();
     await waitForState(page, 'paused');
     await tapAt(page, await tapRegionCenter(page, 2)); // Main Menu
     await waitForState(page, 'menu');
-    await tapMenuItem(page, 'Controls');
+    back = await toggleSettingByTap(page, 'controls');
     await expect.poll(() => hook(page, 'controlMode')).toBe('joystick');
     await expect(page.locator('body')).toHaveClass(/controls-joystick/);
+    await back();
     await tapMenuItem(page, 'Resume');
     await waitForState(page, 'playing');
     await expect(page.locator('#joystick-zone')).toBeVisible();

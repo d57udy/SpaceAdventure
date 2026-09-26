@@ -13,6 +13,9 @@ import { Boss } from './boss.js';
 import { Entity } from './entity.js';
 import { applyJoystickSteering } from './steering.js';
 import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
+import { Particles } from './particles.js';
+import { createSettings } from './settings.js';
+import { findPalette } from './palette.js';
 
 // Game States Enum
 const GameState = {
@@ -24,6 +27,7 @@ const GameState = {
     ACHIEVEMENTS: 'achievements',
     UPGRADES: 'upgrades',
     HELP: 'help',
+    SETTINGS: 'settings',
     GAME_OVER: 'game_over'
 };
 
@@ -469,70 +473,6 @@ const FloatingTexts = {
     }
 };
 
-// Particle System - for explosions, collections, trails
-const Particles = {
-    particles: [],
-
-    spawn(x, y, count, color, speed = 100, lifetime = 0.5, size = 3) {
-        for (let i = 0; i < count; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const vel = speed * (0.5 + Math.random() * 0.5);
-            this.particles.push({
-                x, y,
-                velX: Math.cos(angle) * vel,
-                velY: Math.sin(angle) * vel,
-                color,
-                size: size * (0.5 + Math.random() * 0.5),
-                lifetime,
-                timer: lifetime
-            });
-        }
-    },
-
-    // Explosion effect
-    explode(x, y, color = '#FF6600', count = 20) {
-        this.spawn(x, y, count, color, 150, 0.8, 4);
-        // Add some white sparks
-        this.spawn(x, y, count / 2, '#FFFFFF', 200, 0.4, 2);
-    },
-
-    // Collection sparkle effect
-    collect(x, y, color = '#00FF00') {
-        this.spawn(x, y, 12, color, 80, 0.6, 3);
-    },
-
-    update(deltaTime) {
-        this.particles = this.particles.filter(p => {
-            p.timer -= deltaTime;
-            p.x += p.velX * deltaTime;
-            p.y += p.velY * deltaTime;
-            p.velX *= 0.98;
-            p.velY *= 0.98;
-            return p.timer > 0;
-        });
-    },
-
-    draw(ctx, cameraX, cameraY) {
-        this.particles.forEach(p => {
-            const alpha = p.timer / p.lifetime;
-            const screenX = p.x - cameraX;
-            const screenY = p.y - cameraY;
-
-            ctx.save();
-            ctx.globalAlpha = alpha;
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(screenX, screenY, p.size * alpha, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-        });
-    },
-
-    clear() {
-        this.particles = [];
-    }
-};
-
 // Screen Shake Effect
 const ScreenShake = {
     intensity: 0,
@@ -696,16 +636,18 @@ let lives = Difficulty.MEDIUM.startingLives; // Default before selection
 let level = 1;
 let currentGameState = GameState.PROMPT_USER;
 let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty
-let menuSelectionIndex = 0; // For menu navigation (0: Start, 1: High Scores, 2: Achievements, 3: Help, 4: Reset Data, 5: Easy, 6: Medium, 7: Hard)
-const menuOptionBaseTexts = ['Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Controls', 'Reset Data', 'Change User'];
+let menuSelectionIndex = 0; // Index into the visible main menu rows
 
 // Touch control schemes. Keyboard always works regardless of the choice.
 const ControlMode = {
     JOYSTICK: { id: 'joystick', name: 'Drag to Steer' },
     BUTTONS: { id: 'buttons', name: 'Buttons' },
 };
-const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
-let controlMode = ControlMode.JOYSTICK; // Default
+let controlMode = ControlMode.JOYSTICK; // Default; the saved choice lives in settings.js
+let palette = findPalette('standard');  // Colour palette (js/palette.js), from settings.js
+
+// Device-level settings (js/settings.js; keys spaceAdventure_<name>)
+const settings = createSettings();
 
 // Finger tremor on a short drag swings the aim by several degrees; ignore direction
 // changes smaller than a threshold (larger when the drag is short and less precise).
@@ -723,19 +665,155 @@ function stabilizeStick(stick) {
     return { ...stick, angle: stickHeading };
 }
 
-function loadControlMode() {
-    try {
-        const saved = localStorage.getItem(CONTROL_MODE_KEY);
-        const found = Object.values(ControlMode).find(m => m.id === saved);
-        if (found) controlMode = found;
-    } catch (e) { /* storage unavailable: keep default */ }
-    applyControlModeClass();
+function findControlMode(id) {
+    return Object.values(ControlMode).find(m => m.id === id) || ControlMode.JOYSTICK;
 }
 
-function setControlMode(mode) {
-    controlMode = mode;
-    try { localStorage.setItem(CONTROL_MODE_KEY, mode.id); } catch (e) { /* ignore */ }
+// Apply the stored settings at startup and keep the game in sync whenever one changes
+// (from the Settings screen, the M key or the mute button).
+function applySettings() {
+    controlMode = findControlMode(settings.get('controlMode'));
     applyControlModeClass();
+    palette = findPalette(settings.get('palette'));
+    Asteroid.palette = palette;
+}
+
+function applyMuted() {
+    if (!audioManager) return;
+    const muted = !!settings.get('muted');
+    if (audioManager.isMuted !== muted) audioManager.toggleMute();
+    const muteBtn = document.getElementById('touch-mute-btn');
+    if (muteBtn) muteBtn.classList.toggle('muted', audioManager.isMuted);
+}
+
+settings.onChange((name) => {
+    if (name === 'controlMode' || name === 'palette') applySettings();
+    if (name === 'muted') applyMuted();
+});
+
+// --- Row lists (main menu and Settings) ---
+// A row is { id, label(), visible?() } plus either
+//   select()                      - an action (Enter / tap)
+//   change(dir) and value()       - a value; left/right step it, Enter / centre tap steps forward
+//   setting: 'name', format(v)    - shorthand for a settings.js value (cycled with settings.cycle)
+function rowValue(row) {
+    if (row.setting) return row.format ? row.format(settings.get(row.setting)) : String(settings.get(row.setting));
+    return row.value ? row.value() : null;
+}
+function rowChange(row, dir) {
+    if (row.setting) settings.cycle(row.setting, dir);
+    else if (row.change) row.change(dir);
+}
+const rowHasValue = (row) => !!(row.setting || row.change);
+const visibleRows = (rows) => rows.filter(r => !r.visible || r.visible());
+
+// Keyboard (and tap-triggered) navigation shared by row lists. getIndex/setIndex hold the
+// list's selection; the index is stored before a row acts, so actions can change it.
+function navigateRows(rows, getIndex, setIndex) {
+    const n = rows.length;
+    if (n === 0) return;
+    let index = getIndex();
+    if (index >= n || index < 0) index = 0;
+    if (inputHandler.consumeAction('menuUp')) index = (index - 1 + n) % n;
+    if (inputHandler.consumeAction('menuDown')) index = (index + 1) % n;
+    setIndex(index);
+    const row = rows[index];
+    const left = inputHandler.consumeAction('menuLeft');
+    const right = inputHandler.consumeAction('menuRight');
+    const select = inputHandler.consumeAction('menuSelect');
+    if (rowHasValue(row)) {
+        if (left) rowChange(row, -1);
+        if (right) rowChange(row, 1);
+        if (select) rowChange(row, 1);
+    } else if (select && row.select) {
+        row.select();
+    }
+}
+
+// One tap region per row. On a value row the left part steps back, the rest (centre and
+// right) steps forward, applied at once so several quick taps in one frame all count.
+function addRowTapRegion(x, y, w, h, row, index, setIndex) {
+    addTapRegion(x, y, w, h, (tap) => {
+        setIndex(index);
+        if (rowHasValue(row) && tap) {
+            rowChange(row, tap.x < x + w * 0.35 ? -1 : 1);
+        } else {
+            inputHandler.triggerAction('menuSelect');
+        }
+    });
+}
+
+function cycleDifficulty(dir) {
+    const list = Object.values(Difficulty);
+    const i = list.indexOf(selectedDifficulty);
+    selectedDifficulty = list[(i + (dir < 0 ? -1 : 1) + list.length) % list.length];
+    console.log(`Difficulty set to: ${selectedDifficulty.name}`);
+}
+
+function returnToMenu() {
+    currentGameState = GameState.MENU;
+    menuSelectionIndex = 0;
+}
+
+// Main menu rows, top to bottom. Adding a row is one line
+// (e.g. { id: 'multiplayer', label: () => 'Multiplayer', select: openMultiplayer } after Start).
+const mainMenuItems = [
+    { id: 'start', label: () => (pausedGameExists ? 'Resume' : 'Start'), select: () => startOrResume() },
+    { id: 'upgrades', label: () => 'Upgrades', select: () => { upgradeMenuIndex = 0; currentGameState = GameState.UPGRADES; } },
+    { id: 'highScores', label: () => 'High Scores', select: () => openHighScores() },
+    { id: 'achievements', label: () => 'Achievements', select: () => { currentGameState = GameState.ACHIEVEMENTS; } },
+    { id: 'help', label: () => 'Help', select: () => { currentGameState = GameState.HELP; } },
+    { id: 'settings', label: () => 'Settings', select: () => { settingsIndex = 0; currentGameState = GameState.SETTINGS; } },
+    { id: 'reset', label: () => 'Reset Data', select: () => resetUserData() },
+    { id: 'changeUser', label: () => 'Change User', select: () => changeUser() },
+    { id: 'difficulty', label: () => 'Difficulty', value: () => selectedDifficulty.name, change: (dir) => cycleDifficulty(dir) },
+];
+
+// Settings screen rows. Adding a setting is one line here (plus its entry in settings.js).
+let settingsIndex = 0;
+const settingsRows = [
+    { id: 'controls', label: () => 'Controls', setting: 'controlMode', format: (v) => findControlMode(v).name,
+        visible: () => isTouchDevice },
+    { id: 'colours', label: () => 'Colours', setting: 'palette', format: (v) => findPalette(v).name },
+    { id: 'sound', label: () => 'Sound', setting: 'muted', format: (v) => (v ? 'Off' : 'On') },
+    { id: 'back', label: () => 'Back', select: () => returnToMenu() },
+];
+
+function startOrResume() {
+    if (pausedGameExists) {
+        console.log("Resuming paused game...");
+        currentGameState = GameState.PLAYING;
+    } else {
+        console.log("Executing startGame() from menu...");
+        startGame();
+    }
+}
+
+function openHighScores() {
+    // Load combined data when entering the high score screen
+    allHighScores = persistenceManager.loadHighScores();
+    allAchievements = persistenceManager.loadAchievements();
+    currentGameState = GameState.HIGH_SCORES;
+}
+
+function resetUserData() {
+    if (currentUser && confirm(`Are you sure you want to reset all data for user '${currentUser}'?`)) {
+        console.log(`Resetting data for user: ${currentUser}`);
+        persistenceManager.resetUserData(currentUser);
+        persistenceManager.setCurrentUser(currentUser); // Stay signed in after the reset
+        highScores = [];
+        achievementManager.loadUserAchievements(currentUser);
+        ShipUpgrades.reset();
+        alert("User data reset.");
+    }
+}
+
+function changeUser() {
+    ShipUpgrades.save(persistenceManager, currentUser);
+    currentGameState = GameState.PROMPT_USER;
+    promptInput = "";
+    currentUser = null;
+    persistenceManager.setCurrentUser(null);
 }
 
 function applyControlModeClass() {
@@ -1013,40 +1091,50 @@ function drawRadar() {
 
     ctx.globalAlpha = 1;
 
-    // Draw asteroids on radar
+    // Every radar marker has its own shape: collectible = filled dot, hazard = x,
+    // UFO = diamond, power-up = hollow square
     asteroids.forEach(asteroid => {
         if (!asteroid.isAlive) return;
         const pos = worldToRadar(asteroid.x, asteroid.y);
-        if (pos) {
-            ctx.fillStyle = asteroid.type === 'green' ? '#00FF00' : '#FF0000';
+        if (!pos) return;
+        if (asteroid.isGreen()) {
+            ctx.fillStyle = palette.collectRadar;
             ctx.beginPath();
             ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
             ctx.fill();
+        } else {
+            ctx.strokeStyle = palette.hazardRadar;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(pos.x - 3, pos.y - 3);
+            ctx.lineTo(pos.x + 3, pos.y + 3);
+            ctx.moveTo(pos.x + 3, pos.y - 3);
+            ctx.lineTo(pos.x - 3, pos.y + 3);
+            ctx.stroke();
         }
     });
 
-    // Draw UFOs on radar (purple)
     ufos.forEach(ufo => {
         if (!ufo.isAlive) return;
         const pos = worldToRadar(ufo.x, ufo.y);
-        if (pos) {
-            ctx.fillStyle = '#FF00FF';
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
-            ctx.fill();
-        }
+        if (!pos) return;
+        ctx.fillStyle = '#CC66FF'; // purple, like the UFOs
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y - 5);
+        ctx.lineTo(pos.x + 4, pos.y);
+        ctx.lineTo(pos.x, pos.y + 5);
+        ctx.lineTo(pos.x - 4, pos.y);
+        ctx.closePath();
+        ctx.fill();
     });
 
-    // Draw power-ups on radar (yellow)
     powerUps.forEach(powerUp => {
         if (!powerUp.isAlive) return;
         const pos = worldToRadar(powerUp.x, powerUp.y);
-        if (pos) {
-            ctx.fillStyle = '#FFFF00';
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
-            ctx.fill();
-        }
+        if (!pos) return;
+        ctx.strokeStyle = '#FFFF00';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(pos.x - 3.5, pos.y - 3.5, 7, 7);
     });
 
     // Draw player at center (white triangle)
@@ -1187,9 +1275,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize Managers
     inputHandler = new InputHandler(canvas, { getLogicalSize: () => ({ width: viewWidth, height: viewHeight }) });
     setupTouchSupport();
-    loadControlMode();
+    applySettings();
     setupUserPromptForm();
     audioManager = new AudioManager();
+    applyMuted(); // Sound setting is remembered between visits
     persistenceManager = new PersistenceManager();
     achievementManager = new AchievementManager(persistenceManager);
 
@@ -1232,7 +1321,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get lives() { return lives; },
         get level() { return level; },
         get menuIndex() { return menuSelectionIndex; },
-        get menuOptions() { return currentMenuOptions.map(o => typeof o === 'string' ? o : o.name); },
+        get menuOptions() { return currentMenuOptions.map(o => o.label()); },
         get difficulty() { return selectedDifficulty.id; },
         get pauseIndex() { return pauseMenuSelectionIndex; },
         get upgradeIndex() { return upgradeMenuIndex; },
@@ -1240,6 +1329,11 @@ document.addEventListener('DOMContentLoaded', () => {
         get isTouchDevice() { return isTouchDevice; },
         get loopErrors() { return loopErrorCount; },
         get controlMode() { return controlMode.id; },
+        get settings() { return settings.all(); },
+        get settingsIndex() { return settingsIndex; },
+        get settingsRows() { return visibleRows(settingsRows).map(r => ({ id: r.id, label: r.label(), value: rowValue(r) })); },
+        get palette() { return palette.id; },
+        get particles() { return Particles.countByShape(); },
         get joystick() { return inputHandler.getJoystick(); },
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
         get view() {
@@ -1579,7 +1673,7 @@ function processTaps() {
         for (let i = tapRegions.length - 1; i >= 0; i--) {
             const r = tapRegions[i];
             if (tap.x >= r.x && tap.x <= r.x + r.w && tap.y >= r.y && tap.y <= r.y + r.h) {
-                r.onTap();
+                r.onTap(tap);
                 break;
             }
         }
@@ -1612,89 +1706,16 @@ function handleInput(deltaTime) {
 
     switch (currentGameState) {
         case GameState.MENU:
-             // Regenerate options for current state
-            currentMenuOptions = [...menuOptionBaseTexts];
-            // Dynamically add difficulty options
-            Object.values(Difficulty).forEach(diff => currentMenuOptions.push(diff));
+            currentMenuOptions = visibleRows(mainMenuItems);
+            navigateRows(currentMenuOptions, () => menuSelectionIndex, (i) => { menuSelectionIndex = i; });
+            break;
 
-            if (pausedGameExists) currentMenuOptions[0] = 'Resume';
-            else currentMenuOptions[0] = 'Start';
-
-            // Adjust index bounds safely
-            if (menuSelectionIndex >= currentMenuOptions.length) {
-                menuSelectionIndex = 0;
+        case GameState.SETTINGS:
+            if (inputHandler.consumeAction('escape')) {
+                returnToMenu();
+                break;
             }
-
-            if (inputHandler.consumeAction('menuUp')) {
-                 menuSelectionIndex = (menuSelectionIndex - 1 + currentMenuOptions.length) % currentMenuOptions.length;
-            }
-            if (inputHandler.consumeAction('menuDown')) {
-                 menuSelectionIndex = (menuSelectionIndex + 1) % currentMenuOptions.length;
-            }
-            if (inputHandler.consumeAction('menuSelect')) {
-                const selectedOption = currentMenuOptions[menuSelectionIndex];
-                console.log(`Menu index ${menuSelectionIndex} selected: `, selectedOption);
-
-                // Use the index for Start/Resume, then check the string value for others
-                if (menuSelectionIndex === 0) { // Start or Resume
-                    if (pausedGameExists) {
-                        console.log("Resuming paused game...");
-                        currentGameState = GameState.PLAYING;
-                    } else {
-                        console.log("Executing startGame() from menu...");
-                        startGame();
-                    }
-                } else if (typeof selectedOption === 'string') {
-                    // Handle string options (Upgrades, High Scores, Achievements, Help, Reset, Change User)
-                    switch (selectedOption) {
-                        case 'Upgrades':
-                            upgradeMenuIndex = 0;
-                            currentGameState = GameState.UPGRADES;
-                            break;
-                        case 'High Scores':
-                            // Load combined data when entering the high score screen
-                            allHighScores = persistenceManager.loadHighScores(); // Load all
-                            allAchievements = persistenceManager.loadAchievements(); // Load all achievements
-                            currentGameState = GameState.HIGH_SCORES;
-                            break;
-                        case 'Achievements':
-                            currentGameState = GameState.ACHIEVEMENTS;
-                            break;
-                        case 'Help':
-                            currentGameState = GameState.HELP;
-                            break;
-                        case 'Controls': {
-                            // Cycle through the touch control schemes
-                            const modes = Object.values(ControlMode);
-                            setControlMode(modes[(modes.indexOf(controlMode) + 1) % modes.length]);
-                            break;
-                        }
-                        case 'Reset Data':
-                            if (currentUser && confirm(`Are you sure you want to reset all data for user '${currentUser}'?`)) {
-                                console.log(`Resetting data for user: ${currentUser}`);
-                                persistenceManager.resetUserData(currentUser);
-                                persistenceManager.setCurrentUser(currentUser); // Stay signed in after the reset
-                                highScores = [];
-                                achievementManager.loadUserAchievements(currentUser);
-                                ShipUpgrades.reset();
-                                alert("User data reset.");
-                            }
-                            break;
-                        case 'Change User':
-                            ShipUpgrades.save(persistenceManager, currentUser);
-                            currentGameState = GameState.PROMPT_USER;
-                            promptInput = "";
-                            currentUser = null;
-                            persistenceManager.setCurrentUser(null);
-                            break;
-                    }
-                } else if (typeof selectedOption === 'object' && selectedOption.id) { // Difficulty object
-                    selectedDifficulty = selectedOption;
-                    console.log(`Difficulty set to: ${selectedDifficulty.name}`);
-                } else {
-                     console.warn("Unhandled menu selection:", selectedOption);
-                }
-            }
+            navigateRows(visibleRows(settingsRows), () => settingsIndex, (i) => { settingsIndex = i; });
             break;
 
         case GameState.PLAYING:
@@ -1879,9 +1900,8 @@ function handleInput(deltaTime) {
 
     // Global Mute Toggle
     if (inputHandler.consumeAction('toggleMute')) {
-        audioManager.toggleMute();
-        const muteBtn = document.getElementById('touch-mute-btn');
-        if (muteBtn) muteBtn.classList.toggle('muted', audioManager.isMuted);
+        settings.set('muted', !audioManager.isMuted); // persisted; the listener applies it
+        applyMuted();
     }
 }
 
@@ -2074,52 +2094,38 @@ function renderGame() {
             ctx.font = '48px Arial';
             ctx.fillText("SPACE ADVENTURE", viewWidth / 2, viewHeight / 6);
 
-            // Game description
-            ctx.font = '14px Arial';
-            ctx.fillStyle = '#00FF00';
-            ctx.fillText("Collect GREEN asteroids for points!", viewWidth / 2, viewHeight / 6 + 35);
-            ctx.fillStyle = '#CC0000';
-            ctx.fillText("Avoid RED asteroids - shoot them to survive!", viewWidth / 2, viewHeight / 6 + 55);
-            ctx.fillStyle = 'white';
+            // Game description: a live icon before each line; shape words carry the meaning
+            drawIconLine('green', `Collect smooth ${palette.collectWord} crystals for points!`, viewWidth / 2, viewHeight / 6 + 35, palette.collect);
+            drawIconLine('red', `Avoid spiky ${palette.hazardWord} rocks - shoot them!`, viewWidth / 2, viewHeight / 6 + 58, palette.hazard);
+            ctx.textAlign = 'center';
 
             ctx.font = '20px Arial';
-            // Regenerate options based on paused state for render
-            currentMenuOptions = [...menuOptionBaseTexts];
-            if (pausedGameExists) currentMenuOptions[0] = 'Resume';
-            else currentMenuOptions[0] = 'Start';
-            currentMenuOptions.push(...Object.values(Difficulty)); // Add difficulties
+            currentMenuOptions = visibleRows(mainMenuItems);
 
             // Fit all items between the description and the player/credits footer
             const menuStartY = viewHeight * 0.38;
             const menuLineHeight = Math.min(30, (viewHeight - 75 - menuStartY) / currentMenuOptions.length);
 
             // Adjust index bounds safely before rendering
-             if (menuSelectionIndex >= currentMenuOptions.length) {
+            if (menuSelectionIndex >= currentMenuOptions.length) {
                 menuSelectionIndex = 0;
-             }
+            }
 
-            currentMenuOptions.forEach((option, index) => {
+            currentMenuOptions.forEach((row, index) => {
                 const isSelected = index === menuSelectionIndex;
-                ctx.fillStyle = isSelected ? 'yellow' : 'white';
-                let text = '';
-                if (option === 'Controls') {
-                    text = `Controls: ${controlMode.name}`;
-                } else if (typeof option === 'string') {
-                    text = option;
-                } else { // Difficulty object
-                    text = option.name;
-                    if (option === selectedDifficulty) {
-                        text += " (Selected)";
-                        if (!isSelected) ctx.fillStyle = 'cyan';
-                    }
-                }
                 const itemY = menuStartY + index * menuLineHeight;
-                ctx.fillText(text, viewWidth / 2, itemY);
-                // Tapping an item highlights and selects it
-                addTapRegion(viewWidth * 0.2, itemY - menuLineHeight * 0.7, viewWidth * 0.6, menuLineHeight, () => {
-                    menuSelectionIndex = index;
-                    inputHandler.triggerAction('menuSelect');
-                });
+                ctx.fillStyle = isSelected ? 'yellow' : 'white';
+                if (rowHasValue(row)) {
+                    // "Difficulty: Medium" between arrows that show the row can be stepped
+                    ctx.fillText(`${row.label()}: ${rowValue(row)}`, viewWidth / 2, itemY);
+                    ctx.fillText('\u25C2', viewWidth * 0.27, itemY);
+                    ctx.fillText('\u25B8', viewWidth * 0.73, itemY);
+                } else {
+                    ctx.fillText(row.label(), viewWidth / 2, itemY);
+                }
+                // Tapping an item highlights and selects it (value rows: left/right part steps)
+                addRowTapRegion(viewWidth * 0.2, itemY - menuLineHeight * 0.7, viewWidth * 0.6, menuLineHeight,
+                    row, index, (i) => { menuSelectionIndex = i; });
             });
 
             // Show current user and credits at bottom
@@ -2263,6 +2269,10 @@ function renderGame() {
         case GameState.UPGRADES:
             drawUpgradesMenu();
             FloatingTexts.draw(ctx);
+            break;
+
+        case GameState.SETTINGS:
+            drawSettingsScreen();
             break;
 
         case GameState.HELP:
@@ -2431,14 +2441,14 @@ function checkCollisions() {
 
                     // Visual effects
                     const screenPos = Camera.worldToScreen(asteroid.x, asteroid.y);
-                    Particles.collect(asteroid.x, asteroid.y, '#00FF00');
+                    Particles.collect(asteroid.x, asteroid.y, palette.collect);
 
                     // Floating score text
                     let scoreText = `+${scoreGained}`;
                     if (ComboSystem.multiplier > 1) {
                         scoreText += ` (${ComboSystem.multiplier}x)`;
                     }
-                    FloatingTexts.spawn(screenPos.x, screenPos.y, scoreText, '#00FF00', 18);
+                    FloatingTexts.spawn(screenPos.x, screenPos.y, scoreText, palette.collect, 18);
 
                     // Play collection sound
                     if (audioManager) {
@@ -2452,11 +2462,13 @@ function checkCollisions() {
                         console.log("Collision: Ship <-> Red Asteroid (Shield blocked!)");
                         activePowerUps.shield = 0; // Shield breaks on impact
                         ship.makeInvulnerable(1); // Grace period so the fragments don't kill instantly
+                        Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                         asteroid.split(asteroids, audioManager);
                         break; // split() appended to the array we're iterating
                     } else {
                         console.log("Collision: Ship <-> Red Asteroid (Damage!)");
                         handlePlayerDeath();
+                        Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                         asteroid.split(asteroids, audioManager);
                         return;
                     }
@@ -2511,12 +2523,14 @@ function checkCollisions() {
                 if (asteroid.isGreen()) {
                     // Shooting green asteroids: NO points! (wasteful - should collect instead)
                     console.log("Collision: Player Bullet <-> Green Asteroid (Wasted!)");
+                    Particles.spawn(asteroid.x, asteroid.y, 8, palette.collect, 90, 0.4, 2); // wasted crystal
                     asteroid.split(asteroids, audioManager); // Just destroys, no children
                 } else {
                     // Shooting red asteroids: Good! They split but no points
                     console.log("Collision: Player Bullet <-> Red Asteroid (Destroyed!)");
                     // Chance to drop power-up from red asteroids
                     spawnPowerUpAt(asteroid.x, asteroid.y);
+                    Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                     asteroid.split(asteroids, audioManager);
                     achievementManager.trackAsteroidDestroyed();
                     DynamicDifficulty.trackRedDestroyed();
@@ -2563,6 +2577,8 @@ function checkCollisions() {
                 if (asteroid.isGreen()) {
                     // UFO destroyed a green asteroid - bad for player!
                     console.log("Collision: UFO Bullet <-> Green Asteroid (Score opportunity lost!)");
+                } else {
+                    Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                 }
                 asteroid.split(asteroids, audioManager);
                 break;
@@ -2956,6 +2972,63 @@ function drawAchievements() {
     ctx.fillText((isTouchDevice ? "Tap to return" : "Press Space/Enter/Esc to return"), viewWidth / 2, viewHeight - 40);
 }
 
+// One centred line of text with a small asteroid icon in front of it (menu description)
+function drawIconLine(type, text, centerX, y, color, font = '14px Arial', iconR = 7) {
+    ctx.font = font;
+    const w = ctx.measureText(text).width;
+    const left = centerX - (w + iconR * 2 + 8) / 2;
+    Asteroid.drawIcon?.(ctx, type, left + iconR, y - iconR * 0.7, iconR, palette);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = color;
+    ctx.fillText(text, left + iconR * 2 + 8, y);
+}
+
+// Settings screen: one row per setting, like the Upgrades screen. Tap the left/right part of
+// a row (or press left/right) to change it; Enter or a centre tap steps forward.
+function drawSettingsScreen() {
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.font = '36px Arial';
+    const titleY = viewHeight * 0.14; // below the DOM HUD line
+    ctx.fillText('SETTINGS', viewWidth / 2, titleY);
+
+    const rows = visibleRows(settingsRows);
+    if (settingsIndex >= rows.length) settingsIndex = 0;
+    const listStartY = titleY + 70;
+    const lineHeight = Math.min(55, (viewHeight - 90 - listStartY) / rows.length);
+    const x = viewWidth * 0.1;
+    const w = viewWidth * 0.8;
+
+    rows.forEach((row, index) => {
+        const isSelected = index === settingsIndex;
+        const y = listStartY + index * lineHeight;
+        const top = y - lineHeight * 0.62;
+        const h = lineHeight - 5;
+        if (isSelected) {
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+            ctx.fillRect(x, top, w, h);
+        }
+        ctx.fillStyle = isSelected ? '#FFFF00' : '#FFFFFF';
+        ctx.font = 'bold 20px Arial';
+        if (rowHasValue(row)) {
+            ctx.textAlign = 'left';
+            ctx.fillText(row.label(), x + 15, y);
+            ctx.textAlign = 'right';
+            ctx.fillText(`◂  ${rowValue(row)}  ▸`, x + w - 15, y);
+        } else {
+            ctx.textAlign = 'center';
+            ctx.fillText(row.id === 'back' ? '< Back to Menu >' : row.label(), viewWidth / 2, y);
+        }
+        addRowTapRegion(x, top, w, h, row, index, (i) => { settingsIndex = i; });
+    });
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#888888';
+    ctx.font = '14px Arial';
+    ctx.fillText(isTouchDevice ? 'Tap the left or right side of a setting to change it'
+        : 'UP/DOWN to choose, LEFT/RIGHT or ENTER to change, ESC to go back', viewWidth / 2, viewHeight - 30);
+}
+
 function drawUpgradesMenu() {
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, viewWidth, viewHeight);
@@ -3019,8 +3092,9 @@ function drawUpgradesMenu() {
             ctx.fillStyle = '#888888';
             ctx.fillText('MAXED', viewWidth * 0.9, yPos);
         } else {
+            // Text cue as well as colour: unaffordable rows say how much is missing
             ctx.fillStyle = canAfford ? '#00FF00' : '#FF4444';
-            ctx.fillText(`Cost: ${cost}`, viewWidth * 0.9, yPos);
+            ctx.fillText(canAfford ? `Cost: ${cost}` : `Cost: ${cost} (need ${cost - ShipUpgrades.currency})`, viewWidth * 0.9, yPos);
         }
         ctx.textAlign = 'left';
 
@@ -3044,7 +3118,7 @@ function drawUpgradesMenu() {
 
     ctx.fillStyle = '#888888';
     ctx.font = '14px Arial';
-    ctx.fillText('Earn credits by collecting green asteroids', viewWidth / 2, viewHeight - 50);
+    ctx.fillText(`Earn credits by collecting ${palette.collectWord.toLowerCase()} crystals`, viewWidth / 2, viewHeight - 50);
     ctx.fillText(isTouchDevice ? 'Tap an upgrade to purchase it' : 'Use UP/DOWN to navigate, ENTER to purchase (or click)', viewWidth / 2, viewHeight - 30);
 }
 
@@ -3105,11 +3179,25 @@ function drawPauseMenu() {
     ctx.fillText(isTouchDevice ? "(Tap an option)" : "(Press P or Esc to Resume)", viewWidth / 2, viewHeight * 0.75 - 20);
 }
 
+// Small saucer icon matching UFO.draw (Help screen)
+function drawUfoIcon(x, y, r) {
+    ctx.save();
+    ctx.strokeStyle = '#9933FF';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(x, y + r * 0.2, r, r * 0.3, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(x, y - r * 0.2, r * 0.55, r * 0.3, 0, Math.PI, 0);
+    ctx.stroke();
+    ctx.restore();
+}
+
 function drawHelpScreen() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '28px Arial';
-    const titleY = viewHeight / 12;
+    const titleY = viewHeight * 0.12; // below the DOM HUD line
     ctx.fillText("SPACE ADVENTURE - HELP", viewWidth / 2, titleY);
 
     // Game rules section
@@ -3118,22 +3206,30 @@ function drawHelpScreen() {
     const rulesX = viewWidth / 10;
     let rulesY = titleY + 40;
 
-    ctx.fillStyle = '#00FF00';
-    ctx.fillText("GREEN Asteroids:", rulesX, rulesY);
-    ctx.fillStyle = 'white';
-    ctx.fillText("Fly INTO them to collect points! Don't shoot them.", rulesX + 130, rulesY);
-
-    rulesY += 22;
-    ctx.fillStyle = '#CC0000';
-    ctx.fillText("RED Asteroids:", rulesX, rulesY);
-    ctx.fillStyle = 'white';
-    ctx.fillText("Dangerous! SHOOT them to survive. Don't touch!", rulesX + 120, rulesY);
-
-    rulesY += 22;
-    ctx.fillStyle = '#9933FF';
-    ctx.fillText("Aliens (UFOs):", rulesX, rulesY);
-    ctx.fillStyle = 'white';
-    ctx.fillText("Shoot at you AND green asteroids! Destroy them!", rulesX + 110, rulesY);
+    // One row per thing in space, each with its icon; shapes are named so colour is optional
+    const iconR = 8;
+    const textX = rulesX + iconR * 2 + 10;
+    const rules = [
+        { icon: 'green', color: palette.collect, name: `${palette.collectWord} crystals (smooth):`,
+            text: "Fly INTO them to collect points. Don't shoot them." },
+        { icon: 'red', color: palette.hazard, name: `${palette.hazardWord} rocks (spiky, X):`,
+            text: "Dangerous! SHOOT them. Don't touch!" },
+        { icon: 'ufo', color: '#9933FF', name: 'Aliens (purple UFOs):',
+            text: `Shoot at you and ${palette.collectWord.toLowerCase()} crystals. Destroy them!` },
+    ];
+    rules.forEach((rule, i) => {
+        const y = rulesY + i * 40;
+        if (rule.icon === 'ufo') drawUfoIcon(rulesX + iconR, y - 5, iconR + 2);
+        else Asteroid.drawIcon?.(ctx, rule.icon, rulesX + iconR, y - 5, iconR, palette);
+        ctx.textAlign = 'left';
+        ctx.font = 'bold 15px Arial';
+        ctx.fillStyle = rule.color;
+        ctx.fillText(rule.name, textX, y - 2);
+        ctx.font = '14px Arial';
+        ctx.fillStyle = 'white';
+        ctx.fillText(rule.text, textX, y + 15);
+    });
+    rulesY += 2 * 40 + 12;
 
     // Controls section
     ctx.fillStyle = 'white';
@@ -3153,7 +3249,7 @@ function drawHelpScreen() {
         { action: 'Fire', keys: 'Red button' },
         { action: 'Hyperspace (Risky!)', keys: 'Star button' },
         { action: 'Pause Game', keys: 'Pause button (top right)' },
-        { action: 'Control scheme', keys: 'Menu > Controls' },
+        { action: 'Controls, colours, sound', keys: 'Menu > Settings' },
     ] : isTouchDevice ? [
         { action: 'Rotate Left/Right', keys: 'Arrow buttons (bottom left)' },
         { action: 'Thrust Forward', keys: 'Up arrow button' },
@@ -3161,6 +3257,7 @@ function drawHelpScreen() {
         { action: 'Hyperspace (Risky!)', keys: 'Star button' },
         { action: 'Pause Game', keys: 'Pause button (top right)' },
         { action: 'Toggle Mute', keys: 'Speaker button (top right)' },
+        { action: 'Controls, colours, sound', keys: 'Menu > Settings' },
     ] : [
         { action: 'Rotate Left/Right', keys: 'Arrow Keys / A,D' },
         { action: 'Thrust Forward', keys: 'Up Arrow / W' },
@@ -3168,6 +3265,7 @@ function drawHelpScreen() {
         { action: 'Hyperspace (Risky!)', keys: 'H / S / Down Arrow' },
         { action: 'Pause Game', keys: 'P / Escape' },
         { action: 'Toggle Mute', keys: 'M' },
+        { action: 'Colours, sound', keys: 'Menu > Settings' },
     ];
 
     controls.forEach((ctrl, index) => {

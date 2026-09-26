@@ -1,8 +1,8 @@
 // Keyboard + mouse integration tests (desktop project).
 import { test, expect } from '@playwright/test';
 import {
-  MENU, MENU_LABELS, CONTROL_MODE_KEY, CONTROL_LABELS, openFresh, snap, hook, waitForState,
-  loginWithKeyboard, menuItemCenter, tapRegionCenter, drawnTexts,
+  MENU, MENU_LABELS, CONTROL_MODE_KEY, SETTINGS_ROWS_DESKTOP, openFresh, snap, hook, waitForState,
+  loginWithKeyboard, frames, menuItemCenter, tapRegionCenter, tapRegionPoint, drawnTexts, difficultyText,
 } from './helpers.js';
 
 async function startGame(page) {
@@ -36,8 +36,9 @@ test.describe('keyboard: username prompt', () => {
     expect(s.user).toBe('PILOT7');
     expect(s.menuIndex).toBe(0);
     expect(s.menuOptions).toEqual(MENU_LABELS);
-    expect(s.menuOptions.indexOf('Controls')).toBe(MENU.CONTROLS);
-    expect(s.menuOptions.indexOf('Controls')).toBe(s.menuOptions.indexOf('Help') + 1);
+    expect(s.menuOptions.indexOf('Settings')).toBe(MENU.SETTINGS);
+    expect(s.menuOptions.indexOf('Settings')).toBe(s.menuOptions.indexOf('Help') + 1);
+    expect(s.menuOptions).not.toContain('Controls');
     await expect(page.locator('#user-prompt')).toBeHidden();
     expect(errors).toEqual([]);
   });
@@ -133,20 +134,39 @@ test.describe('keyboard: menu', () => {
     await expect.poll(() => hook(page, 'menuIndex')).toBe(0);
   });
 
-  test('selecting Easy and Hard changes the difficulty and starting lives', async ({ page }) => {
+  test('the Difficulty row cycles with Left/Right (and A/D), Enter and Space', async ({ page }) => {
     expect(await hook(page, 'difficulty')).toBe('medium');
-    await selectMenuIndex(page, MENU.EASY);
-    await page.keyboard.press('Enter');
+    await selectMenuIndex(page, MENU.DIFFICULTY);
+    await page.keyboard.press('ArrowLeft');
     await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
-    expect(await hook(page, 'state')).toBe('menu');
-
-    await selectMenuIndex(page, MENU.HARD);
+    await page.keyboard.press('ArrowLeft'); // wraps
+    await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
+    await page.keyboard.press('ArrowRight'); // wraps back
+    await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
+    await page.keyboard.press('d');
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
+    await page.keyboard.press('a');
+    await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
+    await page.keyboard.press('Enter'); // Enter steps forward
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
     await page.keyboard.press('Space');
     await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
+    expect(await hook(page, 'state')).toBe('menu');
+    expect(await hook(page, 'menuIndex')).toBe(MENU.DIFFICULTY);
 
     await selectMenuIndex(page, MENU.START);
     await startGame(page);
     expect(await hook(page, 'lives')).toBe(2); // Hard: 2 starting lives
+  });
+
+  test('Left/Right on other rows do nothing', async ({ page }) => {
+    await selectMenuIndex(page, MENU.HELP);
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(150);
+    expect(await hook(page, 'state')).toBe('menu');
+    expect(await hook(page, 'menuIndex')).toBe(MENU.HELP);
+    expect(await hook(page, 'difficulty')).toBe('medium');
   });
 
   test('Start begins a game with sensible initial state', async ({ page }) => {
@@ -174,10 +194,18 @@ test.describe('keyboard: menu', () => {
     await page.mouse.click(help.x, help.y);
     await waitForState(page, 'menu');
 
-    const hard = await menuItemCenter(page, 'Hard');
-    await page.mouse.click(hard.x, hard.y);
+    // Difficulty row: click the right part -> next, the left part -> previous
+    await frames(page, 2);
+    let p = await tapRegionPoint(page, MENU.DIFFICULTY, 0.9);
+    await page.mouse.click(p.x, p.y);
     await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
-    expect(await hook(page, 'menuIndex')).toBe(MENU.HARD);
+    expect(await hook(page, 'menuIndex')).toBe(MENU.DIFFICULTY);
+    p = await tapRegionPoint(page, MENU.DIFFICULTY, 0.1);
+    await page.mouse.click(p.x, p.y);
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
+    p = await tapRegionPoint(page, MENU.DIFFICULTY, 0.5); // centre cycles forward
+    await page.mouse.click(p.x, p.y);
+    await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
 
     const start = await menuItemCenter(page, 'Start');
     await page.mouse.click(start.x, start.y);
@@ -196,6 +224,7 @@ test.describe('keyboard: menu', () => {
     ['High Scores', MENU.HIGH_SCORES, 'high_scores'],
     ['Achievements', MENU.ACHIEVEMENTS, 'achievements'],
     ['Upgrades', MENU.UPGRADES, 'upgrades'],
+    ['Settings', MENU.SETTINGS, 'settings'],
   ]) {
     test(`${label} screen opens and Escape returns to the menu`, async ({ page }) => {
       await selectMenuIndex(page, index);
@@ -428,84 +457,35 @@ test.describe('keyboard: gameplay', () => {
   });
 });
 
-test.describe('keyboard: Controls menu item', () => {
-  test('Controls item is listed after Help and every item has a tap region', async ({ page }) => {
+test.describe('keyboard: menu layout and control mode on desktop', () => {
+  test('every menu item has a tap region, stacked inside the canvas', async ({ page }) => {
     await openFresh(page, { recordText: true });
     await loginWithKeyboard(page, 'CTRL');
     const s = await snap(page);
-    expect(s.menuOptions[MENU.CONTROLS]).toBe('Controls');
+    expect(s.menuOptions[MENU.SETTINGS]).toBe('Settings');
     expect(s.tapRegions.length).toBe(s.menuOptions.length);
     // Regions are stacked top to bottom without overlapping (menu line height shrinks to fit)
     for (let i = 1; i < s.tapRegions.length; i++) {
       expect(s.tapRegions[i].y).toBeGreaterThanOrEqual(s.tapRegions[i - 1].y + s.tapRegions[i - 1].h - 0.5);
     }
     const last = s.tapRegions[s.tapRegions.length - 1];
-    const h = await page.evaluate(() => document.getElementById('gameCanvas').height);
-    expect(last.y + last.h).toBeLessThanOrEqual(h);
-    expect(await drawnTexts(page)).toContain(CONTROL_LABELS.joystick);
+    expect(last.y + last.h).toBeLessThanOrEqual(s.view.height);
+    const texts = await drawnTexts(page);
+    expect(texts).toContain(difficultyText('Medium'));
+    expect(texts.some((t) => t.startsWith('Controls'))).toBe(false);
   });
 
-  test('default control mode is joystick with empty storage', async ({ page }) => {
+  test('default control mode is joystick with empty storage; Settings has no Controls row on desktop', async ({ page }) => {
     await openFresh(page);
     await loginWithKeyboard(page, 'CTRL');
     expect(await hook(page, 'controlMode')).toBe('joystick');
     await expect(page.locator('body')).toHaveClass(/controls-joystick/);
     await expect(page.locator('body')).not.toHaveClass(/controls-buttons/);
     expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBeNull();
-  });
-
-  test('Enter on Controls toggles joystick -> buttons -> joystick and updates the label', async ({ page }) => {
-    await openFresh(page, { recordText: true });
-    await loginWithKeyboard(page, 'CTRL');
-    await selectMenuIndex(page, MENU.CONTROLS);
-    expect(await drawnTexts(page)).toContain(CONTROL_LABELS.joystick);
-
+    await selectMenuIndex(page, MENU.SETTINGS);
     await page.keyboard.press('Enter');
-    await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
-    await expect(page.locator('body')).toHaveClass(/controls-buttons/);
-    await expect(page.locator('body')).not.toHaveClass(/controls-joystick/);
-    await expect.poll(() => drawnTexts(page)).toContain(CONTROL_LABELS.buttons);
-    expect(await drawnTexts(page)).not.toContain(CONTROL_LABELS.joystick);
-    expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBe('buttons');
-    // Selecting it keeps us on the menu with the item still highlighted
-    expect(await hook(page, 'state')).toBe('menu');
-    expect(await hook(page, 'menuIndex')).toBe(MENU.CONTROLS);
-
-    await page.keyboard.press('Space'); // Space is also menuSelect
-    await expect.poll(() => hook(page, 'controlMode')).toBe('joystick');
-    await expect(page.locator('body')).toHaveClass(/controls-joystick/);
-    await expect.poll(() => drawnTexts(page)).toContain(CONTROL_LABELS.joystick);
-    expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBe('joystick');
-  });
-
-  test('mouse click on Controls toggles it', async ({ page }) => {
-    await openFresh(page);
-    await loginWithKeyboard(page, 'CTRL');
-    const p = await menuItemCenter(page, 'Controls');
-    await page.mouse.click(p.x, p.y);
-    await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
-    expect(await hook(page, 'state')).toBe('menu');
-  });
-
-  test('control mode persists across reloads', async ({ page }) => {
-    await openFresh(page, { recordText: true });
-    await loginWithKeyboard(page, 'CTRL');
-    await selectMenuIndex(page, MENU.CONTROLS);
-    await page.keyboard.press('Enter');
-    await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
-    await page.reload();
-    await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.state === 'menu');
-    expect(await hook(page, 'controlMode')).toBe('buttons');
-    await expect(page.locator('body')).toHaveClass(/controls-buttons/);
-    await expect.poll(() => drawnTexts(page)).toContain(CONTROL_LABELS.buttons);
-    // And back again, which also persists
-    await selectMenuIndex(page, MENU.CONTROLS);
-    await page.keyboard.press('Enter');
-    await expect.poll(() => hook(page, 'controlMode')).toBe('joystick');
-    await page.reload();
-    await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.state === 'menu');
-    expect(await hook(page, 'controlMode')).toBe('joystick');
-    await expect(page.locator('body')).toHaveClass(/controls-joystick/);
+    await waitForState(page, 'settings');
+    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(SETTINGS_ROWS_DESKTOP);
   });
 
   test('an invalid saved control mode falls back to joystick', async ({ page }) => {
@@ -556,8 +536,8 @@ test.describe('keyboard: game over', () => {
     await openFresh(page);
     await loginWithKeyboard(page, 'CRASHER');
     // Hard mode: 2 lives. Fly around at full thrust while spinning to hit red asteroids.
-    await selectMenuIndex(page, MENU.HARD);
-    await page.keyboard.press('Enter');
+    await selectMenuIndex(page, MENU.DIFFICULTY);
+    await page.keyboard.press('ArrowRight');
     await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
     await selectMenuIndex(page, MENU.START);
     await startGame(page);

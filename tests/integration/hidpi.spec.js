@@ -66,21 +66,22 @@ test.describe('hidpi: canvas sizing', () => {
     await loginWithKeyboard(page);
     const regions = await hook(page, 'tapRegions');
     const options = await hook(page, 'menuOptions');
-    const easy = options.indexOf('Easy');
-    const hard = options.indexOf('Hard');
-    // Near the top edge of "Easy" and the bottom edge of "Hard"
+    const diff = options.indexOf('Difficulty');
+    // Near the top-right corner of the Difficulty row (next) and its bottom-left (previous)
     const toPage = (x, y) => page.evaluate(([cx, cy]) => {
       const r = document.getElementById('gameCanvas').getBoundingClientRect();
       const view = window.__spaceAdventure.view;
       return { x: r.left + cx * (r.width / view.width), y: r.top + cy * (r.height / view.height) };
     }, [x, y]);
-    const e = regions[easy];
+    const e = regions[diff];
     await press(page, await toPage(e.x + e.w * 0.9, e.y + e.h * 0.15), touch);
-    await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
-    await frames(page, 2);
-    const h = (await hook(page, 'tapRegions'))[hard];
-    await press(page, await toPage(h.x + h.w * 0.1, h.y + h.h * 0.85), touch);
     await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
+    await frames(page, 2);
+    const h = (await hook(page, 'tapRegions'))[diff];
+    await press(page, await toPage(h.x + h.w * 0.1, h.y + h.h * 0.85), touch);
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
+    // The row above (Change User) was not triggered by the near-edge taps
+    expect(await hook(page, 'user')).not.toBeNull();
     expect(await hook(page, 'state')).toBe('menu');
     // And a centre tap on Help opens it
     await press(page, await tapRegionCenter(page, options.indexOf('Help')), touch);

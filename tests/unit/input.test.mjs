@@ -130,6 +130,22 @@ test('a key mapped to both continuous and single actions drives both (ArrowUp ->
     assert.equal(input.consumeAction('menuUp'), true);
 });
 
+test('ArrowLeft/A and ArrowRight/D also give single-press menuLeft/menuRight', () => {
+    const { win, input } = setup();
+    for (const [key, action, rotate] of [['ArrowLeft', 'menuLeft', 'rotateLeft'], ['a', 'menuLeft', 'rotateLeft'],
+        ['ArrowRight', 'menuRight', 'rotateRight'], ['D', 'menuRight', 'rotateRight']]) {
+        const ev = keyEvent(key);
+        win.dispatch('keydown', ev);
+        assert.equal(input.isPressed(rotate), true, key);
+        assert.equal(input.consumeAction(action), true, key);
+        assert.equal(input.consumeAction(action), false, `${key} consumed once`);
+        win.dispatch('keydown', keyEvent(key)); // auto-repeat does not retrigger
+        assert.equal(input.consumeAction(action), false, `${key} repeat`);
+        win.dispatch('keyup', keyEvent(key));
+        assert.equal(ev.defaultPrevented, true, key);
+    }
+});
+
 test('keys whose target is an INPUT (or TEXTAREA) are ignored', () => {
     const { win, input } = setup();
     for (const tagName of ['INPUT', 'TEXTAREA']) {

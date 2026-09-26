@@ -135,7 +135,7 @@ export class UFO extends Entity {
     draw(ctx) {
         if (!this.isAlive) return;
 
-        ctx.strokeStyle = 'lime'; // Distinct color
+        ctx.strokeStyle = '#9933FF'; // Purple: never the collectible hue (Help screen says purple too)
         ctx.lineWidth = 1.5;
         ctx.beginPath();
 

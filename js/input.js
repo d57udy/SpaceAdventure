@@ -33,6 +33,8 @@ export class InputHandler {
             // Menu-specific actions (can overlap with game actions)
             menuUp: ['ArrowUp', 'w', 'W'],
             menuDown: ['ArrowDown', 's', 'S'],
+            menuLeft: ['ArrowLeft', 'a', 'A'],
+            menuRight: ['ArrowRight', 'd', 'D'],
             menuSelect: ['Enter', ' ', 'Space'],
             // Keys for prompt input
             backspace: ['Backspace'],
@@ -94,7 +96,7 @@ export class InputHandler {
         if (!actions) return;
 
         const shouldPreventDefault = actions.some(action =>
-            ['thrust', 'rotateLeft', 'rotateRight', 'fire', 'hyperspace', 'enter', 'menuUp', 'menuDown', 'backspace'].includes(action)
+            ['thrust', 'rotateLeft', 'rotateRight', 'fire', 'hyperspace', 'enter', 'menuUp', 'menuDown', 'menuLeft', 'menuRight', 'backspace'].includes(action)
         );
         if (shouldPreventDefault) event.preventDefault();
 

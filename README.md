@@ -8,20 +8,24 @@ Try the game live: https://d57udy.github.io/SpaceAdventure/
 
 Navigate your spaceship through an infinite asteroid field with two types of asteroids:
 
-### Green Asteroids (Collectible)
+### Green Crystals (Collectible)
+- Smooth, faceted, glowing shapes
 - **Fly INTO them** to collect points
 - Larger green asteroids give more points
 - **Don't shoot them** - shooting destroys potential points!
 
-### Red Asteroids (Dangerous)
+### Red Rocks (Dangerous)
+- Spiky star shapes with an X in the middle
 - **Avoid collision** - touching them costs you a life
 - **Shoot them** to destroy and survive
 - They split into smaller red asteroids when shot
 
 ### Aliens (UFOs)
-- Enemy UFOs that shoot at you
+- Purple enemy UFOs that shoot at you
 - They also target green asteroids to steal your scoring opportunities!
 - Destroy them before they destroy your points
+
+The shapes carry the meaning, so colour is never needed. For colour-blind players, **Settings > Colours > Colour-safe** switches to blue crystals and orange rocks (remembered on that device).
 
 ## Features
 
@@ -48,7 +52,7 @@ Navigate your spaceship through an infinite asteroid field with two types of ast
 
 ### Touch (tablets and phones)
 
-On a touch screen the game shows on-screen controls while you play. No keyboard is needed. There are two touch schemes; switch between them with **Controls** in the main menu (your choice is remembered on that device).
+On a touch screen the game shows on-screen controls while you play. No keyboard is needed. There are two touch schemes; switch between them with **Settings > Controls** in the main menu (your choice is remembered on that device).
 
 **Drag to Steer (default)**
 

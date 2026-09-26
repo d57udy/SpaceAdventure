@@ -58,7 +58,7 @@ test('Asteroid: explicit type, size, velocity and score value', () => {
     const r = new Asteroid(0, 0, Sizes.SMALL, null, 1, Types.RED);
     assert.equal(r.scoreValue, 0);
     assert.equal(r.isRed(), true);
-    assert.equal(r.shapeVertices.length, Sizes.SMALL.points);
+    assert.equal(r.shapeVertices.length, Sizes.SMALL.points * 2); // star: tips + valleys
 });
 
 test('Asteroid: random velocity speed = base * multiplier * size multiplier', () => {
@@ -74,12 +74,118 @@ test('Asteroid: random type is 60/40 green/red based on Math.random', (t) => {
     assert.equal(new Asteroid(0, 0).type, Types.RED);
 });
 
-test('Asteroid: shape vertices lie within [0.6r, r]', () => {
-    const a = new Asteroid(0, 0, Sizes.LARGE, null, 1, Types.RED);
-    for (const v of a.shapeVertices) {
-        const d = Math.hypot(v.x, v.y);
-        assert.ok(d <= 40 + 1e-9 && d >= 40 * 0.6 - 1e-9, `vertex dist ${d}`);
+// --- Asteroid shapes (colour-blind friendly: shape carries the meaning) ---
+const { Palettes } = await import('../../js/palette.js');
+const dist = (v) => Math.hypot(v.x, v.y);
+
+test('Asteroid: crystal (green) vertices all lie within [0.9r, r], 8-10 vertices', () => {
+    for (const size of [Sizes.LARGE, Sizes.MEDIUM, Sizes.SMALL]) {
+        for (let n = 0; n < 20; n++) {
+            const a = new Asteroid(0, 0, size, null, 1, Types.GREEN);
+            assert.ok(a.shapeVertices.length >= 8 && a.shapeVertices.length <= 10, `${a.shapeVertices.length}`);
+            for (const v of a.shapeVertices) {
+                const d = dist(v);
+                assert.ok(d <= size.radius + 1e-9 && d >= size.radius * 0.9 - 1e-9, `crystal vertex ${d}`);
+            }
+        }
     }
+});
+
+test('Asteroid: spiky (red) vertices alternate tips >= 0.95r and valleys <= 0.72r, one tip at r', () => {
+    for (const size of [Sizes.LARGE, Sizes.MEDIUM, Sizes.SMALL]) {
+        for (let n = 0; n < 20; n++) {
+            const a = new Asteroid(0, 0, size, null, 1, Types.RED);
+            const r = size.radius;
+            assert.equal(a.shapeVertices.length, size.points * 2);
+            let atR = 0;
+            a.shapeVertices.forEach((v, i) => {
+                const d = dist(v);
+                assert.ok(d <= r + 1e-9, `vertex beyond hitbox ${d}`);
+                if (i % 2 === 0) assert.ok(d >= 0.95 * r - 1e-9, `tip ${d}`);
+                else assert.ok(d <= 0.72 * r && d >= 0.55 * r - 1e-9, `valley ${d}`);
+                if (Math.abs(d - r) < 1e-9) atR++;
+            });
+            assert.ok(atR >= 1, 'a tip reaches the full radius (danger never smaller than it looks)');
+        }
+    }
+});
+
+test('Asteroid: red split children are red and spiky', () => {
+    const a = new Asteroid(0, 0, Sizes.LARGE, { x: 0, y: 0 }, 1, Types.RED);
+    for (const k of a.split([])) {
+        assert.equal(k.type, Types.RED);
+        assert.equal(k.shapeVertices.length, Sizes.MEDIUM.points * 2);
+        const ds = k.shapeVertices.map(dist);
+        assert.ok(Math.min(...ds) <= 0.72 * k.radius);
+    }
+});
+
+// Recording 2D context: logs calls and style assignments
+function recordingCtx() {
+    const calls = [];
+    const styles = { strokeStyle: [], fillStyle: [] };
+    const target = { calls, styles };
+    return new Proxy(target, {
+        get(t, prop) {
+            if (prop in t) return t[prop];
+            return (...args) => { calls.push([prop, ...args]); };
+        },
+        set(t, prop, value) {
+            if (prop in styles) styles[prop].push(value);
+            calls.push(['set:' + String(prop), value]);
+            return true;
+        },
+    });
+}
+
+test('Asteroid.drawIcon: crystal draws facet lines from the centre, hazard draws the X mark; no Math.random', (t) => {
+    const rnd = t.mock.method(Math, 'random', () => { throw new Error('Math.random during rendering'); });
+    const g = recordingCtx();
+    Asteroid.drawIcon(g, Types.GREEN, 50, 60, 10, Palettes.STANDARD);
+    // translate(50, 60) then facets start at the local origin
+    assert.deepEqual(g.calls.find((c) => c[0] === 'translate'), ['translate', 50, 60]);
+    const facetMoves = g.calls.filter((c) => c[0] === 'moveTo' && c[1] === 0 && c[2] === 0);
+    assert.ok(facetMoves.length >= 4, `facets ${facetMoves.length}`);
+    assert.ok(g.styles.strokeStyle.some((s) => s.startsWith('rgba(0, 255, 0')));
+
+    const r = recordingCtx();
+    Asteroid.drawIcon(r, Types.RED, 50, 60, 10, Palettes.STANDARD);
+    assert.equal(r.calls.filter((c) => c[0] === 'moveTo' && c[1] === 0 && c[2] === 0).length, 0);
+    const arcs = r.calls.filter((c) => c[0] === 'arc' && c[1] === 0 && c[2] === 0);
+    assert.equal(arcs.length, 1, 'hazard mark circle');
+    assert.ok(arcs[0][3] < 10);
+    const crossLines = r.calls.filter((c) => c[0] === 'lineTo' && Math.abs(Math.abs(c[1]) - Math.abs(c[2])) < 1e-9 && c[1] !== 0);
+    assert.ok(crossLines.length >= 2, 'X lines');
+    assert.ok(r.styles.strokeStyle.includes('#CC0000'));
+    assert.equal(rnd.mock.callCount(), 0);
+});
+
+test('Asteroid.draw uses the palette colours after a palette change', (t) => {
+    const g = new Asteroid(0, 0, Sizes.LARGE, { x: 0, y: 0 }, 1, Types.GREEN);
+    const r = new Asteroid(0, 0, Sizes.LARGE, { x: 0, y: 0 }, 1, Types.RED);
+    const before = Asteroid.palette;
+    try {
+        Asteroid.palette = Palettes.COLOUR_SAFE;
+        const c1 = recordingCtx();
+        g.draw(c1);
+        assert.ok(c1.styles.strokeStyle.some((s) => s.startsWith('rgba(61, 183, 255')), JSON.stringify(c1.styles.strokeStyle));
+        assert.ok(!c1.styles.strokeStyle.some((s) => s.startsWith('rgba(0, 255, 0')));
+        const c2 = recordingCtx();
+        r.draw(c2);
+        assert.ok(c2.styles.strokeStyle.includes(Palettes.COLOUR_SAFE.hazard));
+        assert.ok(!c2.styles.strokeStyle.includes('#CC0000'));
+        Asteroid.palette = Palettes.STANDARD;
+        const c3 = recordingCtx();
+        r.draw(c3);
+        assert.ok(c3.styles.strokeStyle.includes('#CC0000'));
+    } finally {
+        Asteroid.palette = before;
+    }
+    // Draw does not call Math.random either
+    const rnd = t.mock.method(Math, 'random', () => { throw new Error('random in draw'); });
+    g.draw(recordingCtx());
+    r.draw(recordingCtx());
+    assert.equal(rnd.mock.callCount(), 0);
 });
 
 test('Asteroid.split: red LARGE -> two red MEDIUM children', () => {

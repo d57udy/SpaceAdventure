@@ -3,18 +3,29 @@
 // tests never write game state, they drive the game through real input.
 import { expect } from '@playwright/test';
 
+// Main menu rows (a later step inserts 'Multiplayer' after Start)
 export const MENU = {
-  START: 0, UPGRADES: 1, HIGH_SCORES: 2, ACHIEVEMENTS: 3, HELP: 4, CONTROLS: 5,
-  RESET: 6, CHANGE_USER: 7, EASY: 8, MEDIUM: 9, HARD: 10,
+  START: 0, UPGRADES: 1, HIGH_SCORES: 2, ACHIEVEMENTS: 3, HELP: 4, SETTINGS: 5,
+  RESET: 6, CHANGE_USER: 7, DIFFICULTY: 8,
 };
 
 export const MENU_LABELS = [
-  'Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Controls', 'Reset Data', 'Change User',
-  'Easy', 'Medium', 'Hard',
+  'Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Settings', 'Reset Data', 'Change User',
+  'Difficulty',
 ];
 
+/** Drawn text of the single difficulty row, e.g. 'Difficulty: Medium'. */
+export const difficultyText = (name) => `Difficulty: ${name}`;
+
+// Settings screen rows (Controls only on touch devices)
+export const SETTINGS_ROWS_TOUCH = ['controls', 'colours', 'sound', 'back'];
+export const SETTINGS_ROWS_DESKTOP = ['colours', 'sound', 'back'];
+
 export const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
-export const CONTROL_LABELS = { joystick: 'Controls: Drag to Steer', buttons: 'Controls: Buttons' };
+export const PALETTE_KEY = 'spaceAdventure_palette';
+export const MUTED_KEY = 'spaceAdventure_muted';
+export const CONTROL_LABELS = { joystick: 'Drag to Steer', buttons: 'Buttons' };
+export const PALETTE_LABELS = { standard: 'Standard', safe: 'Colour-safe' };
 
 /** Snapshot of the whole hook (plain object). */
 export function snap(page) {
@@ -26,6 +37,7 @@ export function snap(page) {
       pauseIndex: g.pauseIndex, upgradeIndex: g.upgradeIndex, isMuted: g.isMuted,
       isTouchDevice: g.isTouchDevice, world: g.world, view: g.view, ship: g.ship, counts: g.counts,
       tapRegions: g.tapRegions, controlMode: g.controlMode, joystick: g.joystick,
+      settings: g.settings, settingsIndex: g.settingsIndex, settingsRows: g.settingsRows, palette: g.palette,
     };
   });
 }
@@ -62,23 +74,26 @@ export async function waitForState(page, state, timeout = 5000) {
  * Open the game with empty localStorage and collect page errors.
  * Options:
  *   controlMode: 'joystick' | 'buttons' -> pre-seed the saved touch control scheme (as if the
- *                player had picked it in the menu earlier); omitted = no saved choice.
+ *                player had picked it in Settings earlier); omitted = no saved choice.
+ *   storage:     { key: value } more localStorage entries to seed (e.g. PALETTE_KEY: 'safe').
  *   recordText:  true -> record the strings drawn with fillText on the canvas (see drawnTexts).
  * Returns the array that page errors are pushed into.
  */
-export async function openFresh(page, { controlMode = null, recordText = false } = {}) {
+export async function openFresh(page, { controlMode = null, storage = {}, recordText = false } = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
+  const seed = { ...storage };
+  if (controlMode) seed[CONTROL_MODE_KEY] = controlMode;
   // Clear storage once per test (not on reloads the test itself performs)
-  await page.addInitScript(([key, mode]) => {
+  await page.addInitScript((entries) => {
     try {
       if (!sessionStorage.getItem('__sa_cleared')) {
         localStorage.clear();
-        if (mode) localStorage.setItem(key, mode);
+        for (const [k, v] of Object.entries(entries)) localStorage.setItem(k, v);
         sessionStorage.setItem('__sa_cleared', '1');
       }
     } catch (e) { /* storage unavailable */ }
-  }, [CONTROL_MODE_KEY, controlMode]);
+  }, seed);
   if (recordText) {
     // Observe (not alter) canvas text drawing so labels like "Controls: Buttons" can be checked
     await page.addInitScript(() => {
@@ -260,4 +275,19 @@ export async function loginWithTouch(page, name = 'TOUCHY') {
 export async function tapMenuItem(page, label) {
   const p = await menuItemCenter(page, label);
   await tapAt(page, p);
+}
+
+/** Settings row index by id (current Settings screen). */
+export async function settingsRowIndex(page, id) {
+  const rows = await hook(page, 'settingsRows');
+  const index = rows.findIndex((r) => r.id === id);
+  expect(index, `settings row '${id}' in ${JSON.stringify(rows)}`).toBeGreaterThanOrEqual(0);
+  return index;
+}
+
+/** Page point at a fraction (0..1) across tapRegions[index], vertically centred. */
+export async function tapRegionPoint(page, index, fx = 0.5) {
+  await expect.poll(() => hook(page, 'tapRegions.length')).toBeGreaterThan(index);
+  const r = (await hook(page, 'tapRegions'))[index];
+  return canvasToPage(page, r.x + r.w * fx, r.y + r.h / 2);
 }
