@@ -1,6 +1,7 @@
 import { Entity } from './entity.js';
 import { degToRad, randomRange } from './utils.js';
-import { Bullet } from './bullet.js'; // Will create this file next
+import { Bullet } from './bullet.js';
+import { hullMarkShapes } from './mpView.js';
 
 // Constants for the ship
 const SHIP_THRUST = 5; // Acceleration per frame when thrusting
@@ -29,6 +30,9 @@ export class PlayerShip extends Entity {
         // Owner (js/players.js player id) and bullet colour, set by main.js; bullets carry them
         this.ownerId = null;
         this.bulletColour = null;
+        // Multiplayer identity (set by main.js): hull colour and a per-seat hull mark
+        this.colour = null;     // null = white (single-player)
+        this.hullMark = 'none'; // js/mpView.js HULL_MARKS
 
         // Make invulnerable on creation (spawn protection)
         this.makeInvulnerable(SHIP_INVULNERABILITY_DURATION);
@@ -185,7 +189,7 @@ export class PlayerShip extends Entity {
             return;
         }
 
-        ctx.strokeStyle = 'white';
+        ctx.strokeStyle = this.colour || 'white';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
 
@@ -204,6 +208,7 @@ export class PlayerShip extends Entity {
         ctx.lineTo(rearRightX, rearRightY);
         ctx.closePath();
         ctx.stroke();
+        if (this.hullMark && this.hullMark !== 'none') this.drawHullMark(ctx);
 
         // Draw thrust flame if thrusting - low poly flickering style
         if (this.isThrusting) {
@@ -254,6 +259,31 @@ export class PlayerShip extends Entity {
 
         // Reset stroke style
         ctx.lineWidth = 1;
+    }
+
+    // Per-seat hull mark (stripe, dot, notch) in the hull colour, in the ship's own frame
+    drawHullMark(ctx) {
+        const shapes = hullMarkShapes(this.hullMark, this.radius);
+        if (!shapes.length) return;
+        const c = Math.cos(this.rotation);
+        const s = Math.sin(this.rotation);
+        const tx = (x, y) => this.x + x * c - y * s;
+        const ty = (x, y) => this.y + x * s + y * c;
+        ctx.strokeStyle = this.colour || 'white';
+        ctx.fillStyle = this.colour || 'white';
+        ctx.lineWidth = 2;
+        for (const sh of shapes) {
+            ctx.beginPath();
+            if (sh.type === 'line') {
+                ctx.moveTo(tx(sh.x1, sh.y1), ty(sh.x1, sh.y1));
+                ctx.lineTo(tx(sh.x2, sh.y2), ty(sh.x2, sh.y2));
+                ctx.stroke();
+            } else {
+                ctx.arc(tx(sh.x, sh.y), ty(sh.x, sh.y), sh.r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        ctx.lineWidth = 1.5;
     }
 
     destroy(audioManager, force = false) {

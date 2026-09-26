@@ -22,8 +22,10 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
-import { createCamera } from './camera.js';
-import { MODES, getMode, scaleForPlayers, pickSpawnPoint, ringSpawnGrid, worldSpawnGrid } from './modes.js';
+import { createCamera, frameTargets } from './camera.js';
+import {
+    MODES, getMode, scaleForPlayers, pickSpawnPoint, ringSpawnGrid, worldSpawnGrid, updateRevive, reviverFor, REVIVE,
+} from './modes.js';
 import { createPlayer, tickPowerUps, teamScore, isLiving, livingPlayers, nearestLivingShip } from './players.js';
 import {
     createSeatLobby, createCountLobby, handleLobbyEvent, tickLobby, seatLineup, countLineup, restoreSeatLineup,
@@ -32,6 +34,11 @@ import {
 } from './lobby.js';
 import { buildResults, resultBanner, historyEntry } from './mpResults.js';
 import { MP_KEYS, addHistory, addToBoard, recordRivalry, isHistory, isBoard, isRivalry } from './mpRecords.js';
+import { formatSeatHud, SeatHudView } from './hud.js';
+import {
+    hullMarkFor, touchLayout, hudMode, hudSide, compactHudCorner, edgeArrow, respawnFraction, isIpad,
+    touchPointsWarning,
+} from './mpView.js';
 import { initPwa } from './pwa.js';
 import { createPwaUi } from './pwaUi.js';
 
@@ -104,7 +111,9 @@ const LEVEL_UP_SCORE = 500; // Score needed per level (level 2 at 500, level 3 a
 // every frame exactly like the old single-player camera (instant follow, zoom 1, parallax from
 // the ship's wrapped movement); with more ships it frames their midpoint.
 // camera.x/y is the world point at the top-left of the view, camera.cx/cy the centre.
-const camera = createCamera();
+// Co-op and other simultaneous modes use a smoothly following camera even for one ship
+// (createCamera({ singleInstant: false }), set in startGame).
+let camera = createCamera();
 function cameraView() {
     return { width: viewWidth, height: viewHeight, worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT };
 }
@@ -950,9 +959,10 @@ function getPauseMenuOptions() {
 // --- Local multiplayer (docs/plans/05-local-multiplayer.md §5, §10, §11) ---
 // MENU ─Multiplayer─► MP_MODE_SELECT ─► LOBBY ─► (TURN_CHANGE ⇄) PLAYING ⇄ PAUSED
 // PLAYING ─round over─► ROUND_END (2 s slow motion) ─► RESULTS ─► Rematch (LOBBY) / Change mode / Main menu
-const MP_MODE_IDS = ['turns']; // playable modes, in the order shown on the mode select screen
+const MP_MODE_IDS = ['turns', 'coop']; // playable modes, in the order shown on the mode select screen
 const MP_MODE_INFO = {
     turns: ['2 to 4 players pass one device.', 'One ship at a time; the highest score wins.'],
+    coop: ['2 to 4 players fly together, each with their own ship.', 'Fly close to a fallen wingman to revive them.'],
 };
 const MP_PAUSE_OPTIONS = ['Resume', 'Restart round', 'Change players', 'Main menu'];
 const RESULTS_BUTTONS = ['Rematch', 'Change mode', 'Main menu'];
@@ -1038,7 +1048,8 @@ function openLobby(modeId, { kind = null, lineup = null } = {}) {
     const m = getMode(modeId) || MODES.turns;
     lobbyModeId = m.id;
     const pointer = inputHandler.lastInputSource === 'touch' || inputHandler.lastInputSource === 'mouse';
-    const k = kind || (pointer ? 'count' : 'seats');
+    // Only Take Turns can pass one device around; simultaneous modes need an input per player
+    const k = m.kind !== 'turns' ? 'seats' : (kind || (pointer ? 'count' : 'seats'));
     const profiles = persistenceManager.getAllUsernames();
     if (k === 'seats') {
         inputHandler.setMerged(false);
@@ -1125,6 +1136,7 @@ function startFromLobby() {
         name: e.name, profile: e.profile, colour: seatColour(e.colour), colourIndex: e.colour,
         bindingId: e.source, ...(shared ? {} : { seat: e.seat }),
     }));
+    if (lineup.some(e => typeof e.source === 'string' && e.source.startsWith('touch:'))) markGestureHintSeen();
     lobby = null;
     startGame(m.id, { kind, players: entries });
 }
@@ -1270,7 +1282,10 @@ function saveMultiplayerRecords(results) {
         if (mode.leaderboard === 'coop') {
             const entry = { score: results.teamScore, level: results.level, difficulty: results.difficulty, date: results.date,
                 players: rows.map(r => ({ name: r.name, profile: r.profile })) };
-            pm.saveJson(MP_KEYS.boardCoop, addToBoard(pm.loadJson(MP_KEYS.boardCoop, isBoard, []), entry));
+            const board = addToBoard(pm.loadJson(MP_KEYS.boardCoop, isBoard, []), entry);
+            pm.saveJson(MP_KEYS.boardCoop, board);
+            const rank = board.indexOf(entry);
+            results.boardRank = rank === -1 ? null : rank + 1;
         } else if (mode.leaderboard === 'harvest' && results.outcome === 'win') {
             const w = rows.find(r => r.winner);
             if (w) {
@@ -1326,6 +1341,250 @@ function updateRoundEnd(deltaTime) {
     ScreenShake.update(dt);
     roundEndTimer -= deltaTime;
     if (roundEndTimer <= 0) openResults();
+}
+
+// --- Co-op "Wingmen" (plan §4.2): revive beacons, respawn rings, camera targets ---
+const BEACON_DRIFT = 15;       // px/s a revive beacon drifts
+const NEAR_TEAM_RADIUS = 150;  // px from the camera centre where nearTeam respawns appear
+
+function createBeacon(p, x, y) {
+    const a = Math.random() * Math.PI * 2;
+    return { ownerId: p.id, x, y, velX: Math.cos(a) * BEACON_DRIFT, velY: Math.sin(a) * BEACON_DRIFT,
+        progress: 0, reviverId: null, blocked: false };
+}
+
+// Beacons drift; a teammate within 70 px (with 2+ lives) fills the 2 s bar, which drains
+// twice as fast when they leave. Paused, the whole update doesn't run, so bars freeze.
+function updateBeacons(dt) {
+    if (!mode.revive) return;
+    for (const p of players) {
+        const b = p.beacon;
+        if (!b || !p.out) continue;
+        b.x += b.velX * dt;
+        b.y += b.velY * dt;
+        wrapWorldPosition(b);
+        const reviver = reviverFor(b, players, WORLD_WIDTH, WORLD_HEIGHT);
+        const next = updateRevive(b, dt, !!reviver, reviver ? reviver.lives : 0);
+        b.progress = next.progress;
+        b.blocked = next.blocked;
+        b.reviverId = reviver ? reviver.id : null;
+        if (next.completed) revivePlayer(p, b, reviver);
+        if (currentGameState !== GameState.PLAYING) return;
+    }
+}
+
+// Bring an out player back: at their beacon (the reviver pays a life) or, after an Extra
+// Life pickup (`beacon` null), near the team. The revived player has 1 life and 3 s of
+// invulnerability.
+function revivePlayer(p, beacon, by) {
+    const rules = mode.revive || REVIVE;
+    if (beacon && by) by.lives -= rules.cost;
+    if (by) by.stats.revivesGiven++;
+    p.out = false;
+    p.lives = rules.revivedLives;
+    p.beacon = null;
+    p.respawnTimer = 0;
+    p.ship = null;
+    respawnPlayer(p, false, { at: beacon ? { x: beacon.x, y: beacon.y } : null, invulnerability: rules.invulnerability });
+    const pos = p.ship ? shipScreenPos(p.ship) : { x: viewWidth / 2, y: viewHeight / 2 };
+    FloatingTexts.spawn(pos.x, pos.y - 44, `${p.label} REVIVED!`, p.colour, 26, 2);
+    vibrate('powerUp');
+    updateUI();
+}
+
+// While a co-op ship waits to respawn, pick the spot near the team where it will appear
+// (shown by the respawn ring). The spot is kept while it stays clear of hazards.
+function updateRespawnSpots() {
+    if (!simultaneous() || mode.respawn.placement !== 'nearTeam') return;
+    const hazards = spawnHazards();
+    const clear = (pt) => hazards.every(h => Math.hypot(wrapDelta(pt.x - h.x, WORLD_WIDTH), wrapDelta(pt.y - h.y, WORLD_HEIGHT))
+        - (h.radius || 0) >= SAFE_SPAWN_RADIUS);
+    for (const p of players) {
+        if (!(p.respawnTimer > 0) || p.out) {
+            p.respawnAt = null;
+            p.respawnSlot = null;
+            continue;
+        }
+        const c = cameraCentre();
+        const grid = ringSpawnGrid(c.x, c.y, NEAR_TEAM_RADIUS, WORLD_WIDTH, WORLD_HEIGHT);
+        if (Number.isInteger(p.respawnSlot) && clear(grid[p.respawnSlot])) {
+            p.respawnAt = grid[p.respawnSlot];
+            continue;
+        }
+        const pt = pickSpawnPoint(grid, [], hazards, WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS });
+        p.respawnSlot = grid.indexOf(pt);
+        p.respawnAt = pt;
+    }
+}
+
+// --- Multiplayer DOM: touch layout, HUD panels, join pads (plan §9, §11) ---
+// Body classes (style.css): mp-active (simultaneous round or touch lobby), mp-round,
+// mp-touch-lobby, mp-layout-sides / mp-rotate, mp-zone-a / mp-zone-b (a touch player sits
+// there), mp-hud-dom (HUD panels in the side bars); --mp-bar is the side bar width.
+const JOIN_PAD_HOLD_MS = 600; // long-press a join pad to leave (or unready)
+const GESTURE_HINT_KEY = 'spaceAdventure_mpGestureHintSeen';
+let mpLayoutState = { layout: null, bar: 0, landscape: false, hud: null, zones: [] };
+let mpDomKey = '';
+let lastSafeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+
+function touchLobbyActive() {
+    if (currentGameState !== GameState.LOBBY || !lobby || lobby.kind !== 'seats' || !isTouchDevice) return false;
+    const m = getMode(lobbyModeId);
+    return !!m && m.kind !== 'turns';
+}
+function touchZonesJoined() {
+    const t = inputHandler.seats;
+    if (t.merged) return [];
+    return ['a', 'b'].filter(z => t.seatOf(`touch:${z}`) !== null);
+}
+function simultaneousRound() {
+    return isMultiplayer() && simultaneous() && inRound();
+}
+
+function syncMpDom() {
+    const roundSim = simultaneousRound();
+    const touchLobby = touchLobbyActive();
+    const zones = roundSim || touchLobby ? touchZonesJoined() : [];
+    const lay = touchLayout({
+        viewportW: window.innerWidth, viewportH: window.innerHeight, canvasSize: viewWidth, safe: lastSafeInsets,
+        touch: touchLobby || (roundSim && zones.length > 0),
+    });
+    const hud = roundSim ? hudMode(lay.bar) : null;
+    mpLayoutState = { ...lay, hud, zones };
+    const key = [roundSim, touchLobby, lay.layout, lay.bar, zones.join(''), hud].join('|');
+    if (key !== mpDomKey) {
+        mpDomKey = key;
+        const body = document.body;
+        body.classList.toggle('mp-active', roundSim || touchLobby);
+        body.classList.toggle('mp-round', roundSim);
+        body.classList.toggle('mp-touch-lobby', touchLobby);
+        body.classList.toggle('mp-layout-sides', lay.layout === 'sides');
+        body.classList.toggle('mp-rotate', lay.layout === 'rotate');
+        body.classList.toggle('mp-zone-a', zones.includes('a'));
+        body.classList.toggle('mp-zone-b', zones.includes('b'));
+        body.classList.toggle('mp-hud-dom', hud === 'dom');
+        body.style.setProperty('--mp-bar', `${lay.bar}px`);
+    }
+    // Touch players in portrait: pause until the device is turned back to landscape
+    if (roundSim && zones.length > 0 && lay.layout === 'rotate' && currentGameState === GameState.PLAYING) {
+        pauseGame('system');
+    }
+    syncSeatHudPanels(roundSim && hud === 'dom');
+    if (touchLobby) updateJoinPads();
+}
+
+// Per-player HUD panels (js/hud.js SeatHudView writes only what changed)
+const seatHud = { key: '', views: [] };
+function syncSeatHudPanels(show) {
+    const key = show ? players.map(p => `${p.id}:${p.number}:${p.colour}:${p.name}`).join('|') : '';
+    if (key !== seatHud.key) {
+        seatHud.key = key;
+        seatHud.views = [];
+        const cols = { left: document.getElementById('mp-hud-left'), right: document.getElementById('mp-hud-right') };
+        if (!cols.left || !cols.right) return;
+        cols.left.textContent = '';
+        cols.right.textContent = '';
+        if (!key) return;
+        for (const p of players) {
+            const panel = document.createElement('div');
+            panel.className = 'seat-hud';
+            panel.dataset.seat = String(p.number - 1);
+            panel.style.setProperty('--seat-colour', p.colour);
+            panel.innerHTML = '<div class="seat-hud-stripe"></div><div data-hud="name"></div><div data-hud="score"></div>'
+                + '<div data-hud="lives"></div><div class="seat-hud-chips" data-hud="powerUps"></div><div data-hud="combo"></div>'
+                + '<div class="seat-hud-combo-track"><div data-hud="comboBar"></div></div><div data-hud="status"></div>';
+            cols[hudSide(p.number - 1)].appendChild(panel);
+            seatHud.views.push({ p, view: new SeatHudView(panel) });
+        }
+    }
+    for (const { p, view } of seatHud.views) view.update(formatSeatHud(seatHudModel(p)));
+}
+
+const POWER_UP_DURATIONS = Object.fromEntries(Object.values(PowerUpType).map(t => [t.id, t.duration]));
+function seatHudModel(p) {
+    const mult = p.upgrades ? p.upgrades.getPowerUpDurationMult() : 1;
+    const durations = {};
+    for (const id of Object.keys(p.powerUps)) durations[id] = (POWER_UP_DURATIONS[id] || 1) * mult;
+    let status = null;
+    const b = p.out ? p.beacon : null;
+    if (b && b.blocked) status = 'OUT – rescuer needs 2 lives';
+    else if (b && b.progress > 0) status = `REVIVING ${Math.round((b.progress / REVIVE.time) * 100)}%`;
+    else if (currentGameState === GameState.PAUSED && pausedBy === p.number - 1) status = 'PAUSED (by you)';
+    return {
+        slot: p.number - 1, name: p.name, score: p.score, lives: p.lives, powerUps: p.powerUps,
+        powerUpDurations: durations, combo: p.combo, paused: currentGameState === GameState.PAUSED,
+        out: p.out, respawnTimer: p.respawnTimer, status,
+    };
+}
+
+// Lobby join pads (touch): tap = fire (join, then ready), hold = hyperspace (unready, then leave)
+function setupJoinPads() {
+    for (const zone of ['a', 'b']) {
+        const pad = document.getElementById(`join-pad-${zone}`);
+        if (!pad) continue;
+        let hold = null; // { pointerId, timer, fired }
+        pad.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            if (hold) return;
+            const h = { pointerId: e.pointerId, fired: false, timer: null };
+            h.timer = setTimeout(() => {
+                h.fired = true;
+                inputHandler.pushSourceEvent(`touch:${zone}`, 'hyperspace');
+            }, JOIN_PAD_HOLD_MS);
+            hold = h;
+        });
+        const end = (e) => {
+            if (!hold || e.pointerId !== hold.pointerId) return;
+            clearTimeout(hold.timer);
+            if (!hold.fired && e.type === 'pointerup') inputHandler.pushSourceEvent(`touch:${zone}`, 'fire');
+            hold = null;
+        };
+        document.addEventListener('pointerup', end);
+        document.addEventListener('pointercancel', end);
+    }
+}
+
+let joinPadKey = '';
+function updateJoinPads() {
+    const info = ['a', 'b'].map(zone => {
+        const seat = inputHandler.seats.seatOf(`touch:${zone}`);
+        const card = seat !== null && lobby ? lobby.cards[seat] : null;
+        const colourIndex = card ? inputHandler.seats.colourOf(seat) : null;
+        return { zone, seat, card, colour: card ? seatColour(colourIndex) : '' };
+    });
+    const key = JSON.stringify(info.map(i => [i.seat, i.card && i.card.name, i.card && i.card.ready, i.colour]));
+    if (key === joinPadKey) return;
+    joinPadKey = key;
+    for (const { zone, seat, card, colour } of info) {
+        const pad = document.getElementById(`join-pad-${zone}`);
+        if (!pad) continue;
+        pad.classList.toggle('joined', !!card);
+        pad.classList.toggle('ready', !!(card && card.ready));
+        if (colour) pad.style.setProperty('--seat-colour', colour);
+        else pad.style.removeProperty('--seat-colour');
+        const title = pad.querySelector('.join-pad-title');
+        const text = pad.querySelector('.join-pad-text');
+        if (title) title.textContent = card ? `P${seat + 1} ${card.name}` : (zone === 'a' ? 'LEFT PLAYER' : 'RIGHT PLAYER');
+        if (text) text.textContent = !card ? 'Tap to join' : card.ready ? 'READY' : 'Tap when ready';
+    }
+}
+
+// Lobby notes for touch players: too few touch points, and (once) the iPad gesture hint
+function gestureHintSeen() {
+    try { return localStorage.getItem(GESTURE_HINT_KEY) === '1'; } catch (e) { return true; }
+}
+function markGestureHintSeen() {
+    try { localStorage.setItem(GESTURE_HINT_KEY, '1'); } catch (e) { /* ignore */ }
+}
+function touchLobbyNotes() {
+    const nav = typeof navigator !== 'undefined' ? navigator : {};
+    const points = Number(nav.maxTouchPoints) || 0;
+    return {
+        touchWarning: isTouchDevice && touchPointsWarning(points),
+        maxTouchPoints: points,
+        gestureHint: isTouchDevice && isIpad({ userAgent: nav.userAgent, platform: nav.platform, maxTouchPoints: points })
+            && !gestureHintSeen(),
+    };
 }
 
 // --- Multiplayer pause ---
@@ -1715,12 +1974,27 @@ function drawRadar() {
         ctx.strokeRect(pos.x - 3.5, pos.y - 3.5, 7, 7);
     });
 
+    // Co-op revive beacons: pulsing rings in the player's colour
+    for (const p of players) {
+        const b = p.out ? p.beacon : null;
+        const pos = b ? worldToRadar(b.x, b.y) : null;
+        if (!pos) continue;
+        ctx.strokeStyle = p.colour;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 4 + 2 * Math.sin(Date.now() / 200), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
     // Single-player: the player at the centre (white triangle). More players: each living
-    // ship in its player's colour.
+    // ship in its player's colour, with its number.
     const markers = players.length === 1
-        ? [{ pos: { x: radarCenterX, y: radarCenterY }, colour: '#FFFFFF' }]
-        : livingPlayers(players).map(p => ({ pos: worldToRadar(p.ship.x, p.ship.y), colour: p.colour }));
-    markers.forEach(({ pos, colour }) => {
+        ? [{ pos: { x: radarCenterX, y: radarCenterY }, colour: '#FFFFFF', label: null }]
+        : livingPlayers(players).map(p => ({ pos: worldToRadar(p.ship.x, p.ship.y), colour: p.colour,
+            label: simultaneous() ? String(p.number || p.slot + 1) : null }));
+    markers.forEach(({ pos, colour, label }) => {
         if (!pos) return;
         ctx.fillStyle = colour;
         ctx.beginPath();
@@ -1729,6 +2003,12 @@ function drawRadar() {
         ctx.lineTo(pos.x + 4, pos.y + 4);
         ctx.closePath();
         ctx.fill();
+        if (label) {
+            ctx.font = 'bold 10px Arial';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, pos.x + 5, pos.y - 5);
+        }
     });
 
     ctx.restore();
@@ -1795,6 +2075,13 @@ function applyShipModifiers(p) {
 function activatePowerUp(p, type) {
     console.log(`Activating power-up: ${type.name}`);
     if (type.id === 'extra_life') {
+        // Co-op: collecting Extra Life while a teammate is out revives them instantly
+        const outMate = mode.revive ? players.find(q => q !== p && q.out) : null;
+        if (outMate) {
+            revivePlayer(outMate, null, p);
+            if (audioManager) audioManager.play('collectGreen');
+            return;
+        }
         p.lives++;
         console.log(`Extra life! Lives: ${p.lives}`);
         updateUI();
@@ -1879,6 +2166,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize Managers
     inputHandler = new InputHandler(canvas, { getLogicalSize: () => ({ width: viewWidth, height: viewHeight }) });
     setupTouchSupport();
+    setupJoinPads();
     applySettings();
     setupUserPromptForm();
     audioManager = new AudioManager();
@@ -1996,6 +2284,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 combo: { count: p.combo.count, multiplier: p.combo.multiplier },
                 powerUps: { ...p.powerUps }, stats: { ...p.stats }, ship: shipSnapshot(p.ship),
                 credits: p.upgrades ? p.upgrades.currency : 0, hasAchievements: !!p.achievements,
+                number: p.number, label: p.label, seat: p.input && Number.isInteger(p.input.seat) ? p.input.seat : null,
+                beacon: p.beacon ? { x: p.beacon.x, y: p.beacon.y, progress: p.beacon.progress, blocked: p.beacon.blocked,
+                    reviverId: p.beacon.reviverId } : null,
+                respawnAt: p.respawnAt ? { x: p.respawnAt.x, y: p.respawnAt.y } : null,
+                shipColour: p.ship ? p.ship.colour : null, hullMark: p.ship ? p.ship.hullMark : null,
             }));
         },
         get mode() {
@@ -2020,6 +2313,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get tapRegions() { return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })); },
         isPressed(action) { return inputHandler.isPressed(action); },
         isPressedSeat(action, seat) { return inputHandler.isPressed(action, seat); },
+        joystickFor(seat) { return inputHandler.getJoystick(seat); },
         // Local multiplayer (read-only copies)
         get mp() {
             return {
@@ -2027,6 +2321,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 roundEndTimer: currentGameState === GameState.ROUND_END ? roundEndTimer : 0,
                 modeSelect: { index: mpModeIndex, rows: mpModeRows().map(r => r.id) },
                 lineup: savedLineup() ? JSON.parse(JSON.stringify(savedLineup())) : null,
+                layout: mpLayoutState.layout, bar: mpLayoutState.bar, hud: mpLayoutState.hud,
+                zones: mpLayoutState.zones.slice(), simultaneous: simultaneousRound(),
+                cameraSingleInstant: !!camera.options.singleInstant,
+                scaling: { ...currentScaling() }, boss: currentBoss ? { maxHealth: currentBoss.maxHealth } : null,
+                ...touchLobbyNotes(),
             };
         },
         get seats() { return inputHandler.seats.snapshot(); },
@@ -2095,6 +2394,11 @@ function buildPlayers(lobby) {
             bindingId: e.bindingId ?? null, upgrades, lives: startingLivesFor(upgrades),
         });
         p.input = e.input || (Number.isInteger(e.seat) ? seatInput(e.seat) : inputHandler);
+        // Player number as the lobby showed it (P1-P4): labels, HUD panels and hull marks
+        p.number = (Number.isInteger(e.seat) ? e.seat : slot) + 1;
+        p.label = `P${p.number}`;
+        p.respawnAt = null;
+        p.respawnSlot = null;
         p.achievements = !(mode.earnsAchievements && profile) ? null
             : profile === currentUser ? achievementManager : loadProfileAchievements(profile);
         return p;
@@ -2165,7 +2469,9 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     // Generate starfield for the world
     generateStars();
 
-    // Initialize camera at center of the world
+    // Initialize camera at center of the world. Single-player and Take Turns: today's instant
+    // follow; simultaneous modes glide, also while only one ship is left.
+    camera = createCamera({ singleInstant: !simultaneous() });
     camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, cameraView());
 
     // Fresh ships; before creating asteroids (Take Turns: player 1's ship appears after "GET READY")
@@ -2266,6 +2572,8 @@ function setupUserPromptForm() {
 // Show or hide DOM overlays that depend on the game state
 function syncDomToState() {
     document.body.classList.toggle('state-playing', currentGameState === GameState.PLAYING);
+    document.body.classList.toggle('state-lobby', currentGameState === GameState.LOBBY);
+    document.body.classList.toggle('state-paused', currentGameState === GameState.PAUSED);
     if (pwaUi) pwaUi.sync();
     const form = document.getElementById('user-prompt');
     if (form) {
@@ -2315,6 +2623,7 @@ function resizeCanvas() {
     // times devicePixelRatio (capped), so lines and text are sharp on retina tablets.
     const dpr = window.devicePixelRatio || 1;
     const safe = safeAreaInsets(); // notch / display cutout: keep the canvas inside the safe area
+    lastSafeInsets = safe;
     const size = computeCanvasSize(window.innerWidth - safe.left - safe.right,
         window.innerHeight - safe.top - safe.bottom, dpr, renderScaleCap);
     if (canvas.width > 0 && size.css < 50) return; // Ignore transient tiny/zero sizes (would zero the world)
@@ -2786,7 +3095,15 @@ function updateShip(p, deltaTime) {
 
 // Ships the camera follows: living ships that are not waiting to respawn
 function cameraTargets() {
-    return players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0).map(p => p.ship);
+    const ships = players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0).map(p => p.ship);
+    if (!simultaneous() || !mode.revive || ships.length === 0) return ships;
+    // Co-op: a revive beacon is framed too, but only if that needs no extra zoom (plan §3.4)
+    const beacons = players.filter(p => p.out && p.beacon).map(p => p.beacon);
+    if (!beacons.length) return ships;
+    const view = cameraView();
+    const withBeacons = [...ships, ...beacons];
+    const zoomShips = frameTargets(ships, view, null, camera.options).zoom;
+    return frameTargets(withBeacons, view, null, camera.options).zoom >= zoomShips - 1e-6 ? withBeacons : ships;
 }
 
 // The camera follows the living ships (holds its position while there are none)
@@ -2799,6 +3116,7 @@ function updateGame(deltaTime) {
     handleInput(deltaTime);
     syncStateTransition();
     syncTutorialDom();
+    syncMpDom();
     inputHandler.endFrame();
     if (currentGameState !== GameState.MENU && currentGameState !== GameState.PROMPT_USER) {
         for (const m of achievementManagers()) m.updateNotifications(deltaTime);
@@ -2818,6 +3136,7 @@ function updateGame(deltaTime) {
 
     // --- Game Playing Logic ---
 
+    updateRespawnSpots();
     for (const p of activePlayers()) {
         if (p.respawnTimer > 0) {
             p.respawnTimer -= deltaTime;
@@ -2898,6 +3217,7 @@ function updateGame(deltaTime) {
     for (const p of activePlayers()) applyMagnet(p, deltaTime);
 
     checkCollisions();
+    if (currentGameState === GameState.PLAYING) updateBeacons(deltaTime);
 
     bullets = bullets.filter(bullet => bullet.isAlive);
     asteroids = asteroids.filter(asteroid => asteroid.isAlive);
@@ -2920,7 +3240,7 @@ function updateGame(deltaTime) {
         for (const p of activePlayers()) checkPlayerAchievements(p);
 
         // Evaluate performance (team-wide; Take Turns: the active player's world) and adjust difficulty
-        if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(activePlayers()));
+        if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(activePlayers()) / activePlayers().length);
 
         // Round timer and the mode's end conditions
         updateRound(deltaTime);
@@ -2989,12 +3309,15 @@ function applyCameraTransform(shakeX, shakeY) {
     }
 }
 
-// Canvas position of a ship, the short way round the world from the camera centre
-function shipScreenPos(ship) {
+// Canvas position of a world point / ship, the short way round the world from the camera centre
+function worldScreenPos(x, y) {
     return {
-        x: viewWidth / 2 + wrapDelta(ship.x - camera.cx, WORLD_WIDTH) * camera.zoom,
-        y: viewHeight / 2 + wrapDelta(ship.y - camera.cy, WORLD_HEIGHT) * camera.zoom,
+        x: viewWidth / 2 + wrapDelta(x - camera.cx, WORLD_WIDTH) * camera.zoom,
+        y: viewHeight / 2 + wrapDelta(y - camera.cy, WORLD_HEIGHT) * camera.zoom,
     };
+}
+function shipScreenPos(ship) {
+    return worldScreenPos(ship.x, ship.y);
 }
 
 // Every living ship that is not waiting to respawn (camera transform already applied)
@@ -3005,6 +3328,157 @@ function drawShips() {
 }
 
 // Shield ring around each shielded ship (screen space)
+// --- Simultaneous multiplayer drawing (screen space; plan §3.4, §10.3, §11) ---
+
+// Small arrow (pointing along +x after rotation) with a player number, for edge markers
+function drawEdgeMarker(x, y, angle, colour, text, pulse = false) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.globalAlpha = pulse ? 0.6 + 0.4 * Math.sin(Date.now() / 150) : 0.9;
+    ctx.fillStyle = colour;
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(-8, -10);
+    ctx.lineTo(-3, 0);
+    ctx.lineTo(-8, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.font = 'bold 12px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tx = -Math.cos(angle) * 20;
+    const ty = -Math.sin(angle) * 20;
+    ctx.fillStyle = 'black';
+    ctx.fillText(text, tx + 1, ty + 1);
+    ctx.fillStyle = colour;
+    ctx.fillText(text, tx, ty);
+    ctx.restore();
+}
+
+// Edge arrow when a world point is outside the view; returns true if it drew one
+function drawOffscreenArrow(x, y, colour, text, pulse = false) {
+    const pos = worldScreenPos(x, y);
+    const a = edgeArrow(pos.x - viewWidth / 2, pos.y - viewHeight / 2, viewWidth / 2, viewHeight / 2, { inset: 22, radius: 12 });
+    if (!a) return false;
+    drawEdgeMarker(viewWidth / 2 + a.x, viewHeight / 2 + a.y, a.angle, colour, text, pulse);
+    return true;
+}
+
+function drawMpWorldOverlays() {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const p of players) {
+        // Respawn ring: where the ship will appear, shrinking with the countdown
+        if (p.respawnTimer > 0 && !p.out && p.respawnAt) {
+            const pos = worldScreenPos(p.respawnAt.x, p.respawnAt.y);
+            const frac = respawnFraction(p.respawnTimer, mode.respawn.delay ?? RESPAWN_DELAY);
+            ctx.strokeStyle = p.colour;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.8;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, 18 + 30 * frac, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = p.colour;
+            ctx.font = 'bold 13px Arial';
+            ctx.fillText(`${p.label} ${p.respawnTimer.toFixed(1)}`, pos.x, pos.y);
+            drawOffscreenArrow(p.respawnAt.x, p.respawnAt.y, p.colour, p.label);
+        }
+        // Revive beacon: pulsing ring, progress arc, label
+        const b = p.out ? p.beacon : null;
+        if (b) {
+            const pos = worldScreenPos(b.x, b.y);
+            const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+            ctx.strokeStyle = p.colour;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.5 + 0.5 * pulse;
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, 16 + 6 * pulse, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = 0.25;
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, REVIVE.radius * camera.zoom, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+            if (b.progress > 0) {
+                ctx.lineWidth = 5;
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, 28, -Math.PI / 2, -Math.PI / 2 + (b.progress / REVIVE.time) * Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.fillStyle = p.colour;
+            ctx.font = 'bold 13px Arial';
+            ctx.fillText(p.label, pos.x, pos.y);
+            ctx.font = 'bold 12px Arial';
+            ctx.fillText(b.blocked ? 'NEED 2 LIVES' : b.progress > 0 ? 'REVIVING' : 'FLY HERE', pos.x, pos.y + 38);
+            drawOffscreenArrow(b.x, b.y, p.colour, p.label, true);
+        }
+        // Player number next to each ship, always upright
+        const ship = p.ship;
+        if (ship && ship.isAlive && p.respawnTimer <= 0) {
+            const pos = shipScreenPos(ship);
+            const y = pos.y < 40 ? pos.y + 30 : pos.y - 28;
+            ctx.font = 'bold 13px Arial';
+            ctx.fillStyle = 'black';
+            ctx.fillText(p.label, pos.x + 1, y + 1);
+            ctx.fillStyle = p.colour;
+            ctx.fillText(p.label, pos.x, y);
+            drawOffscreenArrow(ship.x, ship.y, p.colour, p.label);
+        }
+    }
+    ctx.restore();
+}
+
+// Team score and level (top centre), plus the compact per-player HUD in the canvas corners
+// when the side bars are too narrow for the DOM panels
+function drawTeamHud() {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText(`TEAM ${teamScore(players)}`, viewWidth / 2, 28);
+    ctx.font = '14px Arial';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.fillText(`LEVEL ${level}`, viewWidth / 2, 46);
+    if (mpLayoutState.hud !== 'dom') {
+        for (const p of players) drawCompactSeatHud(p);
+    }
+    ctx.restore();
+}
+
+function drawCompactSeatHud(p) {
+    const hud = formatSeatHud(seatHudModel(p));
+    const corner = compactHudCorner(p.number - 1);
+    const left = corner.x === 'left';
+    const x = left ? 10 : viewWidth - 10;
+    let y = corner.y === 'top' ? 22 : viewHeight - (left ? 110 : 170);
+    ctx.textAlign = left ? 'left' : 'right';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = p.colour;
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText(hud.name, x, y, viewWidth * 0.3);
+    y += 20;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(`${hud.score}  ${hud.lives}`, x, y);
+    const extra = [hud.powerUps.map(u => u.label).join(' '), hud.combo ? `${hud.combo.count}x` : '', hud.status]
+        .filter(Boolean).join('  ');
+    if (extra) {
+        y += 17;
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 13px Arial';
+        ctx.fillText(extra, x, y, viewWidth * 0.4);
+    }
+}
+
 function drawShields() {
     for (const p of players) {
         const ship = p.ship;
@@ -3128,13 +3602,17 @@ function renderGame() {
 
             // Draw shield effect around ships if active (in screen space)
             drawShields();
+            // Several ships: numbers, revive beacons, respawn rings, edge arrows
+            if (simultaneous()) drawMpWorldOverlays();
 
             // Draw level up notification (screen-space, not world-space)
             drawLevelUpNotification();
 
             // Draw HUD elements (screen-space)
             drawRadar();
-            drawActivePowerUps(hudPlayer());
+            // Per-player HUD: side panels (DOM) or the compact canvas HUD with several ships
+            if (simultaneous()) drawTeamHud();
+            else drawActivePowerUps(hudPlayer());
 
             // Draw remaining asteroids count
             ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
@@ -3150,8 +3628,8 @@ function renderGame() {
                 ctx.fillText(`Difficulty: ${DynamicDifficulty.getAdjustmentText()}`, 130, viewHeight - 10);
             }
 
-            // Draw combo indicator (player 1's in single-player)
-            drawComboIndicator(hudPlayer());
+            // Draw combo indicator (player 1's in single-player; per-player HUD otherwise)
+            if (!simultaneous()) drawComboIndicator(hudPlayer());
 
             // Draw floating texts (screen-space)
             FloatingTexts.draw(ctx);
@@ -3480,7 +3958,7 @@ function updateMusic() {
         musicMood = selectMood({
             state: currentGameState === GameState.ROUND_END ? GameState.GAME_OVER : currentGameState,
             bossActive: !!(currentBoss && currentBoss.isAlive),
-            lives: hudPlayer().lives,
+            lives: simultaneous() ? Math.max(...players.map(p => p.lives)) : hudPlayer().lives,
             tutorialActive: tutorial.active,
         });
     } catch (e) { /* keep the previous mood */ }
@@ -3633,7 +4111,8 @@ function checkShipCollisions(p) {
                     if (p.combo.multiplier > 1) {
                         scoreText += ` (${p.combo.multiplier}x)`;
                     }
-                    FloatingTexts.spawn(screenPos.x, screenPos.y, scoreText, palette.collect, 18);
+                    // Several players: in the collector's colour, so everyone sees whose points they are
+                    FloatingTexts.spawn(screenPos.x, screenPos.y, scoreText, simultaneous() ? p.colour : palette.collect, 18);
 
                     // Play collection sound
                     if (audioManager) {
@@ -3823,7 +4302,9 @@ function checkCollisions() {
 
                 if (hitWeakPoint.destroyed) {
                     // Weak point destroyed
-                    FloatingTexts.spawn(bullet.x, bullet.y - 20, 'WEAK POINT!', '#FFFF00', 24);
+                    const hitAt = worldScreenPos(bullet.x, bullet.y); // floating texts live in screen space
+                    FloatingTexts.spawn(hitAt.x, hitAt.y - 20, simultaneous() && shooter ? `${shooter.label} WEAK POINT!` : 'WEAK POINT!',
+                        simultaneous() && shooter ? shooter.colour : '#FFFF00', 24);
                     Particles.explode(bullet.x, bullet.y, '#FF00FF', 25);
                     ScreenShake.trigger(10, 0.3);
                     awardPoints(shooter, 200, 20); // 20 credits for a weak point
@@ -3950,6 +4431,7 @@ function handlePlayerDeath(p, forced = false) {
             } else {
                 vibrate('lifeLost');
                 p.ship = null; // out until revived or the round ends
+                if (decision.beacon) p.beacon = createBeacon(p, shipX, shipY); // co-op: revive beacon
                 if (handOver) beginHandover(decision.nextIndex); // Take Turns: the next player's turn
             }
         } else if (handOver) {
@@ -3976,15 +4458,12 @@ function respawnPoint(p, isInitialSpawn) {
     if (isInitialSpawn) {
         return { x: centre.x + (p.slot - (players.length - 1) / 2) * 80, y: centre.y };
     }
-    const hazards = [
-        ...asteroids.filter(a => a.isAlive && !a.isGreen()),
-        ...ufos.filter(u => u.isAlive),
-        ...(currentBoss && currentBoss.isAlive ? [currentBoss] : []),
-    ];
+    const hazards = spawnHazards();
     switch (mode.respawn.placement) {
         case 'nearTeam': {
+            if (p.respawnAt) return p.respawnAt; // the spot the respawn ring showed
             const c = cameraCentre();
-            return pickSpawnPoint(ringSpawnGrid(c.x, c.y, 150, WORLD_WIDTH, WORLD_HEIGHT), [], hazards,
+            return pickSpawnPoint(ringSpawnGrid(c.x, c.y, NEAR_TEAM_RADIUS, WORLD_WIDTH, WORLD_HEIGHT), [], hazards,
                 WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre;
         }
         case 'furthestFromOpponents': {
@@ -3997,19 +4476,34 @@ function respawnPoint(p, isInitialSpawn) {
     }
 }
 
-function respawnPlayer(p, isInitialSpawn = false) {
+// Things a new ship must not appear next to
+function spawnHazards() {
+    return [
+        ...asteroids.filter(a => a.isAlive && !a.isGreen()),
+        ...ufos.filter(u => u.isAlive),
+        ...(currentBoss && currentBoss.isAlive ? [currentBoss] : []),
+    ];
+}
+
+// options.at: spawn exactly here (a co-op revive at the beacon); options.invulnerability: seconds
+function respawnPlayer(p, isInitialSpawn = false, { at = null, invulnerability = null } = {}) {
     console.log(`respawnPlayer called. isInitialSpawn=${isInitialSpawn}, currentGameState=${currentGameState}, shipExists=${!!p.ship}, shipAlive=${p.ship?.isAlive}`);
     if (currentGameState !== GameState.GAME_OVER && (!p.ship || !p.ship.isAlive)) {
          console.log("Respawning Player - Conditions Met");
 
          // Spawn at the centre of the world (single-player) or where the mode says
-         const spot = respawnPoint(p, isInitialSpawn);
+         const spot = at || respawnPoint(p, isInitialSpawn);
+         p.respawnAt = null;
+         p.respawnSlot = null;
          const centerX = spot.x;
          const centerY = spot.y;
 
          const ship = new PlayerShip(centerX, centerY);
          ship.ownerId = p.id;
          ship.bulletColour = players.length > 1 ? p.colour : null; // single-player bullets stay white
+         // Identity with more players: hull in the player's colour plus a per-seat hull mark
+         ship.colour = players.length > 1 ? p.colour : null;
+         ship.hullMark = players.length > 1 ? hullMarkFor((p.number || p.slot + 1) - 1) : 'none';
          p.ship = ship;
          applyShipModifiers(p);
          p.respawnTimer = 0;
@@ -4017,7 +4511,7 @@ function respawnPlayer(p, isInitialSpawn = false) {
 
          // Make ship invulnerable after respawn (unless initial spawn)
          if (!isInitialSpawn) {
-             const seconds = mode.respawn.invulnerability ?? 3; // 3 seconds unless the mode says otherwise
+             const seconds = invulnerability ?? mode.respawn.invulnerability ?? 3; // 3 s unless the mode says otherwise
              ship.makeInvulnerable(seconds);
              console.log(`Ship made invulnerable for ${seconds} seconds`);
          }
@@ -4656,11 +5150,24 @@ function sourceLabel(source) {
 // Seat lobby: a 2 x 2 grid of cards, one per seat (§10.2)
 function drawSeatLobby() {
     const m = getMode(lobbyModeId);
-    const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', 'Each player presses FIRE on their own keys or controller');
+    const touchLobby = touchLobbyActive();
+    const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', touchLobby
+        ? 'Tap the pad on your side to join, tap it again when ready'
+        : 'Each player presses FIRE on their own keys or controller');
+    // Touch notes: too few touch points; once, the iPad multitasking gesture hint
+    const notes = touchLobby ? touchLobbyNotes() : { touchWarning: false, gestureHint: false };
+    const noteLines = [];
+    if (notes.touchWarning) {
+        noteLines.push(['#FF9F1C', `This screen reports ${notes.maxTouchPoints || 'few'} touch points: two touch players need 4`]);
+    }
+    if (notes.gestureHint) {
+        noteLines.push(['#FFD700', 'iPad: turn off Settings › Multitasking & Gestures (or use Guided Access)']);
+        noteLines.push(['#FFD700', 'so four- and five-finger gestures don’t leave the game']);
+    }
     const gap = 12;
     const cols = 2;
     const w = Math.min(300, (viewWidth - 40 - gap) / cols);
-    const h = Math.min(170, (viewHeight - top - 150 - gap) / 2);
+    const h = Math.min(170, (viewHeight - top - 150 - gap - noteLines.length * 18) / 2);
     const x0 = (viewWidth - (w * cols + gap)) / 2;
     const snapshot = inputHandler.seats.snapshot().seats;
     for (let seat = 0; seat < 4; seat++) {
@@ -4680,21 +5187,38 @@ function drawSeatLobby() {
         ctx.font = '18px Arial';
         ctx.fillStyle = '#FFFFFF';
         const text = joined < lobby.min ? `Waiting for players (${joined}/${lobby.min})`
-            : canStart(lobby) ? 'Get ready...' : 'Press FIRE again when ready';
+            : canStart(lobby) ? 'Get ready...' : touchLobby ? 'Tap your pad again when ready' : 'Press FIRE again when ready';
         ctx.fillText(text, viewWidth / 2, infoY);
     }
     if (lobbyExitNotice > 0) {
         ctx.font = 'bold 16px Arial';
         ctx.fillStyle = '#FF9F1C';
-        ctx.fillText('Players have joined: press Esc again to leave', viewWidth / 2, infoY + 26);
+        ctx.fillText(touchLobby ? 'Players have joined: tap Back again to leave' : 'Players have joined: press Esc again to leave',
+            viewWidth / 2, infoY + 26);
     }
-    // Pass-and-play instead (touch, mouse)
+    ctx.font = '14px Arial';
+    noteLines.forEach(([colour, text], i) => {
+        ctx.fillStyle = colour;
+        ctx.fillText(text, viewWidth / 2, infoY + 48 + i * 18, viewWidth - 20);
+    });
     const bw = Math.min(360, viewWidth - 60);
     const bx = (viewWidth - bw) / 2;
     const by = viewHeight - 88;
-    drawButtonBox(bx, by, bw, 36, 'Pass one device instead ▸', false, 'bold 16px Arial');
-    addTapRegion(bx, by, bw, 36, () => openLobby(lobbyModeId, { kind: 'count' }));
-    drawHintLine('Fire: join / ready   ↓ or S: leave   ← →: colour   ↑: name   Esc: back', viewHeight - 30);
+    if (m && m.kind === 'turns') {
+        // Pass-and-play instead (touch, mouse)
+        drawButtonBox(bx, by, bw, 36, 'Pass one device instead ▸', false, 'bold 16px Arial');
+        addTapRegion(bx, by, bw, 36, () => openLobby(lobbyModeId, { kind: 'count' }));
+    } else {
+        // No Escape key on a tablet: a Back button (asks first when players have joined)
+        const backW = Math.min(160, bw);
+        drawButtonBox((viewWidth - backW) / 2, by, backW, 36, '◂ Back', false, 'bold 16px Arial');
+        addTapRegion((viewWidth - backW) / 2, by, backW, 36, () => requestLobbyExit());
+    }
+    if (touchLobby) {
+        drawHintLine('Tap your pad: join / ready   Hold it: leave   Keys and controllers can join too', viewHeight - 30);
+    } else {
+        drawHintLine('Fire: join / ready   ↓ or S: leave   ← →: colour   ↑: name   Esc: back', viewHeight - 30);
+    }
     drawHintLine(`Controllers: ${lobbyPadGlyph(GP.A, 'A')} join / ready   ${lobbyPadGlyph(GP.B, 'B')} leave   D-pad colour and name`, viewHeight - 12);
 }
 
@@ -4748,7 +5272,8 @@ function drawLobbyCard(seat, x, y, w, h, card, seatInfo) {
         ctx.fillText('Press FIRE to join', x + 12, y + 62);
         ctx.font = '12px Arial';
         ctx.fillStyle = '#777777';
-        ctx.fillText(`Space · Enter · ${lobbyPadGlyph(GP.A, 'A')}`, x + 12, y + 84);
+        ctx.fillText(touchLobbyActive() ? `Side pad · Space · Enter · ${lobbyPadGlyph(GP.A, 'A')}` : `Space · Enter · ${lobbyPadGlyph(GP.A, 'A')}`,
+            x + 12, y + 84, w - 20);
     }
     ctx.restore();
 }
@@ -4868,10 +5393,11 @@ function drawMultiplayerOverlay() {
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 40px Arial';
-        ctx.fillText('ROUND OVER', viewWidth / 2, y + 42);
+        const coop = !!lastResults && lastResults.kind === 'coop';
+        ctx.fillText(coop ? 'GAME OVER' : 'ROUND OVER', viewWidth / 2, y + 42);
         ctx.fillStyle = '#FFD700';
         ctx.font = 'bold 26px Arial';
-        ctx.fillText(resultBanner(lastResults), viewWidth / 2, y + 88);
+        ctx.fillText(coop ? `TEAM SCORE ${lastResults.teamScore}` : resultBanner(lastResults), viewWidth / 2, y + 88);
     }
     ctx.restore();
 }
@@ -4882,7 +5408,10 @@ function drawResults() {
     if (!r) return;
     const mins = Math.floor(r.duration / 60);
     const secs = String(Math.floor(r.duration % 60)).padStart(2, '0');
-    const top = drawScreenTitle(resultBanner(r), `${r.modeName} · ${mins}:${secs}`);
+    const coop = r.kind === 'coop';
+    const top = coop
+        ? drawScreenTitle(`TEAM SCORE ${r.teamScore}`, `${r.modeName} · Level ${r.level ?? 1} · ${mins}:${secs}`)
+        : drawScreenTitle(resultBanner(r), `${r.modeName} · ${mins}:${secs}`);
     const rows = r.players;
     const labelW = Math.min(150, viewWidth * 0.24);
     const left = 16 + labelW;
@@ -4894,6 +5423,7 @@ function drawResults() {
         ['Rocks shot', (p) => p.redsShot],
         ['UFOs', (p) => p.ufos],
         ['Deaths', (p) => p.deaths],
+        ...(coop ? [['Revives', (p) => p.revivesGiven]] : []),
         ['Best combo', (p) => p.bestCombo],
         ['Accuracy', (p) => `${Math.round(p.accuracy * 100)}%`],
         ['Credits', (p) => (p.profile ? `+${p.credits}` : '-')],
@@ -4904,9 +5434,9 @@ function drawResults() {
     rows.forEach((p, i) => {
         const cx = left + colW * i + colW / 2;
         ctx.textAlign = 'center';
-        ctx.fillStyle = p.winner ? '#FFD700' : '#AAAAAA';
+        ctx.fillStyle = p.winner && !coop ? '#FFD700' : '#AAAAAA';
         ctx.font = 'bold 14px Arial';
-        ctx.fillText(p.winner ? 'WINNER' : `#${i + 1}`, cx, headY);
+        ctx.fillText(coop ? `#${i + 1}` : p.winner ? 'WINNER' : `#${i + 1}`, cx, headY);
         ctx.fillStyle = p.colour || '#FFFFFF';
         ctx.font = 'bold 18px Arial';
         ctx.fillText(p.name, cx, headY + 22, colW - 6);
@@ -4926,6 +5456,9 @@ function drawResults() {
     ctx.textAlign = 'center';
     ctx.font = '15px Arial';
     const extra = [...r.highlights];
+    if (coop && r.boardRank) {
+        extra.unshift(r.boardRank === 1 ? 'New team best on this device!' : `Team board: #${r.boardRank} on this device`);
+    }
     rows.forEach(p => { if (p.newAchievements.length) extra.push(`${p.name}: ${p.newAchievements.join(', ')}`); });
     extra.slice(0, 4).forEach(line => {
         ctx.fillStyle = '#FFD700';

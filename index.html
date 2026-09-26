@@ -56,6 +56,41 @@
             <button id="touch-mute-btn" class="touch-btn small" data-action="toggleMute" aria-label="Mute"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.47 4.47 0 0 0 16.5 12z"/></svg></button>
             <button id="touch-pause-btn" class="touch-btn small" data-action="pause" aria-label="Pause"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>
         </div>
+        <!-- Local multiplayer, player in zone B (right half, side by side). Shown only in
+             multiplayer with a touch player in that zone (body.mp-active.mp-zone-b). -->
+        <div class="touch-zone-b" data-zone="b">
+            <div class="joystick-zone joystick-zone-b" id="joystick-zone-b"></div>
+            <div class="mp-cluster mp-cluster-b">
+                <button id="touch-hyper-btn-b" class="touch-btn hyper" data-action="hyperspace" aria-label="Hyperspace (right player)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M5 19l3-3M16 8l3-3"/></svg></button>
+                <button id="touch-fire-btn-b" class="touch-btn fire" data-action="fire" aria-label="Fire (right player)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="5"/></svg></button>
+            </div>
+            <button id="touch-pause-btn-b" class="touch-btn small mp-pause-b" data-action="pause" aria-label="Pause (right player)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>
+        </div>
+        <!-- Stick visuals of other zones follow the finger in page coordinates, so they live in
+             an unrotated layer (plan 05 finding 7) -->
+        <div class="joystick-layer">
+            <div class="joystick-base joystick-base-b" id="joystick-base-b"><div class="joystick-knob" id="joystick-knob-b"></div></div>
+        </div>
+    </div>
+
+    <!-- Local multiplayer: per-player HUD panels in the side bars (js/hud.js SeatHudView) -->
+    <div class="mp-hud" id="mp-hud" aria-live="off">
+        <div class="mp-hud-col mp-hud-left" id="mp-hud-left"></div>
+        <div class="mp-hud-col mp-hud-right" id="mp-hud-right"></div>
+    </div>
+
+    <!-- Local multiplayer lobby on touch devices: tap your side's pad to join / ready,
+         hold it to leave -->
+    <div class="mp-join-pads" aria-hidden="true">
+        <button type="button" class="touch-btn join-pad" id="join-pad-a" data-join="a"><span class="join-pad-title">LEFT PLAYER</span><span class="join-pad-text" id="join-pad-a-text">Tap to join</span><span class="join-pad-hint">Hold to leave</span></button>
+        <button type="button" class="touch-btn join-pad" id="join-pad-b" data-join="b"><span class="join-pad-title">RIGHT PLAYER</span><span class="join-pad-text" id="join-pad-b-text">Tap to join</span><span class="join-pad-hint">Hold to leave</span></button>
+    </div>
+
+    <!-- Side by side needs landscape (the facing layout comes later) -->
+    <div class="mp-rotate-prompt" id="mp-rotate-prompt" role="status">
+        <div class="mp-rotate-icon">&#x21BB;</div>
+        <div>Rotate to landscape</div>
+        <div class="mp-rotate-sub">Two players sit side by side, one on each end</div>
     </div>
 
     <script src="js/main.js" type="module"></script>

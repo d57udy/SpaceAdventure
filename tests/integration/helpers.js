@@ -451,7 +451,7 @@ export async function openMultiplayer(page) {
 /** Mode select -> Take Turns with Enter -> the seat lobby (keyboard). */
 export async function openTakeTurnsLobby(page) {
   await openMultiplayer(page);
-  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'back']);
+  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'coop', 'back']);
   await page.keyboard.press('Enter');
   await waitForState(page, 'lobby');
   expect(await hook(page, 'lobby.kind')).toBe('seats');
@@ -519,4 +519,46 @@ export async function collectGreenByJump(page) {
     };
   });
   await page.keyboard.press('h');
+}
+
+/** Mode select -> Co-op (second row) with the keyboard -> the seat lobby. */
+export async function openCoopLobby(page) {
+  await openMultiplayer(page);
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => hook(page, 'mp.modeSelect.index')).toBe(1);
+  await page.keyboard.press('Enter');
+  await waitForState(page, 'lobby');
+  expect(await hook(page, 'lobby')).toMatchObject({ kind: 'seats', modeId: 'coop' });
+}
+
+/** P1 (Space) and P2 (Enter) join and ready up in a keyboard lobby; waits for play. */
+export async function joinTwoWithKeyboard(page, startState = 'playing') {
+  await lobbyPress(page, 'Space', 0, (c) => !!c);
+  await lobbyPress(page, 'Enter', 1, (c) => !!c);
+  await lobbyPress(page, 'Space', 0, (c) => c.ready);
+  await lobbyPress(page, 'Enter', 1, (c) => c.ready);
+  await waitForState(page, startState, 6000);
+}
+
+/**
+ * Hyperspace to a chosen world point (stubs Math.random for the jump's own rolls only, a browser
+ * API stub, not game state): no self-destruct, then x and y. `key` is the seat's hyperspace key.
+ */
+export async function jumpTo(page, key, x, y) {
+  await page.evaluate(([tx, ty]) => {
+    const real = window.__realRandom || Math.random;
+    window.__realRandom = real;
+    let calls = 0;
+    Math.random = () => {
+      if (!String(new Error().stack).includes('hyperspace')) return real();
+      const g = window.__spaceAdventure;
+      const r = 15;
+      calls++;
+      if (calls === 1) return 0.5; // no self-destruct
+      if (calls === 2) return Math.min(1, Math.max(0, (tx - r) / (g.world.width - 2 * r)));
+      Math.random = real;
+      return Math.min(1, Math.max(0, (ty - r) / (g.world.height - 2 * r)));
+    };
+  }, [x, y]);
+  await page.keyboard.press(key);
 }

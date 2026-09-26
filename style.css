@@ -479,3 +479,338 @@ body.state-playing .app-notices {
     .game-fs-btn { width: 42px; height: 42px; }
     .app-btn { font-size: 12px; padding: 6px 8px; min-height: 30px; }
 }
+
+/* ===================================================================================
+   Local multiplayer (docs/plans/05-local-multiplayer.md §9, §11). Everything below is
+   scoped to body.mp-* classes set by js/main.js (syncMpDom), so the single-player
+   layout above stays exactly as it was. --mp-bar is the width of each side bar.
+   =================================================================================== */
+:root {
+    --mp-bar: 0px;
+    --mp-edge: 20px; /* keep controls clear of the iPad system swipe edges */
+}
+
+/* The single-player HUD line: replaced by per-player panels in simultaneous rounds */
+body.mp-round .ui-overlay {
+    display: none;
+}
+
+/* Touch players always use Drag to Steer in multiplayer */
+body.mp-active .touch-left,
+body.mp-active .touch-right .thrust,
+body.mp-active .game-fs-btn {
+    display: none !important;
+}
+
+/* Zone A (left player) controls only when a touch player sits there */
+body.mp-active:not(.mp-zone-a) #joystick-zone,
+body.mp-active:not(.mp-zone-a) .touch-right,
+body.mp-active:not(.mp-zone-a) .touch-top {
+    display: none;
+}
+
+/* --- Side by side: P1 in the left bar, P2 mirrored in the right bar --- */
+body.mp-active.mp-layout-sides.mp-zone-a #joystick-zone {
+    display: block;
+    left: 0;
+    width: 50%;
+    top: calc(var(--mp-edge) + var(--safe-top));
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+}
+
+body.mp-active.mp-layout-sides .touch-top {
+    right: auto;
+    left: calc(8px + var(--safe-left));
+    top: calc(var(--mp-edge) + var(--safe-top));
+    flex-direction: row-reverse; /* pause in the outer corner */
+}
+
+body.mp-active.mp-layout-sides .touch-right {
+    right: auto;
+    left: calc(8px + var(--safe-left));
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+    grid-template-columns: auto;
+    grid-template-areas:
+        "hyper"
+        "fire";
+    row-gap: 12px;
+    justify-items: start;
+}
+
+/* Resting stick hints just inside each player's half of the play area */
+body.mp-active.mp-layout-sides #joystick-base {
+    left: calc(var(--mp-bar) + 100px + var(--safe-left));
+    top: calc(100% - 260px - var(--safe-bottom)); /* clear of the radar and the bottom HUD text */
+}
+
+.touch-zone-b,
+.joystick-layer {
+    display: none;
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+body.mp-active.mp-layout-sides.mp-zone-b .touch-zone-b,
+body.mp-active.mp-layout-sides.mp-zone-b .joystick-layer {
+    display: block;
+}
+
+.touch-zone-b .joystick-zone-b {
+    display: block;
+    left: 50%;
+    right: 0;
+    width: auto;
+    top: calc(var(--mp-edge) + var(--safe-top));
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+}
+
+.mp-cluster-b {
+    position: absolute;
+    right: calc(8px + var(--safe-right));
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+    display: grid;
+    grid-template-columns: auto;
+    grid-template-areas:
+        "hyper"
+        "fire";
+    row-gap: 12px;
+    justify-items: end;
+    align-items: end;
+}
+
+.mp-cluster-b .hyper { grid-area: hyper; }
+.mp-cluster-b .fire { grid-area: fire; }
+
+.touch-zone-b .mp-pause-b {
+    position: absolute;
+    right: calc(8px + var(--safe-right));
+    top: calc(var(--mp-edge) + var(--safe-top));
+}
+
+.joystick-layer .joystick-base-b {
+    left: calc(100% - var(--mp-bar) - 100px - var(--safe-right));
+    top: calc(100% - 260px - var(--safe-bottom));
+}
+
+/* --- Per-player HUD panels in the side bars (touches pass through) --- */
+.mp-hud {
+    display: none;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 12;
+}
+
+body.mp-round.mp-hud-dom .mp-hud {
+    display: block;
+}
+
+.mp-hud-col {
+    position: absolute;
+    top: calc(var(--mp-edge) + 58px + var(--safe-top));
+    width: calc(var(--mp-bar) - 16px);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.mp-hud-left { left: calc(8px + var(--safe-left)); }
+.mp-hud-right { right: calc(8px + var(--safe-right)); }
+
+.seat-hud {
+    position: relative;
+    box-sizing: border-box;
+    padding: 6px 8px 6px 12px;
+    background-color: rgba(10, 10, 25, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    color: white;
+    font-size: 18px;
+    line-height: 1.25;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+    overflow: hidden;
+}
+
+.seat-hud-stripe {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    background-color: var(--seat-colour, #FFFFFF);
+}
+
+.seat-hud [data-hud="name"] {
+    color: var(--seat-colour, #FFFFFF);
+    font-weight: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.seat-hud [data-hud="score"] {
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.seat-hud [data-hud="lives"] {
+    color: var(--seat-colour, #FFFFFF);
+    letter-spacing: 2px;
+}
+
+.seat-hud-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 0;
+}
+
+.hud-chip {
+    position: relative;
+    min-width: 28px;
+    padding: 1px 4px;
+    font-size: 14px;
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.hud-chip-label {
+    position: relative;
+}
+
+.hud-chip-bar {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    background-color: var(--seat-colour, #FFFFFF);
+}
+
+.seat-hud [data-hud="combo"] {
+    color: #FFD700;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+.seat-hud-combo-track {
+    height: 3px;
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.seat-hud [data-hud="comboBar"] {
+    height: 100%;
+    width: 0;
+    background-color: #FFD700;
+}
+
+.seat-hud [data-hud="status"] {
+    color: #FFD700;
+    font-size: 15px;
+    font-weight: bold;
+}
+
+/* --- Lobby join pads (touch) --- */
+.mp-join-pads {
+    display: none;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 11;
+}
+
+body.touch-enabled.state-lobby.mp-touch-lobby.mp-layout-sides .mp-join-pads {
+    display: block;
+}
+
+.touch-btn.join-pad {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: calc(var(--mp-bar) - 16px);
+    height: 220px;
+    border-radius: 16px;
+    flex-direction: column;
+    gap: 10px;
+    color: white;
+    font: bold 16px Arial, sans-serif;
+    text-align: center;
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 3px dashed rgba(255, 255, 255, 0.45);
+}
+
+#join-pad-a { left: calc(8px + var(--safe-left)); }
+#join-pad-b { right: calc(8px + var(--safe-right)); }
+
+.touch-btn.join-pad.joined {
+    border-style: solid;
+    border-color: var(--seat-colour, #FFFFFF);
+    background-color: rgba(255, 255, 255, 0.14);
+}
+
+.touch-btn.join-pad.ready {
+    border-width: 5px;
+    background-color: rgba(0, 255, 136, 0.18);
+}
+
+.join-pad-title {
+    color: var(--seat-colour, #AAAAAA);
+    font-size: 15px;
+}
+
+.join-pad-text {
+    font-size: 20px;
+}
+
+.join-pad-hint {
+    color: #AAAAAA;
+    font-size: 13px;
+    font-weight: normal;
+}
+
+/* --- Portrait: side by side needs landscape --- */
+.mp-rotate-prompt {
+    display: none;
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 40;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 20px 28px;
+    background-color: rgba(10, 10, 30, 0.94);
+    border: 2px solid #FFD700;
+    border-radius: 12px;
+    color: white;
+    font: bold 26px Arial, sans-serif;
+    text-align: center;
+    pointer-events: none; /* never blocks the pause menu below it */
+}
+
+.mp-rotate-icon {
+    font-size: 48px;
+    color: #FFD700;
+}
+
+.mp-rotate-sub {
+    font-size: 15px;
+    font-weight: normal;
+    color: #CCCCCC;
+}
+
+body.mp-rotate .mp-rotate-prompt {
+    display: flex;
+}
+
+body.mp-rotate .touch-controls {
+    display: none !important;
+}
+
+/* No combo: hide its timer track too (SeatHudView hides the combo line inline) */
+.seat-hud [data-hud="combo"][style*="none"] + .seat-hud-combo-track {
+    display: none;
+}
