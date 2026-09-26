@@ -451,10 +451,27 @@ export async function openMultiplayer(page) {
 /** Mode select -> Take Turns with Enter -> the seat lobby (keyboard). */
 export async function openTakeTurnsLobby(page) {
   await openMultiplayer(page);
-  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'back']);
+  const rows = await hook(page, 'mp.modeSelect.rows');
+  expect(rows[0]).toBe('turns');
+  expect(rows[rows.length - 1]).toBe('back');
   await page.keyboard.press('Enter');
   await waitForState(page, 'lobby');
   expect(await hook(page, 'lobby.kind')).toBe('seats');
+}
+
+/** Mode select -> Time Attack (keyboard) -> the course picker. */
+export async function openTimeAttackSetup(page) {
+  await openMultiplayer(page);
+  const rows = await hook(page, 'mp.modeSelect.rows');
+  const target = rows.indexOf('timeattack');
+  expect(target, `timeattack in ${JSON.stringify(rows)}`).toBeGreaterThanOrEqual(0);
+  for (let i = 0; i < 10 && (await hook(page, 'mp.modeSelect.index')) !== target; i++) {
+    await page.keyboard.press('ArrowDown');
+    await frames(page, 2);
+  }
+  expect(await hook(page, 'mp.modeSelect.index')).toBe(target);
+  await page.keyboard.press('Enter');
+  await waitForState(page, 'ta_setup');
 }
 
 /** Press a key and wait until the lobby card of `seat` matches `check(card)`. */

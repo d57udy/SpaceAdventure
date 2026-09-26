@@ -134,11 +134,12 @@ export class PowerUp extends Entity {
         ctx.restore();
     }
 
-    // Static method to spawn a power-up at a random position
-    static spawnRandom(worldWidth, worldHeight, margin = 50) {
-        const x = randomRange(margin, worldWidth - margin);
-        const y = randomRange(margin, worldHeight - margin);
-        return new PowerUp(x, y);
+    // Static method to spawn a power-up at a random position.
+    // rng: optional seeded generator (js/rng.js) for the position and type (Time Attack).
+    static spawnRandom(worldWidth, worldHeight, margin = 50, rng = null) {
+        const x = randomRange(margin, worldWidth - margin, rng);
+        const y = randomRange(margin, worldHeight - margin, rng);
+        return new PowerUp(x, y, rng ? PowerUp.getRandomType(rng) : null);
     }
 
     // Static method to spawn a specific type
@@ -147,8 +148,8 @@ export class PowerUp extends Entity {
     }
 
     // Get a random power-up type (weighted - extra life is rarer)
-    static getRandomType() {
-        const rand = Math.random();
+    static getRandomType(rng = null) {
+        const rand = (rng || Math.random)();
         if (rand < 0.05) return PowerUpType.EXTRA_LIFE; // 5% chance
         if (rand < 0.15) return PowerUpType.SHIELD; // 10% chance
         if (rand < 0.30) return PowerUpType.TRIPLE_SHOT; // 15% chance

@@ -16,6 +16,9 @@ export class Boss extends Entity {
         super(x, y, baseRadius + Math.min(level * 2, 20));
 
         this.level = level;
+        // Optional seeded generator (js/rng.js) for the movement targets (Time Attack);
+        // main.js sets it. null = Math.random.
+        this.rng = null;
         this.phase = Boss.PHASES.ENTERING;
         this.phaseTimer = 0;
 
@@ -193,8 +196,8 @@ export class Boss extends Entity {
             this.moveTimer = 0;
             // Pick new target position in the upper part of the player's view.
             // Stored relative to the player (world coords), not absolute canvas coords.
-            this.targetOffsetX = randomRange(-canvasWidth / 2 + this.radius + 50, canvasWidth / 2 - this.radius - 50);
-            this.targetOffsetY = randomRange(-canvasHeight / 2 + this.radius + 50, -canvasHeight / 2 + canvasHeight * 0.4);
+            this.targetOffsetX = randomRange(-canvasWidth / 2 + this.radius + 50, canvasWidth / 2 - this.radius - 50, this.rng);
+            this.targetOffsetY = randomRange(-canvasHeight / 2 + this.radius + 50, -canvasHeight / 2 + canvasHeight * 0.4, this.rng);
         }
         if (anchor) {
             this.targetX = anchor.x + this.targetOffsetX;

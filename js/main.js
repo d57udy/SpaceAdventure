@@ -34,6 +34,12 @@ import { buildResults, resultBanner, historyEntry } from './mpResults.js';
 import { MP_KEYS, addHistory, addToBoard, recordRivalry, isHistory, isBoard, isRivalry } from './mpRecords.js';
 import { initPwa } from './pwa.js';
 import { createPwaUi } from './pwaUi.js';
+import { createAsteroidField } from './asteroid.js';
+import { GhostRecorder, GhostPlayer, decodeGhost, ghostStorageKey } from './ghost.js';
+import {
+    TIME_ATTACK, stepCourse, createSeededWorld, ghostKeysForCourse, isGhostRecord, makeGhostRecord, isBetterRun,
+    pickBestGhost, viewSizeDiffers, paceDelta, formatPace, formatClock, ownerColour, summarizeRun,
+} from './timeAttack.js';
 
 // Game States Enum
 const GameState = {
@@ -54,6 +60,7 @@ const GameState = {
     TURN_CHANGE: 'turn_change', // Take Turns: "PLAYER 2 – GET READY"
     ROUND_END: 'round_end',     // 2 s slow-motion banner
     RESULTS: 'results',
+    TA_SETUP: 'ta_setup',       // Time Attack: course and difficulty picker
 };
 
 // Difficulty Settings
@@ -943,6 +950,7 @@ function syncTutorialDom() {
     });
 }
 function getPauseMenuOptions() {
+    if (isTimeAttack()) return TA_PAUSE_OPTIONS;
     if (isMultiplayer()) return MP_PAUSE_OPTIONS;
     return tutorial.active ? [...pauseMenuOptions, 'Skip Tutorial'] : pauseMenuOptions;
 }
@@ -953,6 +961,7 @@ function getPauseMenuOptions() {
 const MP_MODE_IDS = ['turns']; // playable modes, in the order shown on the mode select screen
 const MP_MODE_INFO = {
     turns: ['2 to 4 players pass one device.', 'One ship at a time; the highest score wins.'],
+    timeattack: ['One player, 3 minutes on a numbered course.', 'Race the best run on this device.'],
 };
 const MP_PAUSE_OPTIONS = ['Resume', 'Restart round', 'Change players', 'Main menu'];
 const RESULTS_BUTTONS = ['Rematch', 'Change mode', 'Main menu'];
@@ -1001,7 +1010,7 @@ function seatColour(index) {
 function syncSeatMode() {
     let wantSeats = false;
     if (currentGameState === GameState.LOBBY) wantSeats = !!lobby && lobby.kind === 'seats';
-    else if (inRound()) wantSeats = isMultiplayer() && mode.kind !== 'turns';
+    else if (inRound()) wantSeats = isMultiplayer() && mode.kind !== 'turns' && mode.kind !== 'solo';
     if (wantSeats === inputHandler.seats.merged) inputHandler.setMerged(!wantSeats);
 }
 
@@ -1014,6 +1023,7 @@ function openModeSelect() {
 function mpModeRows() {
     return [
         ...MP_MODE_IDS.map(id => ({ id, label: () => MODES[id].name, select: () => openLobby(id) })),
+        { id: 'timeattack', label: () => 'Time Attack', select: () => openTimeAttackSetup() }, // one player, no lobby
         { id: 'back', label: () => 'Back', select: () => returnToMenu() },
     ];
 }
@@ -1249,6 +1259,7 @@ function finishMultiplayerRound(result) {
         mode, result, players, duration: round ? round.elapsed : 0,
         level: turn ? null : level, difficulty: selectedDifficulty.id,
     });
+    if (isTimeAttack()) finishTimeAttackRun(lastResults); // saves the ghost if it is a new best
     // Take Turns plays by single-player rules: every profile gets a normal high-score entry
     if (mode.leaderboard === 'highScores') {
         for (const p of players) if (p.profile) checkAndAddHighScore(p.score, p.profile);
@@ -1297,8 +1308,10 @@ function openResults() {
     updateUI(); // the HUD line shows player 1 again
 }
 function selectResultsButton(index) {
-    switch (RESULTS_BUTTONS[index]) {
+    switch (resultsButtons()[index]) {
         case 'Rematch': reopenLobby(); break;
+        case 'Retry': startTimeAttack(); break;
+        case 'Change course': openTimeAttackSetup(); break;
         case 'Change mode': openModeSelect(); break;
         default: returnToMenu(); break;
     }
@@ -1309,7 +1322,7 @@ function handleResultsInput(deltaTime) {
         inputHandler.clearPending();
         return;
     }
-    const n = RESULTS_BUTTONS.length;
+    const n = resultsButtons().length;
     if (inputHandler.consumeAction('menuLeft') || inputHandler.consumeAction('menuUp')) resultsIndex = (resultsIndex - 1 + n) % n;
     if (inputHandler.consumeAction('menuRight') || inputHandler.consumeAction('menuDown')) resultsIndex = (resultsIndex + 1) % n;
     if (inputHandler.consumeAction('menuSelect')) { selectResultsButton(resultsIndex); return; }
@@ -1846,11 +1859,12 @@ function applyMagnet(p, deltaTime) {
     });
 }
 
-// A random power-up type among the ones this mode allows (single-player: all of them, one roll)
-function randomPowerUpType() {
+// A random power-up type among the ones this mode allows (single-player: all of them, one roll).
+// rng: the seeded world generator in Time Attack (timed spawns), else Math.random.
+function randomPowerUpType(rng = null) {
     const allowed = mode.powerUps.types;
-    let type = PowerUp.getRandomType();
-    for (let i = 0; i < 20 && !allowed.includes(type.id); i++) type = PowerUp.getRandomType();
+    let type = PowerUp.getRandomType(rng);
+    for (let i = 0; i < 20 && !allowed.includes(type.id); i++) type = PowerUp.getRandomType(rng);
     return allowed.includes(type.id) ? type : (Object.values(PowerUpType).find(t => allowed.includes(t.id)) || type);
 }
 
@@ -2042,8 +2056,10 @@ document.addEventListener('DOMContentLoaded', () => {
         get results() {
             if (!lastResults) return null;
             return { ...JSON.parse(JSON.stringify(lastResults)), index: resultsIndex, inputDelay: resultsInputDelay,
-                buttons: RESULTS_BUTTONS.slice() };
+                buttons: resultsButtons().slice() };
         },
+        // Time Attack: setup screen, seeded layout of the current level, recorder and ghost
+        get timeAttack() { return timeAttackSnapshot(); },
     };
 
     console.log(`Starting Game Loop in State: ${currentGameState}`);
@@ -2147,6 +2163,7 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     players = buildPlayers(lobby);
     round = createRound(mode);
     level = 1;
+    setupTimeAttackRun(); // seeded world, recorder and ghost (Time Attack); clears them otherwise
     bullets = [];
     asteroids = [];
     ufos = [];
@@ -2600,6 +2617,10 @@ function handleInput(deltaTime) {
             navigateRows(mpModeRows(), () => mpModeIndex, (i) => { mpModeIndex = i; });
             break;
 
+        case GameState.TA_SETUP:
+            handleTimeAttackSetupInput();
+            break;
+
         case GameState.LOBBY:
             if (lobby) handleLobbyInput(deltaTime);
             else leaveLobby();
@@ -2886,8 +2907,8 @@ function updateGame(deltaTime) {
     // Spawn random power-ups periodically (DDA modifier affects spawn rate; none in training)
     if (!tutorial.active) powerUpSpawnTimer -= deltaTime;
     if (powerUpSpawnTimer <= 0) {
-        const newPowerUp = PowerUp.spawnRandom(WORLD_WIDTH, WORLD_HEIGHT);
-        newPowerUp.type = randomPowerUpType();
+        const newPowerUp = PowerUp.spawnRandom(WORLD_WIDTH, WORLD_HEIGHT, 50, worldRng());
+        newPowerUp.type = randomPowerUpType(worldRng());
         powerUps.push(newPowerUp);
         // Apply DDA modifier: lower mod = faster spawns (helps struggling players)
         powerUpSpawnTimer = currentScaling().powerUpInterval * (mode.ddaEnabled ? DynamicDifficulty.powerUpSpawnMod : 1);
@@ -2921,6 +2942,9 @@ function updateGame(deltaTime) {
 
         // Evaluate performance (team-wide; Take Turns: the active player's world) and adjust difficulty
         if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(activePlayers()));
+
+        // Time Attack: record this frame and advance the ghost (game time only)
+        updateTimeAttack(deltaTime);
 
         // Round timer and the mode's end conditions
         updateRound(deltaTime);
@@ -3110,6 +3134,7 @@ function renderGame() {
             applyCameraTransform(ScreenShake.offsetX, ScreenShake.offsetY);
 
             // Draw all entities with wrapping support for seamless scrolling
+            drawTimeAttackGhost(); // translucent, under everything else
             drawShips();
             asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
@@ -3168,7 +3193,12 @@ function renderGame() {
                 ctx.globalAlpha = 1;
             }
 
+            drawTimeAttackHud(); // timer, ghost pace, screen-size notice
             drawMultiplayerOverlay(); // whose turn, resume countdown, round-end banner
+            break;
+
+        case GameState.TA_SETUP:
+            drawTimeAttackSetup();
             break;
 
         case GameState.MP_MODE_SELECT:
@@ -3510,37 +3540,16 @@ function createLevelAsteroids(isBossLevel = false) {
 
     console.log(`Spawning ${numAsteroids} asteroids (speed: ${speedMod.toFixed(2)}x, green%: ${(greenProbability * 100).toFixed(0)}%)`);
 
-    let greenCount = 0;
-    for (let i = 0; i < numAsteroids; i++) {
-        let x, y;
-        let attempts = 0;
-
-        // Find a position that's not too close to any ship (wrap-aware: an asteroid just
-        // across the world edge is close too)
-        do {
-            x = randomRange(0, WORLD_WIDTH);
-            y = randomRange(0, WORLD_HEIGHT);
-            attempts++;
-        } while (isNearAny(x, y, avoid, SAFE_SPAWN_RADIUS * 2, WORLD_WIDTH, WORLD_HEIGHT) && attempts < 20);
-
-        // Mostly large asteroids at start of level (they split into smaller ones)
-        const sizeRoll = Math.random();
-        let size;
-        if (sizeRoll < 0.6) {
-            size = Asteroid.Sizes.LARGE;
-        } else if (sizeRoll < 0.85) {
-            size = Asteroid.Sizes.MEDIUM;
-        } else {
-            size = Asteroid.Sizes.SMALL;
-        }
-
-        // Determine asteroid type with DDA-adjusted probability
-        const isGreen = Math.random() < greenProbability;
-        const type = isGreen ? 'green' : 'red';
-        if (isGreen) greenCount++;
-
-        asteroids.push(new Asteroid(x, y, size, null, speedMod, type));
-    }
+    // Time Attack: every level starts from its own seed (the same layout on every run)
+    if (seededWorld) seededWorld.reseed(level);
+    // Positions clear of the ships, size, type (js/asteroid.js; Math.random unless seeded)
+    const field = createAsteroidField({
+        count: numAsteroids, worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT, avoid,
+        clearRadius: SAFE_SPAWN_RADIUS * 2, greenProbability, speedMultiplier: speedMod, rng: worldRng(),
+    });
+    asteroids = field.asteroids;
+    const greenCount = field.greenCount;
+    if (timeAttackRun) timeAttackRun.layout = asteroids.map(a => ({ x: a.x, y: a.y, velX: a.velX, velY: a.velY, type: a.type, radius: a.radius }));
 
     // Track green asteroids spawned for DDA
     DynamicDifficulty.trackGreenSpawned(greenCount);
@@ -4057,6 +4066,7 @@ function levelUp() {
         currentBoss = new Boss(bossX, targetY, bossLevel);
         const scaling = currentScaling();
         currentBoss.applyScaling(scaling.bossHpMult, scaling.bossAttackMult); // x1 in single-player
+        currentBoss.rng = worldRng(); // Time Attack: seeded movement targets
         console.log(`BOSS BATTLE! Spawning level ${bossLevel} boss at target y=${targetY}!`);
 
         // Show boss warning
@@ -4161,7 +4171,7 @@ function resetUfoSpawnTimer() {
     interval *= selectedDifficulty.ufoSpawnMultiplier;
     interval *= DynamicDifficulty.ufoSpawnMod; // Apply DDA modifier
     interval *= Math.max(0.5, 1 - (level * 0.05));
-    ufoSpawnTimer = interval * randomRange(0.75, 1.25);
+    ufoSpawnTimer = interval * randomRange(0.75, 1.25, worldRng());
     console.log(`Next UFO spawn timer set to ~${interval.toFixed(1)}s`);
 }
 
@@ -4182,25 +4192,26 @@ function updateUfoSpawning(deltaTime) {
         const playerY = centre.y;
 
         // Spawn at edge of visible area
-        const spawnSide = Math.floor(Math.random() * 4); // 0=top, 1=right, 2=bottom, 3=left
+        const rng = worldRng(); // seeded in Time Attack
+        const spawnSide = Math.floor((rng || Math.random)() * 4); // 0=top, 1=right, 2=bottom, 3=left
         let ufoX, ufoY;
 
         switch (spawnSide) {
             case 0: // Top
-                ufoX = playerX + randomRange(-viewWidth / 2, viewWidth / 2);
+                ufoX = playerX + randomRange(-viewWidth / 2, viewWidth / 2, rng);
                 ufoY = playerY - viewHeight / 2 - 20;
                 break;
             case 1: // Right
                 ufoX = playerX + viewWidth / 2 + 20;
-                ufoY = playerY + randomRange(-viewHeight / 2, viewHeight / 2);
+                ufoY = playerY + randomRange(-viewHeight / 2, viewHeight / 2, rng);
                 break;
             case 2: // Bottom
-                ufoX = playerX + randomRange(-viewWidth / 2, viewWidth / 2);
+                ufoX = playerX + randomRange(-viewWidth / 2, viewWidth / 2, rng);
                 ufoY = playerY + viewHeight / 2 + 20;
                 break;
             case 3: // Left
                 ufoX = playerX - viewWidth / 2 - 20;
-                ufoY = playerY + randomRange(-viewHeight / 2, viewHeight / 2);
+                ufoY = playerY + randomRange(-viewHeight / 2, viewHeight / 2, rng);
                 break;
         }
 
@@ -4209,7 +4220,7 @@ function updateUfoSpawning(deltaTime) {
         ufoY = ((ufoY % WORLD_HEIGHT) + WORLD_HEIGHT) % WORLD_HEIGHT;
 
         // Create UFO at the calculated position
-        const ufo = new UFO(viewWidth, viewHeight, playerX, playerY);
+        const ufo = new UFO(viewWidth, viewHeight, playerX, playerY, rng);
         ufo.x = ufoX;
         ufo.y = ufoY;
         ufos.push(ufo);
@@ -4871,7 +4882,7 @@ function drawMultiplayerOverlay() {
         ctx.fillText('ROUND OVER', viewWidth / 2, y + 42);
         ctx.fillStyle = '#FFD700';
         ctx.font = 'bold 26px Arial';
-        ctx.fillText(resultBanner(lastResults), viewWidth / 2, y + 88);
+        ctx.fillText(roundBanner(lastResults), viewWidth / 2, y + 88);
     }
     ctx.restore();
 }
@@ -4882,7 +4893,7 @@ function drawResults() {
     if (!r) return;
     const mins = Math.floor(r.duration / 60);
     const secs = String(Math.floor(r.duration % 60)).padStart(2, '0');
-    const top = drawScreenTitle(resultBanner(r), `${r.modeName} · ${mins}:${secs}`);
+    const top = drawScreenTitle(roundBanner(r), roundSubtitle(r, `${r.modeName} · ${mins}:${secs}`));
     const rows = r.players;
     const labelW = Math.min(150, viewWidth * 0.24);
     const left = 16 + labelW;
@@ -4925,7 +4936,7 @@ function drawResults() {
     let y = headY + 22 + (fields.length + 1) * lineH + 8;
     ctx.textAlign = 'center';
     ctx.font = '15px Arial';
-    const extra = [...r.highlights];
+    const extra = [...(r.timeAttack ? r.timeAttack.lines : []), ...r.highlights];
     rows.forEach(p => { if (p.newAchievements.length) extra.push(`${p.name}: ${p.newAchievements.join(', ')}`); });
     extra.slice(0, 4).forEach(line => {
         ctx.fillStyle = '#FFD700';
@@ -4934,14 +4945,14 @@ function drawResults() {
     });
 
     // Buttons
-    const n = RESULTS_BUTTONS.length;
+    const n = resultsButtons().length;
     const gap = 10;
     const bw = Math.min(190, (viewWidth - 40 - gap * (n - 1)) / n);
     const bh = 48;
     const bx0 = (viewWidth - (bw * n + gap * (n - 1))) / 2;
     const by = viewHeight - 90;
     const waiting = resultsInputDelay > 0;
-    RESULTS_BUTTONS.forEach((label, i) => {
+    resultsButtons().forEach((label, i) => {
         const bx = bx0 + i * (bw + gap);
         ctx.globalAlpha = waiting ? 0.4 : 1;
         drawButtonBox(bx, by, bw, bh, label, i === resultsIndex, 'bold 18px Arial');
@@ -4975,6 +4986,312 @@ function lobbySnapshot() {
             colour: seats[seat] ? seats[seat].colour : null,
             colourHex: seats[seat] ? seatColour(seats[seat].colour) : null,
         } : null)),
+    };
+}
+
+// --- Time Attack vs Ghost (docs/plans/05-local-multiplayer.md §4.6, §6, MP-6) ---
+// MP_MODE_SELECT ─Time Attack─► TA_SETUP (course 1–10, difficulty) ─► PLAYING (180 s, 3 lives,
+// standard ships, no DDA) ─► ROUND_END ─► RESULTS (Retry / Change course / Main menu).
+// The world is seeded per course and level (js/timeAttack.js createSeededWorld); the run is
+// recorded in game time (js/ghost.js) and replaces the player's stored ghost when it scores
+// higher. The ghost raced is the best run on this device for the course, by any profile.
+const TA_PAUSE_OPTIONS = ['Resume', 'Restart round', 'Main menu'];
+const TA_RESULTS_BUTTONS = ['Retry', 'Change course', 'Main menu'];
+const TA_NOTICE_SECONDS = 5;       // how long the "different screen size" notice shows in play
+const GHOST_ALPHA = 0.45;
+let seededWorld = null;            // createSeededWorld() during a Time Attack run, else null
+let timeAttackRun = null;          // the run in progress (or just finished), see setupTimeAttackRun
+const taSetup = { course: 1, index: 0, cacheKey: null, best: null, own: null };
+
+function isTimeAttack() { return mode.id === 'timeattack'; }
+// The seeded generator for world spawns, or null (callees fall back to Math.random)
+function worldRng() { return seededWorld ? seededWorld.rand : null; }
+function resultsButtons() { return lastResults && lastResults.timeAttack ? TA_RESULTS_BUTTONS : RESULTS_BUTTONS; }
+function roundBanner(r) { return r && r.timeAttack ? r.timeAttack.banner : resultBanner(r); }
+function roundSubtitle(r, fallback) {
+    if (!r || !r.timeAttack) return fallback;
+    const t = r.timeAttack;
+    return `Time Attack · Course ${t.course} · ${difficultyName(t.difficulty)} · Score ${t.score}`;
+}
+function difficultyName(id) {
+    const d = Object.values(Difficulty).find(x => x.id === id);
+    return d ? d.name : id;
+}
+
+// Best stored run for a course (any profile) and the signed-in player's own
+function loadCourseGhosts(course, difficulty) {
+    const pm = persistenceManager;
+    const entries = ghostKeysForCourse(pm.listKeys(), course, difficulty)
+        .map(key => ({ key, record: pm.loadJson(key, isGhostRecord, null) }))
+        .filter(e => e.record);
+    const own = currentUser ? pm.loadJson(ghostStorageKey(currentUser, course, difficulty), isGhostRecord, null) : null;
+    return { best: pickBestGhost(entries), own };
+}
+function refreshTimeAttackSetup(force = false) {
+    const key = `${taSetup.course}_${selectedDifficulty.id}`;
+    if (!force && key === taSetup.cacheKey) return;
+    const { best, own } = loadCourseGhosts(taSetup.course, selectedDifficulty.id);
+    taSetup.best = best;
+    taSetup.own = own;
+    taSetup.cacheKey = key;
+}
+
+function openTimeAttackSetup() {
+    pausedGameExists = false;
+    taSetup.index = 0;
+    refreshTimeAttackSetup(true);
+    currentGameState = GameState.TA_SETUP;
+}
+function startTimeAttack() {
+    startGame('timeattack', null);
+}
+function timeAttackSetupRows() {
+    return [
+        { id: 'course', label: () => 'Course', value: () => String(taSetup.course),
+            change: (d) => { taSetup.course = stepCourse(taSetup.course, d); } },
+        { id: 'difficulty', label: () => 'Difficulty', value: () => selectedDifficulty.name, change: (d) => cycleDifficulty(d) },
+        { id: 'start', label: () => 'Start run', select: () => startTimeAttack() },
+        { id: 'back', label: () => 'Back', select: () => backFromTimeAttackSetup() },
+    ];
+}
+function backFromTimeAttackSetup() {
+    mpModeIndex = Math.max(0, mpModeRows().findIndex(r => r.id === 'timeattack'));
+    currentGameState = GameState.MP_MODE_SELECT;
+}
+function handleTimeAttackSetupInput() {
+    if (inputHandler.consumeAction('escape')) {
+        backFromTimeAttackSetup();
+        return;
+    }
+    navigateRows(timeAttackSetupRows(), () => taSetup.index, (i) => { taSetup.index = i; });
+    if (currentGameState === GameState.TA_SETUP) refreshTimeAttackSetup();
+}
+
+function drawTimeAttackSetup() {
+    refreshTimeAttackSetup();
+    const top = drawScreenTitle('TIME ATTACK', '3 minutes · 3 lives · standard ship');
+    const rows = timeAttackSetupRows();
+    if (taSetup.index >= rows.length) taSetup.index = 0;
+    const w = Math.min(460, viewWidth - 60);
+    const x = (viewWidth - w) / 2;
+    const h = 50;
+    let y = top + 10;
+    rows.forEach((row, i) => {
+        const selected = i === taSetup.index;
+        if (rowHasValue(row)) {
+            drawButtonBox(x, y, w, h, '', selected);
+            ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
+            ctx.font = 'bold 20px Arial';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'left';
+            ctx.fillText(row.label(), x + 16, y + h / 2);
+            ctx.textAlign = 'right';
+            ctx.fillText(`◂  ${row.value()}  ▸`, x + w - 16, y + h / 2);
+            ctx.textBaseline = 'alphabetic';
+        } else {
+            drawButtonBox(x, y, w, h, row.label(), selected);
+        }
+        addRowTapRegion(x, y, w, h, row, i, (k) => { taSetup.index = k; });
+        y += h + 12;
+        if (row.id === 'difficulty') y += drawTimeAttackGhostInfo(y) + 8;
+    });
+    drawHintLine(inputHint('UP/DOWN to choose, LEFT/RIGHT to change, ENTER to select, ESC to go back',
+        'Tap the left or right side of a row to change it',
+        () => `◂ ▸ Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`));
+}
+// Whose ghost waits on the chosen course; returns the height used
+function drawTimeAttackGhostInfo(y) {
+    const lines = [];
+    const best = taSetup.best;
+    if (best) {
+        lines.push({ text: `Ghost: ${best.owner} · ${best.record.score}`, colour: ownerColour(best.owner, palette.seats) });
+        if (viewSizeDiffers(best.record.viewSize, viewWidth)) {
+            lines.push({ text: 'Recorded on a different screen size: its path may not line up', colour: '#FFB347' });
+        }
+    } else {
+        lines.push({ text: 'No ghost yet: your first run sets it', colour: '#AAAAAA' });
+    }
+    lines.push({ text: taSetup.own ? `Your best here: ${taSetup.own.score}` : 'You have no run on this course yet', colour: '#AAAAAA' });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    lines.forEach((l, i) => {
+        ctx.font = i === 0 ? 'bold 17px Arial' : '15px Arial';
+        ctx.fillStyle = l.colour;
+        ctx.fillText(l.text, viewWidth / 2, y + 16 + i * 22, viewWidth - 30);
+    });
+    return lines.length * 22;
+}
+
+// Called by startGame right after the round is created: seeds the world, loads the ghost and
+// starts the recorder (Time Attack); clears all of it for every other mode.
+function setupTimeAttackRun() {
+    seededWorld = null;
+    timeAttackRun = null;
+    if (!isTimeAttack()) return;
+    const course = taSetup.course;
+    const difficulty = selectedDifficulty.id;
+    seededWorld = createSeededWorld(course, difficulty);
+    round.course = course;
+    const { best, own } = loadCourseGhosts(course, difficulty);
+    let ghost = null;
+    const decoded = best ? decodeGhost(best.record) : null;
+    if (decoded) {
+        ghost = {
+            player: new GhostPlayer(decoded, { worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT }),
+            owner: best.owner, score: best.record.score, viewSize: best.record.viewSize,
+            sizeDiffers: viewSizeDiffers(best.record.viewSize, viewWidth),
+            colour: ownerColour(best.owner, palette.seats),
+        };
+    }
+    timeAttackRun = {
+        course, difficulty, ghost, sample: null,
+        recorder: new GhostRecorder({ worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT, viewSize: viewWidth }),
+        previousBest: own ? own.score : null,
+        noticeTimer: ghost && ghost.sizeDiffers ? TA_NOTICE_SECONDS : 0,
+        layout: [], saved: false, newBest: false, summary: null,
+    };
+}
+
+// Once per playing frame (game time: pauses and resume countdowns are excluded)
+function updateTimeAttack(deltaTime) {
+    const run = timeAttackRun;
+    if (!run || !isTimeAttack() || currentGameState !== GameState.PLAYING) return;
+    const p = p1();
+    const ship = p.ship && p.ship.isAlive && p.respawnTimer <= 0 ? p.ship : null;
+    run.recorder.update(deltaTime * 1000, ship
+        ? { x: ship.x, y: ship.y, rotation: ship.rotation, thrusting: ship.isThrusting, alive: true }
+        : null, p.score);
+    if (run.ghost) run.sample = run.ghost.player.sampleAt(run.recorder.elapsedMs);
+    if (run.noticeTimer > 0) run.noticeTimer = Math.max(0, run.noticeTimer - deltaTime);
+}
+function timeAttackPace() {
+    const run = timeAttackRun;
+    if (!run || !run.ghost) return null;
+    return paceDelta(p1().score, run.ghost.player.scoreAt(run.recorder.elapsedMs));
+}
+
+// At the round end (from finishMultiplayerRound): keep the run as the player's ghost when it
+// beats their stored one, and add the ghost comparison to the results.
+function finishTimeAttackRun(results) {
+    const run = timeAttackRun;
+    if (!run || run.summary) return;
+    const score = p1().score;
+    const key = ghostStorageKey(currentUser, run.course, run.difficulty);
+    const existing = persistenceManager.loadJson(key, isGhostRecord, null);
+    if (currentUser && isBetterRun(score, existing)) {
+        const record = makeGhostRecord(run.recorder.encode(), { owner: currentUser, course: run.course, difficulty: run.difficulty });
+        run.saved = persistenceManager.saveJson(key, record);
+        run.newBest = run.saved;
+    }
+    run.summary = summarizeRun({
+        score, ghost: run.ghost ? { owner: run.ghost.owner, score: run.ghost.score } : null,
+        newBest: run.newBest, previousBest: existing ? existing.score : null,
+    });
+    results.timeAttack = {
+        course: run.course, difficulty: run.difficulty, score, banner: run.summary.banner, lines: run.summary.lines,
+        delta: run.summary.delta, newBest: run.newBest, saved: run.saved,
+        ghostOwner: run.ghost ? run.ghost.owner : null, ghostScore: run.ghost ? run.ghost.score : null,
+    };
+    taSetup.cacheKey = null; // the setup screen reloads the ghosts
+}
+
+// The ghost ship: translucent, in its owner's colour, never collides (world space)
+function drawTimeAttackGhost() {
+    const run = timeAttackRun;
+    if (!run || !run.ghost || !run.sample || !run.sample.alive || run.sample.done) return;
+    const s = run.sample;
+    const colour = run.ghost.colour;
+    const owner = run.ghost.owner;
+    drawEntityWrapped({
+        x: s.x, y: s.y, radius: 15, isAlive: true,
+        draw(c) {
+            const r = this.radius;
+            const a = s.rotation;
+            const pt = (ang, len) => [this.x + Math.cos(ang) * len, this.y + Math.sin(ang) * len];
+            c.save();
+            c.beginPath();
+            c.moveTo(...pt(a, r));
+            c.lineTo(...pt(a + 2.443, r)); // ±140°, like PlayerShip
+            c.lineTo(...pt(a - 2.443, r));
+            c.closePath();
+            c.fillStyle = colour;
+            c.globalAlpha = GHOST_ALPHA * 0.35;
+            c.fill();
+            c.globalAlpha = GHOST_ALPHA;
+            c.strokeStyle = colour;
+            c.lineWidth = 1.5;
+            c.stroke();
+            if (s.thrusting) {
+                c.beginPath();
+                c.moveTo(...pt(a + 2.7, r * 0.6));
+                c.lineTo(...pt(a + Math.PI, r * 1.3));
+                c.lineTo(...pt(a - 2.7, r * 0.6));
+                c.stroke();
+            }
+            c.font = '11px Arial';
+            c.textAlign = 'center';
+            c.fillStyle = colour;
+            c.fillText(owner, this.x, this.y - r - 6);
+            c.restore();
+        },
+    }, ctx);
+}
+
+// Screen-space HUD: time left, pace against the ghost, and the screen-size notice
+function drawTimeAttackHud() {
+    const run = timeAttackRun;
+    if (!run || !isTimeAttack() || !round) return;
+    ctx.save();
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'alphabetic';
+    const x = viewWidth - 12;
+    const low = round.timeLeft !== null && round.timeLeft <= 10;
+    ctx.font = 'bold 26px Arial';
+    ctx.fillStyle = low ? '#FF6666' : '#FFFFFF';
+    ctx.fillText(formatClock(round.timeLeft), x, 84); // below the DOM HUD line
+    ctx.font = 'bold 16px Arial';
+    const delta = timeAttackPace();
+    if (delta === null) {
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText('No ghost yet', x, 106);
+    } else {
+        ctx.fillStyle = delta > 0 ? '#66FF99' : delta < 0 ? '#FF7777' : '#FFFFFF';
+        ctx.fillText(formatPace(delta), x, 106);
+        ctx.font = '12px Arial';
+        ctx.fillStyle = run.ghost.colour;
+        ctx.fillText(`vs ${run.ghost.owner} (${run.ghost.score})`, x, 123);
+    }
+    if (run.noticeTimer > 0) {
+        ctx.textAlign = 'center';
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#FFB347';
+        ctx.globalAlpha = Math.min(1, run.noticeTimer);
+        ctx.fillText('Ghost recorded on a different screen size: its path may not line up', viewWidth / 2, viewHeight - 34, viewWidth - 20);
+    }
+    ctx.restore();
+}
+
+// Read-only copy for the test hook
+function timeAttackSnapshot() {
+    const run = timeAttackRun;
+    const setup = {
+        course: taSetup.course, index: taSetup.index, rows: timeAttackSetupRows().map(r => r.id),
+        ghostOwner: taSetup.best ? taSetup.best.owner : null, ghostScore: taSetup.best ? taSetup.best.record.score : null,
+        ownBest: taSetup.own ? taSetup.own.score : null,
+    };
+    if (!run) return { active: false, setup, ghost: { active: false, owner: null, paceDelta: null } };
+    const g = run.ghost;
+    return {
+        active: isTimeAttack(), course: run.course, difficulty: run.difficulty,
+        seed: seededWorld ? seededWorld.seed : null, seededLevel: seededWorld ? seededWorld.level : null,
+        elapsedMs: run.recorder.elapsedMs, samples: run.recorder.sampleCount, layout: run.layout.map(a => ({ ...a })),
+        previousBest: run.previousBest, saved: run.saved, newBest: run.newBest, setup,
+        ghost: {
+            active: !!g, owner: g ? g.owner : null, score: g ? g.score : null, colour: g ? g.colour : null,
+            paceDelta: timeAttackPace(), sizeDiffers: g ? g.sizeDiffers : false, notice: run.noticeTimer > 0,
+            visible: !!(g && run.sample && run.sample.alive && !run.sample.done),
+            x: run.sample ? run.sample.x : null, y: run.sample ? run.sample.y : null,
+        },
     };
 }
 

@@ -1,5 +1,5 @@
 import { Entity } from './entity.js';
-import { randomRange, degToRad } from './utils.js';
+import { randomRange, degToRad, isNearAny } from './utils.js';
 import { Palettes } from './palette.js';
 
 // Asteroid Types
@@ -139,13 +139,17 @@ export class Asteroid extends Entity {
     // Current colour palette (js/palette.js); main.js assigns it from the settings
     static palette = Palettes.STANDARD;
 
-    constructor(x, y, size = AsteroidSize.LARGE, initialVel = null, speedMultiplier = 1.0, type = null) {
+    // rng: optional seeded generator (js/rng.js) for the rotation speed, type, shape and
+    // drift direction (Time Attack courses); Math.random when omitted. The glow phase is
+    // cosmetic and always uses Math.random.
+    constructor(x, y, size = AsteroidSize.LARGE, initialVel = null, speedMultiplier = 1.0, type = null, rng = null) {
         super(x, y, size.radius);
+        const rand = rng || Math.random;
         this.sizeInfo = size;
-        this.rotationSpeed = degToRad(randomRange(-ASTEROID_ROTATION_SPEED_MAX, ASTEROID_ROTATION_SPEED_MAX));
+        this.rotationSpeed = degToRad(randomRange(-ASTEROID_ROTATION_SPEED_MAX, ASTEROID_ROTATION_SPEED_MAX, rand));
 
         // Set asteroid type - if not specified, randomly choose (60% green, 40% red)
-        this.type = type || (Math.random() < 0.6 ? AsteroidType.GREEN : AsteroidType.RED);
+        this.type = type || (rand() < 0.6 ? AsteroidType.GREEN : AsteroidType.RED);
 
         // Score value depends on type and size
         this.scoreValue = this.type === AsteroidType.GREEN ? size.greenScore : size.redScore;
@@ -154,14 +158,14 @@ export class Asteroid extends Entity {
         this.pulseTimer = Math.random() * Math.PI * 2; // Random start phase
 
         // Shape depends on the type (known before the shape is built)
-        this.shapeVertices = this.generateShape();
+        this.shapeVertices = this.generateShape(rand);
 
         // Set initial velocity if not provided
         if (initialVel) {
             this.velX = initialVel.x;
             this.velY = initialVel.y;
         } else {
-            const angle = randomRange(0, Math.PI * 2);
+            const angle = randomRange(0, Math.PI * 2, rand);
             // Apply the base speed multiplier AND the size-specific multiplier
             const speed = ASTEROID_BASE_SPEED * speedMultiplier * this.sizeInfo.speedMultiplier;
             this.velX = Math.cos(angle) * speed;
@@ -169,12 +173,12 @@ export class Asteroid extends Entity {
         }
     }
 
-    generateShape() {
+    generateShape(random = Math.random) {
         if (this.type === AsteroidType.GREEN) {
             const n = CRYSTAL_VERTICES[this.radius] || 9;
-            return generateCrystalShape(this.radius, n);
+            return generateCrystalShape(this.radius, n, random);
         }
-        return generateSpikyShape(this.radius, this.sizeInfo.points);
+        return generateSpikyShape(this.radius, this.sizeInfo.points, random);
     }
 
     update(deltaTime, canvasWidth, canvasHeight, audioManager) {
@@ -317,4 +321,61 @@ export class Asteroid extends Entity {
     isRed() {
         return this.type === AsteroidType.RED;
     }
+}
+
+/**
+ * A level's starting asteroids, kept clear of the points in `avoid`.
+ * Without `rng` (single-player) this is the classic layout: positions are re-rolled with
+ * Math.random until clear (up to 20 tries). With a seeded `rng` (Time Attack) every asteroid
+ * draws a fixed number of values, so the layout is the same for the same seed wherever the
+ * ships are; a position too close to a ship moves to the opposite side of the world instead.
+ * @param {object} o
+ * @param {number} o.count
+ * @param {number} o.worldWidth
+ * @param {number} o.worldHeight
+ * @param {{x:number,y:number}[]} o.avoid - points to keep clear of (wrap-aware)
+ * @param {number} o.clearRadius
+ * @param {number} o.greenProbability
+ * @param {number} o.speedMultiplier
+ * @param {(() => number)|null} [o.rng]
+ * @returns {{asteroids: Asteroid[], greenCount: number}}
+ */
+export function createAsteroidField({ count, worldWidth: W, worldHeight: H, avoid = [], clearRadius, greenProbability,
+    speedMultiplier = 1, rng = null }) {
+    const rand = rng || Math.random;
+    const asteroids = [];
+    let greenCount = 0;
+    for (let i = 0; i < count; i++) {
+        let x, y;
+        if (rng) {
+            x = randomRange(0, W, rand);
+            y = randomRange(0, H, rand);
+            if (isNearAny(x, y, avoid, clearRadius, W, H)) {
+                x = (x + W / 2) % W;
+                y = (y + H / 2) % H;
+            }
+        } else {
+            // Find a position that's not too close to any ship (wrap-aware: an asteroid just
+            // across the world edge is close too)
+            let attempts = 0;
+            do {
+                x = randomRange(0, W);
+                y = randomRange(0, H);
+                attempts++;
+            } while (isNearAny(x, y, avoid, clearRadius, W, H) && attempts < 20);
+        }
+
+        // Mostly large asteroids at start of level (they split into smaller ones)
+        const sizeRoll = rand();
+        let size;
+        if (sizeRoll < 0.6) size = AsteroidSize.LARGE;
+        else if (sizeRoll < 0.85) size = AsteroidSize.MEDIUM;
+        else size = AsteroidSize.SMALL;
+
+        // Asteroid type with the (DDA-adjusted) green probability
+        const isGreen = rand() < greenProbability;
+        if (isGreen) greenCount++;
+        asteroids.push(new Asteroid(x, y, size, null, speedMultiplier, isGreen ? AsteroidType.GREEN : AsteroidType.RED, rng));
+    }
+    return { asteroids, greenCount };
 } 
