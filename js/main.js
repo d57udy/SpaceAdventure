@@ -2,7 +2,7 @@ import { PlayerShip } from './player.js';
 import { Asteroid } from './asteroid.js';
 import { Bullet } from './bullet.js';
 import { InputHandler } from './input.js';
-import { randomRange } from './utils.js';
+import { randomRange, wrapDelta } from './utils.js';
 import { UFO } from './ufo.js';
 import { AudioManager } from './audio.js';
 import { PersistenceManager } from './persistence.js';
@@ -22,7 +22,7 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
-import { createPlayer } from './players.js';
+import { createPlayer, tickPowerUps } from './players.js';
 
 // Game States Enum
 const GameState = {
@@ -146,15 +146,9 @@ let bullets = [];
 let ufos = [];
 let powerUps = [];
 
-// Active power-up effects (tracks remaining duration)
-let activePowerUps = {
-    rapid_fire: 0,
-    triple_shot: 0,
-    shield: 0,
-    speed_boost: 0,
-    magnet: 0,
-    score_multiplier: 0
-};
+// Active power-up effects are per player (p.powerUps: remaining seconds per timed power-up)
+const RAPID_FIRE_COOLDOWN = 0.1;  // seconds between shots with rapid fire
+const NORMAL_SHOT_COOLDOWN = 0.25; // PlayerShip default
 
 // Power-up spawn settings
 const POWERUP_SPAWN_CHANCE = 0.3; // 30% chance when destroying red asteroid/UFO
@@ -1337,8 +1331,8 @@ function drawRadar() {
     ctx.restore();
 }
 
-// Draw active power-up indicators
-function drawActivePowerUps() {
+// Draw a player's active power-up indicators (player 1's in single-player)
+function drawActivePowerUps(p = p1()) {
     const indicatorY = 50;
     let indicatorX = 10;
     const indicatorSpacing = 70;
@@ -1357,7 +1351,7 @@ function drawActivePowerUps() {
     ];
 
     powerUpDisplayInfo.forEach(info => {
-        const remaining = activePowerUps[info.key];
+        const remaining = p.powerUps[info.key];
         if (remaining > 0) {
             // Background bar
             ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
@@ -1389,53 +1383,64 @@ function drawActivePowerUps() {
     ctx.restore();
 }
 
-// Activate a collected power-up
-function activatePowerUp(type) {
-    console.log(`Activating power-up: ${type.name}`);
-    // Power-Up Duration upgrade extends timed effects
-    type = { ...type, duration: type.duration * ShipUpgrades.getPowerUpDurationMult() };
+// Ship settings that follow the player's power-ups (the one place that sets the fire rate)
+function applyShipModifiers(p) {
+    if (p.ship) p.ship.shootCooldown = p.powerUps.rapid_fire > 0 ? RAPID_FIRE_COOLDOWN : NORMAL_SHOT_COOLDOWN;
+}
 
-    switch (type.id) {
-        case 'rapid_fire':
-            activePowerUps.rapid_fire = type.duration;
-            if (p1().ship) p1().ship.shootCooldown = 0.1; // Faster shooting
-            break;
-        case 'triple_shot':
-            activePowerUps.triple_shot = type.duration;
-            break;
-        case 'shield':
-            activePowerUps.shield = type.duration;
-            break;
-        case 'speed_boost':
-            activePowerUps.speed_boost = type.duration;
-            break;
-        case 'magnet':
-            activePowerUps.magnet = type.duration;
-            break;
-        case 'extra_life':
-            p1().lives++;
-            console.log(`Extra life! Lives: ${p1().lives}`);
-            updateUI();
-            if (audioManager) audioManager.play('collectGreen');
-            break;
-        case 'score_multiplier':
-            activePowerUps.score_multiplier = type.duration;
-            break;
+// Activate a power-up collected by player p (effects are the collector's only)
+function activatePowerUp(p, type) {
+    console.log(`Activating power-up: ${type.name}`);
+    if (type.id === 'extra_life') {
+        p.lives++;
+        console.log(`Extra life! Lives: ${p.lives}`);
+        updateUI();
+        if (audioManager) audioManager.play('collectGreen');
+        return;
+    }
+    if (!(type.id in p.powerUps)) return;
+    // Power-Up Duration upgrade extends timed effects
+    p.powerUps[type.id] = type.duration * p.upgrades.getPowerUpDurationMult();
+    if (type.id === 'rapid_fire') applyShipModifiers(p); // Faster shooting
+}
+
+// Count down each player's power-ups and undo effects that expire
+function tickPlayerPowerUps(p, deltaTime) {
+    for (const key of tickPowerUps(p.powerUps, deltaTime)) {
+        if (key === 'rapid_fire' && p.ship) {
+            applyShipModifiers(p); // Reset to normal cooldown
+            console.log('Rapid fire expired');
+        }
     }
 }
 
-// Reset all power-ups (called when starting new game)
+// Reset all power-ups (called when starting new game): pickups in the world and every
+// player's active effects
 function resetPowerUps() {
     powerUps = [];
-    activePowerUps = {
-        rapid_fire: 0,
-        triple_shot: 0,
-        shield: 0,
-        speed_boost: 0,
-        magnet: 0,
-        score_multiplier: 0
-    };
+    for (const p of players) {
+        for (const key of Object.keys(p.powerUps)) p.powerUps[key] = 0;
+    }
     powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
+}
+
+// Magnet: pull green asteroids toward the ship of the player who holds the magnet
+function applyMagnet(p, deltaTime) {
+    const ship = p.ship;
+    if (!(p.powerUps.magnet > 0 && ship && ship.isAlive)) return;
+    asteroids.forEach(asteroid => {
+        if (asteroid.isAlive && asteroid.type === 'green') {
+            // Direction to the ship, shortest way across the wrapping world
+            const dx = wrapDelta(ship.x - asteroid.x, WORLD_WIDTH);
+            const dy = wrapDelta(ship.y - asteroid.y, WORLD_HEIGHT);
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > 20 && dist < 300) { // Attract within range
+                const magnetForce = 100 / dist;
+                asteroid.velX += (dx / dist) * magnetForce * deltaTime;
+                asteroid.velY += (dy / dist) * magnetForce * deltaTime;
+            }
+        }
+    });
 }
 
 // Spawn a power-up at a position (e.g., from destroyed enemy)
@@ -1948,7 +1953,7 @@ function handleShipInput(p, deltaTime) {
     const rotationBefore = ship.rotation;
     if (input.isPressed('rotateLeft')) ship.rotate(-1, turnTime);
     if (input.isPressed('rotateRight')) ship.rotate(1, turnTime);
-    const speedBoost = activePowerUps.speed_boost > 0 ? SPEED_BOOST_MULT : 1;
+    const speedBoost = p.powerUps.speed_boost > 0 ? SPEED_BOOST_MULT : 1;
     const thrustScale = p.upgrades.getThrustMult() * speedBoost;
     const stickThrust = applyJoystickSteering(ship, stabilizeStick(p, input.getJoystick()), deltaTime, turnTime, thrustScale);
     if (input.isPressed('thrust')) ship.thrust(deltaTime * thrustScale);
@@ -1972,7 +1977,7 @@ function handleShipInput(p, deltaTime) {
         }
 
         // Triple shot: add 2 more bullets at angles if power-up active and we fired
-        if (activePowerUps.triple_shot > 0 && bullets.length > bulletCountBefore) {
+        if (p.powerUps.triple_shot > 0 && bullets.length > bulletCountBefore) {
             const spreadAngle = 0.25; // radians (~15 degrees)
             const bulletSpeed = Bullet.PLAYER_SPEED;
             const noseX = ship.x + Math.cos(ship.rotation) * ship.radius;
@@ -2274,22 +2279,8 @@ function updateGame(deltaTime) {
     });
     powerUps = powerUps.filter(p => p.isAlive);
 
-    // Update active power-up timers
-    for (const key in activePowerUps) {
-        if (activePowerUps[key] > 0) {
-            const wasActive = activePowerUps[key] > 0;
-            activePowerUps[key] -= deltaTime;
-            if (activePowerUps[key] < 0) activePowerUps[key] = 0;
-
-            // Handle power-up expiry effects
-            if (wasActive && activePowerUps[key] <= 0) {
-                if (key === 'rapid_fire' && p1().ship) {
-                    p1().ship.shootCooldown = 0.25; // Reset to normal cooldown
-                    console.log('Rapid fire expired');
-                }
-            }
-        }
-    }
+    // Update active power-up timers (per player)
+    for (const p of players) tickPlayerPowerUps(p, deltaTime);
 
     // Spawn random power-ups periodically (DDA modifier affects spawn rate; none in training)
     if (!tutorial.active) powerUpSpawnTimer -= deltaTime;
@@ -2302,30 +2293,8 @@ function updateGame(deltaTime) {
         console.log(`Spawned random power-up: ${newPowerUp.type.name}`);
     }
 
-    // Magnet effect - attract green asteroids toward ship
-    const ship = p1().ship;
-    if (activePowerUps.magnet > 0 && ship && ship.isAlive) {
-        asteroids.forEach(asteroid => {
-            if (asteroid.isAlive && asteroid.type === 'green') {
-                // Calculate direction to ship
-                let dx = ship.x - asteroid.x;
-                let dy = ship.y - asteroid.y;
-
-                // Handle wrapping
-                if (dx > WORLD_WIDTH / 2) dx -= WORLD_WIDTH;
-                else if (dx < -WORLD_WIDTH / 2) dx += WORLD_WIDTH;
-                if (dy > WORLD_HEIGHT / 2) dy -= WORLD_HEIGHT;
-                else if (dy < -WORLD_HEIGHT / 2) dy += WORLD_HEIGHT;
-
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist > 20 && dist < 300) { // Attract within range
-                    const magnetForce = 100 / dist;
-                    asteroid.velX += (dx / dist) * magnetForce * deltaTime;
-                    asteroid.velY += (dy / dist) * magnetForce * deltaTime;
-                }
-            }
-        });
-    }
+    // Magnet effect - attract green asteroids toward the magnet holder's ship
+    for (const p of players) applyMagnet(p, deltaTime);
 
     checkCollisions();
 
@@ -2382,7 +2351,7 @@ function drawShips() {
 function drawShields() {
     for (const p of players) {
         const ship = p.ship;
-        if (!(ship && ship.isAlive && activePowerUps.shield > 0)) continue;
+        if (!(ship && ship.isAlive && p.powerUps.shield > 0)) continue;
         const screenPos = Camera.worldToScreen(ship.x, ship.y);
         ctx.strokeStyle = '#00FFFF';
         ctx.lineWidth = 2;
@@ -2932,7 +2901,7 @@ function checkShipCollisions(p) {
         for (const powerUp of powerUps) {
             if (powerUp.isAlive && ship.collidesWith(powerUp)) {
                 console.log(`Collected power-up: ${powerUp.type.name}`);
-                activatePowerUp(powerUp.type);
+                activatePowerUp(p, powerUp.type);
                 vibrate('powerUp');
                 powerUp.isAlive = false;
             }
@@ -2967,7 +2936,7 @@ function checkShipCollisions(p) {
                     let scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
 
                     // Apply score multiplier power-up
-                    if (activePowerUps.score_multiplier > 0) {
+                    if (p.powerUps.score_multiplier > 0) {
                         scoreGained *= 2;
                     }
 
@@ -3008,9 +2977,9 @@ function checkShipCollisions(p) {
                     DynamicDifficulty.trackGreenCollected(ComboSystem.count);
                 } else {
                     // RED asteroid: Lose a life (unless shield is active)!
-                    if (activePowerUps.shield > 0) {
+                    if (p.powerUps.shield > 0) {
                         console.log("Collision: Ship <-> Red Asteroid (Shield blocked!)");
-                        activePowerUps.shield = 0; // Shield breaks on impact
+                        p.powerUps.shield = 0; // Shield breaks on impact
                         vibrate('shieldHit');
                         ship.makeInvulnerable(1); // Grace period so the fragments don't kill instantly
                         Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
@@ -3029,9 +2998,9 @@ function checkShipCollisions(p) {
 
         for (const ufo of ufos) {
             if (ufo.isAlive && ship.collidesWith(ufo)) {
-                if (activePowerUps.shield > 0) {
+                if (p.powerUps.shield > 0) {
                     console.log("Collision: Ship <-> UFO (Shield blocked!)");
-                    activePowerUps.shield = 0;
+                    p.powerUps.shield = 0;
                     vibrate('shieldHit');
                     ship.makeInvulnerable(1);
                     ufo.destroy(audioManager);
@@ -3046,9 +3015,9 @@ function checkShipCollisions(p) {
 
         for (const bullet of bullets) {
             if (bullet.isAlive && !bullet.isPlayerBullet && ship.collidesWith(bullet)) {
-                if (activePowerUps.shield > 0) {
+                if (p.powerUps.shield > 0) {
                     console.log("Collision: Ship <-> UFO Bullet (Shield blocked!)");
-                    activePowerUps.shield = 0;
+                    p.powerUps.shield = 0;
                     vibrate('shieldHit');
                     ship.makeInvulnerable(1);
                     bullet.destroy();
@@ -3242,8 +3211,8 @@ function checkShipBossCollision(p) {
         if (dist < ship.radius + currentBoss.radius) {
             // Player crashed into boss
             console.log('Boss collision detected!');
-            if (activePowerUps.shield > 0) {
-                activePowerUps.shield = 0;
+            if (p.powerUps.shield > 0) {
+                p.powerUps.shield = 0;
                 vibrate('shieldHit');
                 console.log('Shield absorbed boss collision!');
                 ship.isInvulnerable = true;
@@ -3309,7 +3278,7 @@ function respawnPlayer(p, isInitialSpawn = false) {
 
          const ship = new PlayerShip(centerX, centerY);
          p.ship = ship;
-         if (activePowerUps.rapid_fire > 0) ship.shootCooldown = 0.1;
+         applyShipModifiers(p);
          p.respawnTimer = 0;
          audioManager.stopThrustSound();
 
