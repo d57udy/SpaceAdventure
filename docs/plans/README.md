@@ -94,7 +94,10 @@ Most items share `js/main.js`, so fully parallel branches would conflict constan
 | 5 | Multiplayer scope | **Local play on one device only.** No online play, no third-party services, must keep working on free GitHub Pages |
 | 6 | Freeze fix | **Shipped** in `5c3ca37` |
 
-### Still open (recommendations in bold)
+### Defaults applied when implementation started (26 September 2026)
+
+The owner asked to implement everything; the open questions below were resolved with the recommendations in bold. The multiplayer questions in [05-local-multiplayer.md §16](05-local-multiplayer.md#16-questions-for-you) were likewise resolved with their bold recommendations.
+
 1. Colour-safe palette blue/orange with shapes always on (**yes**); label spelling "Colours" or "Colors" (the code uses American spelling).
 2. Cap render resolution at 2x (**yes**); a "Graphics: Fast" setting only if older iPads struggle.
 3. Remember the mute setting between visits (**yes**).

@@ -397,7 +397,7 @@ Helper additions: `openMultiplayer`, `joinWithKeyboard`, `zoneCenter`, `joinPad`
 
 ## 16. Questions for you
 
-Recommendations in bold.
+Recommendations in bold. **Applied as defaults when implementation started (26 September 2026).**
 1. Tablet seating: side by side, facing across a flat tablet, or **both** (chosen automatically by orientation)?
 2. Touch players in multiplayer: **Drag to Steer only**, or also offer Buttons?
 3. **Up to 4 players with keyboard or controllers, 2 on touch**, and 2 as the default everywhere: OK?

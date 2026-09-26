@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Space Adventure app icon source. Regenerate PNGs with scripts/make-icons.sh.
+     All artwork (ship, crystal, rock) stays inside the central 80% circle
+     (radius 204.8 around 256,256) so the same art is safe as a maskable icon.
+     Background is full-bleed and opaque (no transparency, needed for Apple). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect x="0" y="0" width="512" height="512" fill="#050510"/>
+  <!-- stars -->
+  <g fill="#ffffff">
+    <circle cx="40" cy="60" r="3" opacity="0.8"/>
+    <circle cx="470" cy="40" r="2.5" opacity="0.7"/>
+    <circle cx="90" cy="300" r="2.5" opacity="0.6"/>
+    <circle cx="450" cy="300" r="3" opacity="0.8"/>
+    <circle cx="60" cy="460" r="2.5" opacity="0.7"/>
+    <circle cx="300" cy="470" r="2" opacity="0.6"/>
+    <circle cx="250" cy="40" r="2" opacity="0.6"/>
+    <circle cx="200" cy="420" r="2.5" opacity="0.7"/>
+    <circle cx="420" cy="440" r="3" opacity="0.6"/>
+    <circle cx="160" cy="80" r="2" opacity="0.5"/>
+  </g>
+  <!-- green crystal (collectible) -->
+  <polygon points="145,122 176,152 162,204 128,204 114,152"
+           fill="#00b400" fill-opacity="0.35" stroke="#00ff00" stroke-width="8" stroke-linejoin="round"/>
+  <polyline points="114,152 145,166 176,152" fill="none" stroke="#00ff00" stroke-width="5" stroke-linejoin="round"/>
+  <line x1="145" y1="166" x2="145" y2="204" stroke="#00ff00" stroke-width="5"/>
+  <!-- red spiky rock (dangerous) -->
+  <polygon points="366.0,126.0 373.3,141.1 388.7,130.7 384.9,149.6 402.4,149.4 389.8,162.6 407.6,172.0 391.5,177.6 396.2,192.2 380.6,188.7 377.8,206.3 366.0,192.0 354.7,204.4 352.5,187.0 334.3,193.5 344.2,176.0 326.4,171.7 338.3,162.0 327.8,148.6 345.6,148.3 344.4,132.3 358.7,141.1"
+           fill="#640000" fill-opacity="0.6" stroke="#cc0000" stroke-width="6" stroke-linejoin="round"/>
+  <!-- the ship: white triangle, nose up, rear corners at +/-140 degrees -->
+  <polygon points="256,120 339.6,349.6 172.4,349.6"
+           fill="none" stroke="#ffffff" stroke-width="14" stroke-linejoin="round"/>
+</svg>
