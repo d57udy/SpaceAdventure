@@ -207,6 +207,8 @@ export class InputHandler {
             else this.seatState[seat].latched.add(action);
         } else if (SEAT_ONE_SHOTS.includes(action)) {
             this.seatState[seat].pressed.add(action);
+            // Also tracked as held (isPressed), e.g. ↓ steering the saucer down in Saucer mode
+            if (token) this._hold(seat, action, token);
         } else {
             this._pressShared(action, seat);
         }
@@ -279,7 +281,7 @@ export class InputHandler {
             // continuous actions again, but one-shots need a fresh press.
             for (const { source, action } of bindings) {
                 const seat = this._seatOf(source);
-                if (seat === null || !this.isContinuous(action)) continue;
+                if (seat === null || !this.isSeatAction(action)) continue;
                 this._hold(seat, action, `key:${code}`);
                 holds.push({ seat, action });
             }
@@ -291,7 +293,7 @@ export class InputHandler {
             this._pushSourceEvent(source, action, seat);
             if (seat === null) continue; // unjoined: lobby events only
             this._pressSeatAction(seat, action, `key:${code}`);
-            if (this.isContinuous(action)) holds.push({ seat, action });
+            if (this.isSeatAction(action)) holds.push({ seat, action });
         }
         if (holds.length) this.codeHolds.set(code, holds);
 
@@ -564,7 +566,7 @@ export class InputHandler {
             for (const action of pad.pressed) this._pushSourceEvent(source, action, seat);
             if (seat === null) continue;
             const s = this.seatState[seat];
-            for (const a of pad.held) if (this.isContinuous(a)) s.padHeld.add(a);
+            for (const a of pad.held) if (this.isSeatAction(a)) s.padHeld.add(a);
             if (!this.seats.merged && inGame && pad.stick.active && !s.padStick.active) {
                 s.padStick = this._rotatedStick(pad.stick, seat);
             }

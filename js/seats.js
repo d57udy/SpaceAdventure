@@ -130,6 +130,28 @@ export function stickFromDrag(dx, dy, radius) {
 }
 
 /**
+ * Which reserved seat a returning source takes (plan §10.4). Pure.
+ * Priority: the seat whose controller had the same index and id (the same controller plugged
+ * back in); then the seat of the same index (the browser may rename a controller); then the
+ * lowest reserved seat.
+ * @param {Array<{reserved?:boolean, reservedFrom?:{source:string|null, id:string|null}}|null>} seats
+ * @param {string} source e.g. 'pad:1'
+ * @param {string|null} [id] Gamepad.id of that controller
+ * @returns {number|null}
+ */
+export function pickRejoinSeat(seats, source, id = null) {
+    const reserved = [];
+    (seats || []).forEach((s, i) => { if (s && s.reserved) reserved.push(i); });
+    if (!reserved.length) return null;
+    const from = (i) => seats[i].reservedFrom || {};
+    const exact = reserved.find((i) => from(i).source === source && id != null && from(i).id === String(id));
+    if (exact !== undefined) return exact;
+    const sameSource = reserved.find((i) => from(i).source === source);
+    if (sameSource !== undefined) return sameSource;
+    return reserved[0];
+}
+
+/**
  * Which source sits in which seat.
  *   merged mode (single-player): every source drives seat 0.
  *   seat mode: sources join seats; a reserved seat keeps its colour while its
@@ -180,7 +202,8 @@ export class SeatTable {
         if (sourceKind(source) === 'touch' && this.touchCount() >= this.maxTouchSeats) return null;
         const reserved = this.seats.findIndex((s) => s && s.reserved);
         if (reserved !== -1) {
-            this.seats[reserved] = { ...this.seats[reserved], source, reserved: false };
+            const { reservedFrom, ...rest } = this.seats[reserved];
+            this.seats[reserved] = { ...rest, source, reserved: false };
             return reserved;
         }
         const free = this.seats.findIndex((s) => s === null);
@@ -197,16 +220,42 @@ export class SeatTable {
         return seat;
     }
 
-    /** Keep a seat (and colour) while its source is gone, e.g. a controller disconnected mid-round. */
-    reserve(seat) {
+    /**
+     * Keep a seat (and colour) while its source is gone, e.g. a controller disconnected mid-round.
+     * `meta.id` (the controller's Gamepad.id) is remembered with the old source, so the same
+     * controller gets its own seat back first (see pickRejoinSeat).
+     */
+    reserve(seat, meta = {}) {
         const s = this.seats[seat];
         if (this.merged || !s) return false;
-        this.seats[seat] = { ...s, source: null, reserved: true };
+        const from = s.reserved ? s.reservedFrom : { source: s.source, id: meta && meta.id != null ? String(meta.id) : null };
+        this.seats[seat] = { ...s, source: null, reserved: true, reservedFrom: from || { source: null, id: null } };
         return true;
     }
 
     isReserved(seat) {
         return !!(this.seats[seat] && this.seats[seat].reserved);
+    }
+
+    /** Seats kept for a disconnected controller, lowest first. */
+    reservedSeats() {
+        const out = [];
+        this.seats.forEach((s, i) => { if (s && s.reserved) out.push(i); });
+        return out;
+    }
+
+    /**
+     * A source (an unjoined controller pressing Ⓐ mid-round) takes back a reserved seat:
+     * the seat it held itself if its index and id match, else the lowest reserved seat.
+     * Returns the seat, or null (merged mode, already seated, nothing reserved).
+     */
+    rejoin(source, id = null) {
+        if (this.merged || !sourceKind(source) || this.seatOf(source) !== null) return null;
+        const seat = pickRejoinSeat(this.seats, source, id);
+        if (seat === null) return null;
+        const { reservedFrom, ...rest } = this.seats[seat];
+        this.seats[seat] = { ...rest, source, reserved: false };
+        return seat;
     }
 
     touchCount() {
@@ -248,7 +297,10 @@ export class SeatTable {
     snapshot() {
         return {
             merged: this.merged,
-            seats: this.seats.map((s, seat) => (s ? { seat, source: s.source, colour: s.colour, reserved: s.reserved } : null)),
+            seats: this.seats.map((s, seat) => (s ? {
+                seat, source: s.source, colour: s.colour, reserved: s.reserved,
+                ...(s.reserved ? { reservedFrom: { ...(s.reservedFrom || { source: null, id: null }) } } : {}),
+            } : null)),
         };
     }
 }

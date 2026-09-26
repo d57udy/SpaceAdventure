@@ -30,8 +30,11 @@ import { createPlayer, tickPowerUps, teamScore, isLiving, livingPlayers, nearest
 import {
     createSeatLobby, createCountLobby, handleLobbyEvent, tickLobby, seatLineup, countLineup, restoreSeatLineup,
     restoreCountLineup, changePlayerCount, cycleCountName, joinedSeats, canStart,
-    serializeLineup, parseLineup, LINEUP_KEY,
+    serializeLineup, parseLineup, LINEUP_KEY, lobbyAction,
 } from './lobby.js';
+import {
+    SAUCER_RULES, strengthOf, cycleStrength, saucerTarget, steerVector, aimAssist, farEdgePoint, DEFAULT_STRENGTH,
+} from './saucer.js';
 import { buildResults, resultBanner, historyEntry } from './mpResults.js';
 import { MP_KEYS, addHistory, addToBoard, recordRivalry, rivalryKey, isHistory, isBoard, isRivalry } from './mpRecords.js';
 import { formatSeatHud, SeatHudView } from './hud.js';
@@ -768,6 +771,8 @@ function pollControllers() {
             showToast(ev.mapping === 'standard' ? `${name} connected` : `${name} connected (unknown layout: buttons may differ)`);
         } else {
             showToast(`${name} disconnected`);
+            // Multiplayer seats: reserve the seat and pause, or leave the lobby (MP-5, §10.4)
+            if (handlePadDisconnect(ev)) continue;
             // Losing the controller mid-game would leave the ship uncontrolled: pause
             if (currentGameState === GameState.PLAYING && inputHandler.lastInputSource === 'gamepad') pauseGame();
         }
@@ -965,19 +970,20 @@ function syncTutorialDom() {
 }
 function getPauseMenuOptions() {
     if (isTimeAttack()) return TA_PAUSE_OPTIONS;
-    if (isMultiplayer()) return MP_PAUSE_OPTIONS;
+    if (isMultiplayer()) return mpPauseOptions(MP_PAUSE_OPTIONS);
     return tutorial.active ? [...pauseMenuOptions, 'Skip Tutorial'] : pauseMenuOptions;
 }
 
 // --- Local multiplayer (docs/plans/05-local-multiplayer.md §5, §10, §11) ---
 // MENU ─Multiplayer─► MP_MODE_SELECT ─► LOBBY ─► (TURN_CHANGE ⇄) PLAYING ⇄ PAUSED
 // PLAYING ─round over─► ROUND_END (2 s slow motion) ─► RESULTS ─► Rematch (LOBBY) / Change mode / Main menu
-const MP_MODE_IDS = ['turns', 'coop', 'harvest', 'duel']; // playable modes, in the order shown on the mode select screen
+const MP_MODE_IDS = ['turns', 'coop', 'harvest', 'duel', 'saucer']; // playable modes, in the order shown on the mode select screen
 const MP_MODE_INFO = {
     turns: ['2 to 4 players pass one device.', 'One ship at a time; the highest score wins.'],
     coop: ['2 to 4 players fly together, each with their own ship.', 'Fly close to a fallen wingman to revive them.'],
     harvest: ['2 players race to collect the most crystals.', 'Shoot a crystal to deny it; ships bump, no friendly fire.'],
     duel: ['2 players, one hit kills: first to 5 wins.', 'Crystals give shield time; your own shots never hit you.'],
+    saucer: ['P1 flies the ship, P2 steers the UFO.', 'P1 must reach the target score in 2:30.'],
     timeattack: ['One player, 3 minutes on a numbered course.', 'Race the best run on this device.'],
 };
 const MP_PAUSE_OPTIONS = ['Resume', 'Restart round', 'Change players', 'Main menu'];
@@ -1008,7 +1014,10 @@ let resumeCountdown = 0;      // seconds until play resumes (multiplayer)
 function isMultiplayer() { return mode.id !== 'solo'; }
 function isTurns() { return mode.kind === 'turns' && !!turn; }
 // Ships in play this frame (Take Turns: only the active player's)
-function activePlayers() { return isTurns() ? [players[turn.index]] : players; }
+function activePlayers() {
+    if (isTurns()) return [players[turn.index]];
+    return saucer ? players.filter(p => p !== saucer.player) : players; // Saucer: P2 has no ship
+}
 // States of a round in progress
 function inRound() {
     return [GameState.PLAYING, GameState.PAUSED, GameState.TURN_CHANGE, GameState.ROUND_END].includes(currentGameState);
@@ -1072,6 +1081,7 @@ function openLobby(modeId, { kind = null, lineup = null } = {}) {
         inputHandler.setMerged(false);
         lobby = createSeatLobby({ seats: inputHandler.seats, min: m.players.min, max: m.players.max, currentUser, profiles });
         restoreSeatLineup(lobby, lineup || []);
+        dropMissingPadsFromLobby(); // a controller unplugged since the last round
     } else {
         inputHandler.setMerged(true);
         lobby = createCountLobby({ min: m.players.min, max: m.players.max, currentUser, profiles });
@@ -1128,6 +1138,7 @@ function handleLobbyInput(deltaTime) {
     let back = false;
     for (const ev of inputHandler.consumeSourceEvents()) {
         if (ev.action === 'pause') { if (ev.seat === null) back = true; continue; }
+        if (handleSaucerLobbyEvent(ev)) continue; // Saucer: P2's ◂ ▸ set the saucer strength
         const r = handleLobbyEvent(lobby, ev);
         if (r && r.type !== 'full') {
             lobbyExitNotice = 0;
@@ -1282,6 +1293,7 @@ function finishMultiplayerRound(result) {
         mode, result, players, duration: round ? round.elapsed : 0,
         level: turn ? null : level, difficulty: selectedDifficulty.id,
     });
+    if (saucer) decorateSaucerResults(lastResults, result); // why the round ended, the target
     if (isTimeAttack()) finishTimeAttackRun(lastResults); // saves the ghost if it is a new best
     // Take Turns plays by single-player rules: every profile gets a normal high-score entry
     if (mode.leaderboard === 'highScores') {
@@ -1534,6 +1546,9 @@ function syncMpDom() {
     } else if (!inRound()) {
         lastRoundLayoutKey = '';
     }
+    // 3-4 players: compact HUD panels, two per side bar (MP-5)
+    document.body.classList.toggle('mp-many', roundSim && players.length > 2);
+    syncSeatOrientations(roundSim && lay.layout === 'facing'); // controllers at the top edge (MP-5)
     syncSeatHudPanels(roundSim && hud === 'dom');
     if (touchLobby) updateJoinPads();
 }
@@ -1580,6 +1595,7 @@ function seatHudModel(p) {
     if (b && b.blocked) status = 'OUT – rescuer needs 2 lives';
     else if (b && b.progress > 0) status = `REVIVING ${Math.round((b.progress / REVIVE.time) * 100)}%`;
     else if (currentGameState === GameState.PAUSED && pausedBy === p.number - 1) status = 'PAUSED (by you)';
+    status = seatStatusMP5(p) ?? status; // disconnected, dropped, saucer (MP-5)
     return {
         slot: p.number - 1, name: p.name, score: p.score, powerUps: p.powerUps,
         lives: mode.lives.type === 'unlimited' ? Infinity : p.lives,
@@ -1662,6 +1678,7 @@ function touchLobbyNotes() {
 // --- Multiplayer pause ---
 // Anyone can resume; in multiplayer play restarts after a 3 s countdown (single-player: at once)
 function resumeGame() {
+    if (reservedSeatList().length) return; // a controller seat waits: rejoin with Ⓐ or Drop it
     if (pausedFrom === GameState.TURN_CHANGE) {
         currentGameState = GameState.TURN_CHANGE;
         return;
@@ -1690,6 +1707,9 @@ function selectMultiplayerPauseOption(option) {
             saveAllUpgrades();
             pausedGameExists = false;
             returnToMenu();
+            break;
+        default:
+            if (/^Drop P\d$/.test(option)) dropSeatPlayer(Number(option.slice(6)) - 1);
             break;
     }
 }
@@ -2035,6 +2055,7 @@ function drawRadar() {
         ctx.lineTo(pos.x - 4, pos.y);
         ctx.closePath();
         ctx.fill();
+        if (ufo.controlled) drawRadarNumber(pos, saucer ? saucer.player : null); // Saucer: P2's number
     });
 
     powerUps.forEach(powerUp => {
@@ -2148,7 +2169,7 @@ function activatePowerUp(p, type) {
     console.log(`Activating power-up: ${type.name}`);
     if (type.id === 'extra_life') {
         // Co-op: collecting Extra Life while a teammate is out revives them instantly
-        const outMate = mode.revive ? players.find(q => q !== p && q.out) : null;
+        const outMate = mode.revive ? players.find(q => q !== p && q.out && !q.dropped) : null;
         if (outMate) {
             revivePlayer(outMate, null, p);
             if (audioManager) audioManager.play('collectGreen');
@@ -2364,6 +2385,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     reviverId: p.beacon.reviverId } : null,
                 respawnAt: p.respawnAt ? { x: p.respawnAt.x, y: p.respawnAt.y } : null,
                 shipColour: p.ship ? p.ship.colour : null, hullMark: p.ship ? p.ship.hullMark : null,
+                dropped: !!p.dropped,
             }));
         },
         get mode() {
@@ -2411,8 +2433,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 cameraSingleInstant: !!camera.options.singleInstant,
                 scaling: { ...currentScaling() }, boss: currentBoss ? { maxHealth: currentBoss.maxHealth } : null,
                 ...touchLobbyNotes(),
+                ...mp5Snapshot(), // reserved seats, dropped players, disconnect notice, player count
             };
         },
+        // Saucer mode: the UFO P2 flies, its strength, P1's target (MP-5)
+        get saucer() { return saucerSnapshot(); },
         get seats() { return inputHandler.seats.snapshot(); },
         get lobby() { return lobbySnapshot(); },
         get turn() {
@@ -2538,6 +2563,7 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     players = buildPlayers(lobby);
     round = createRound(mode, (lobby && lobby.options) || {});
     resetVersus();
+    setupSaucerRound(); // Saucer: P2 flies the UFO (no ship), P1's target score (MP-5)
     level = 1;
     setupTimeAttackRun(); // seeded world, recorder and ghost (Time Attack); clears them otherwise
     bullets = [];
@@ -2564,7 +2590,7 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, cameraView());
 
     // Fresh ships; before creating asteroids (Take Turns: player 1's ship appears after "GET READY")
-    if (!turn) for (const p of players) respawnPlayer(p, true);
+    if (!turn) for (const p of activePlayers()) respawnPlayer(p, true);
     tutorial.reset();
     tutorialPending = [];
     tutorialTarget = null;
@@ -2594,6 +2620,7 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     if (fieldMode()) versus.intro = VERSUS_INTRO_SECONDS;
     syncTutorialDom();
     mode.hooks.onStart(round, players);
+    afterStartGameMP5(); // the saucer appears; a still-disconnected controller pauses at once
 }
 
 // Function to handle username prompt input
@@ -3041,6 +3068,7 @@ function handleInput(deltaTime) {
                 handleShipInput(p, deltaTime);
                 if (currentGameState !== GameState.PLAYING) break; // the last life was lost
             }
+            if (currentGameState === GameState.PLAYING) handleSaucerInput(); // Saucer: P2 (MP-5)
             // One thrust loop, on while any ship thrusts
             const thrusting = players.some(p => p.ship && p.ship.isAlive && p.ship.isThrusting);
             if (thrusting && currentGameState === GameState.PLAYING && !audioManager.isMuted) audioManager.startThrustSound();
@@ -3048,6 +3076,7 @@ function handleInput(deltaTime) {
             break;
         }
         case GameState.PAUSED: {
+            if (handleReservedRejoin()) break; // Ⓐ on a free controller takes a reserved seat back
             const pauseOptions = getPauseMenuOptions();
             if (pauseMenuSelectionIndex >= pauseOptions.length) pauseMenuSelectionIndex = 0;
             if (inputHandler.consumeAction('pause') || inputHandler.consumeAction('escape')) {
@@ -3193,6 +3222,7 @@ function updateShip(p, deltaTime) {
 // Ships the camera follows: living ships that are not waiting to respawn
 function cameraTargets() {
     const ships = players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0).map(p => p.ship);
+    if (saucer && saucer.ufo && saucer.ufo.isAlive) ships.push(saucer.ufo); // Saucer: frame P1 and the UFO
     if (!simultaneous() || !mode.revive || ships.length === 0) return ships;
     // Co-op: a revive beacon is framed too, but only if that needs no extra zoom (plan §3.4)
     const beacons = players.filter(p => p.out && p.beacon).map(p => p.beacon);
@@ -3250,6 +3280,7 @@ function updateGame(deltaTime) {
 
     for (const p of activePlayers()) updateShip(p, deltaTime);
     updateShipBumps(deltaTime); // Harvest, Duel: ships bounce off each other
+    updateSaucer(deltaTime); // Saucer: a destroyed UFO returns after 4 s
     updateCamera(deltaTime);
 
     // Update asteroids and wrap their positions
@@ -3331,7 +3362,7 @@ function updateGame(deltaTime) {
 
         // Level up when all asteroids are cleared and boss is defeated (if present)
         const bossCleared = !currentBoss || !currentBoss.isAlive;
-        if (mode.levelProgression && asteroids.length === 0 && ufos.length === 0 && bossCleared &&
+        if (mode.levelProgression && asteroids.length === 0 && ufos.every(u => u.controlled) && bossCleared &&
             players.some(p => p.respawnTimer <= 0 && p.ship && p.ship.isAlive)) {
             levelUp();
         }
@@ -3542,7 +3573,10 @@ function drawMpWorldOverlays() {
 // when the side bars are too narrow for the DOM panels
 function drawTeamHud() {
     ctx.save();
-    if (isVersus() && round) {
+    if (saucer && round) {
+        // Saucer: clock, P1's score against the target, P2's score (MP-5)
+        drawForViewers((region) => drawSaucerCentreHud(region));
+    } else if (isVersus() && round) {
         // Round clock (flashes in the last 10 s), rules line, start and overtime banners
         drawForViewers((region) => { drawVersusHud(region); drawVersusBanner(region); });
     } else {
@@ -3712,6 +3746,7 @@ function renderGame() {
             drawShields();
             // Several ships: numbers, revive beacons, respawn rings, edge arrows
             if (simultaneous()) drawMpWorldOverlays();
+            drawSaucerOverlays(); // Saucer: P2 label, edge arrow, return countdown
 
             // Draw level up notification (screen-space, not world-space)
             drawLevelUpNotification();
@@ -4236,7 +4271,7 @@ function checkShipCollisions(p) {
         }
 
         for (const ufo of ufos) {
-            if (ufo.isAlive && ship.collidesWith(ufo)) {
+            if (ufo.isAlive && !ufo.isInvulnerable && ship.collidesWith(ufo)) {
                 if (p.powerUps.shield > 0) {
                     console.log("Collision: Ship <-> UFO (Shield blocked!)");
                     p.powerUps.shield = 0;
@@ -4245,6 +4280,7 @@ function checkShipCollisions(p) {
                     ufo.destroy(audioManager);
                 } else {
                     console.log("Collision: Ship <-> UFO");
+                    if (ufo.controlled) creditSaucerKill(p); // Saucer: P2 scores for the rammed pilot
                     handlePlayerDeath(p);
                     ufo.destroy(audioManager);
                     return true;
@@ -4267,6 +4303,7 @@ function checkShipCollisions(p) {
                     bullet.destroy();
                 } else {
                     console.log(pvp ? "Collision: Ship <-> Player Bullet" : "Collision: Ship <-> UFO Bullet");
+                    if (bullet.fromSaucer) creditSaucerKill(p); // Saucer: P2's shot
                     handlePlayerDeath(p, false, shooter);
                     bullet.destroy();
                     return true;
@@ -4334,13 +4371,14 @@ function checkCollisions() {
         if (bulletHit) continue;
         for (let j = ufos.length - 1; j >= 0; j--) {
             const ufo = ufos[j];
-            if (!ufo.isAlive) continue;
+            if (!ufo.isAlive || ufo.isInvulnerable) continue;
             if (bullet.collidesWith(ufo)) {
                 console.log("Collision: Player Bullet <-> UFO");
                 bullet.destroy();
                 DynamicDifficulty.trackShotHit(); // Track bullet hit
                 if (shooter) shooter.stats.hits++;
-                const scoreGained = Math.round(ufo.scoreValue * selectedDifficulty.scoreMultiplier);
+                const scoreGained = ufo.controlled ? saucerKillPoints(ufo, shooter) // Saucer: a flat +200
+                    : Math.round(ufo.scoreValue * selectedDifficulty.scoreMultiplier);
                 // Points and credits for the UFO kill (10% of score) go to the shooter
                 awardPoints(shooter, scoreGained);
                 if (shooter) shooter.stats.ufos++;
@@ -4369,6 +4407,7 @@ function checkCollisions() {
                 if (asteroid.isGreen()) {
                     // UFO destroyed a green asteroid - bad for player!
                     console.log("Collision: UFO Bullet <-> Green Asteroid (Score opportunity lost!)");
+                    if (bullet.fromSaucer) saucerShotGreen(asteroid); // Saucer: P2 +1
                 } else {
                     Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                 }
@@ -5188,6 +5227,8 @@ function drawPauseMenu() {
     const pauseLineHeight = 40;
     getPauseMenuOptions().forEach((option, index) => {
         ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
+        // Resume waits while a disconnected controller's seat is reserved (MP-5)
+        if (option === 'Resume' && reservedSeatList().length) ctx.fillStyle = index === pauseMenuSelectionIndex ? '#8C8C3C' : '#777777';
         const itemY = pauseStartY + index * pauseLineHeight;
         ctx.fillText(option, viewWidth / 2, itemY);
         addTapRegion(viewWidth * 0.25, itemY - pauseLineHeight * 0.7, viewWidth * 0.5, pauseLineHeight, () => {
@@ -5200,6 +5241,7 @@ function drawPauseMenu() {
     ctx.fillStyle = 'lightgray';
     ctx.fillText(inputHint("(Press P or Esc to Resume)", "(Tap an option)",
         () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Resume`), viewWidth / 2, viewHeight * 0.75 - 20);
+    drawDisconnectNotice(); // "P2's controller disconnected ..." (MP-5)
 }
 
 // --- Multiplayer screens (canvas) ---
@@ -5309,7 +5351,9 @@ function sourceLabel(source) {
 function drawSeatLobby() {
     const m = getMode(lobbyModeId);
     const touchLobby = touchLobbyActive();
-    const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', touchLobby
+    const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', m && m.id === 'saucer'
+        ? 'P1 flies the ship, P2 steers the UFO'
+        : touchLobby
         ? 'Tap the pad on your side to join, tap it again when ready'
         : 'Each player presses FIRE on their own keys or controller');
     // Touch notes: too few touch points; once, the iPad multitasking gesture hint
@@ -5420,14 +5464,21 @@ function drawLobbyCard(seat, x, y, w, h, card, seatInfo) {
     ctx.fillStyle = card ? colour : '#777777';
     ctx.font = 'bold 26px Arial';
     ctx.fillText(`P${seat + 1}`, x + 12, y + 32);
+    const role = saucerLobbyRole(seat); // Saucer: 'SHIP' / 'SAUCER'
+    if (role) {
+        ctx.font = 'bold 14px Arial';
+        ctx.fillStyle = card ? colour : '#777777';
+        ctx.fillText(role, x + 56, y + 30);
+    }
     if (card) {
-        drawShipIcon(x + w - 30, y + 26, 14, colour);
+        if (role === 'SAUCER') drawUfoIcon(x + w - 30, y + 26, 16);
+        else drawShipIcon(x + w - 30, y + 26, 14, colour);
         ctx.font = 'bold 20px Arial';
         ctx.fillStyle = '#FFFFFF';
         ctx.fillText(card.name, x + 12, y + 62);
         ctx.font = '13px Arial';
         ctx.fillStyle = '#AAAAAA';
-        ctx.fillText(sourceLabel(seatInfo && seatInfo.source), x + 12, y + 84);
+        ctx.fillText(seatSourceLabel(seatInfo && seatInfo.source), x + 12, y + 84, w - 20);
         // Key-test lights: thrust, left, right, fire
         const lights = [['thrust', '▲'], ['rotateLeft', '◀'], ['rotateRight', '▶'], ['fire', '●']];
         lights.forEach(([action, glyph], i) => {
@@ -5448,7 +5499,7 @@ function drawLobbyCard(seat, x, y, w, h, card, seatInfo) {
         ctx.textBaseline = 'alphabetic';
         ctx.font = 'bold 16px Arial';
         ctx.fillStyle = card.ready ? '#00FF88' : '#FFD700';
-        ctx.fillText(card.ready ? 'READY' : 'Joined – FIRE when ready', x + 12, y + h - 18);
+        ctx.fillText(seatStatusLine(card, seatInfo && seatInfo.source), x + 12, y + h - 18, w - 20);
     } else {
         ctx.font = '16px Arial';
         ctx.fillStyle = '#AAAAAA';
@@ -5803,6 +5854,11 @@ function lobbyOptionValue(m) {
 }
 function changeLobbyOption(dir) {
     const m = getMode(lobbyModeId);
+    if (m && m.id === 'saucer') { // Saucer: the saucer's strength (MP-5)
+        saucerStrength = cycleStrength(saucerStrength, dir);
+        if (lobby) lobby.countdown = null;
+        return;
+    }
     const opt = modeOption(m);
     if (!opt) return;
     mpOptions[m.id] = { ...(mpOptions[m.id] || {}), [opt.key]: cycleValue(opt.values, lobbyOptionValue(m), dir) };
@@ -5816,6 +5872,7 @@ function lobbyOptionRows() {
         rows.push({ id: 'option', key: 'O', label: () => opt.label, value: () => formatOption(opt, lobbyOptionValue(m)),
             change: (d) => changeLobbyOption(d) });
     }
+    if (m && m.id === 'saucer') rows.push(saucerStrengthRow()); // MP-5
     if (isTouchDevice && m && m.kind !== 'turns') {
         rows.push({ id: 'layout', key: 'L', label: () => 'Layout', setting: 'mpLayout', format: (v) => LAYOUT_NAMES[v] || v,
             change: (d) => settings.cycle('mpLayout', d) });
@@ -6015,6 +6072,466 @@ function drawVersusBanner(region) {
     ctx.fillText(sub, viewWidth / 2, cy + 20, viewWidth - 20);
     ctx.globalAlpha = 1;
     ctx.textBaseline = 'alphabetic';
+}
+
+// --- MP-5: controllers in multiplayer (docs/plans/05-local-multiplayer.md §8, §10.4) ---
+// Each joined controller drives its own seat (InputHandler routes per pad). A controller that
+// disconnects mid-round keeps its seat reserved (SeatTable.reserve) and pauses the game; the
+// first free controller pressing Ⓐ takes the seat back (the same controller first, see
+// seats.js pickRejoinSeat) and play resumes after the countdown. The pause menu's "Drop Pn"
+// removes the player instead. In the lobby a disconnect simply leaves.
+const FAMILY_NAMES = { xbox: 'Xbox', playstation: 'PlayStation', nintendo: 'Nintendo' };
+
+function reservedSeatList() {
+    return inputHandler && !inputHandler.seats.merged ? inputHandler.seats.reservedSeats() : [];
+}
+function playerInSeat(seat) {
+    return players.find(q => q.input && q.input.seat === seat) || null;
+}
+function padInfo(index) {
+    const r = inputHandler.gamepadResult;
+    return (r && r.pads ? r.pads : []).find(p => p.index === index) || null;
+}
+function padIndexOf(source) {
+    const m = /^pad:(\d+)$/.exec(source || '');
+    return m ? Number(m[1]) : null;
+}
+
+// A controller went away. Returns true when multiplayer seats handled it.
+function handlePadDisconnect(ev) {
+    const table = inputHandler.seats;
+    if (table.merged) return false;
+    const seat = table.seatOf(`pad:${ev.index}`);
+    if (seat === null) return true; // not playing: nothing to pause
+    inputHandler.releaseSeat(seat);
+    if (currentGameState === GameState.LOBBY) {
+        // Lobby: the seat simply leaves
+        if (lobby && lobby.kind === 'seats' && lobby.cards[seat]) {
+            lobby.cards[seat] = null;
+            lobby.countdown = null;
+        }
+        table.leave(seat);
+        return true;
+    }
+    if (currentGameState === GameState.PLAYING || currentGameState === GameState.PAUSED) {
+        table.reserve(seat, { id: ev.id }); // the pause menu explains what to do
+        if (currentGameState === GameState.PLAYING) pauseGame('system');
+        return true;
+    }
+    table.leave(seat); // round over: the results screen is shared
+    return true;
+}
+
+// While paused: Ⓐ on a controller without a seat takes a reserved seat back. Returns true when
+// the game resumed.
+function handleReservedRejoin() {
+    const events = inputHandler.consumeSourceEvents();
+    if (!reservedSeatList().length) return false;
+    for (const ev of events) {
+        if (ev.seat !== null || (ev.action !== 'menuSelect' && ev.action !== 'fire')) continue;
+        const index = padIndexOf(ev.source);
+        if (index === null) continue;
+        const pad = padInfo(index);
+        const seat = inputHandler.seats.rejoin(ev.source, pad ? pad.id : null);
+        if (seat === null) continue;
+        inputHandler.releaseSeat(seat);
+        try { inputHandler.gamepad.suppressHeld(index); } catch (e) { /* ignore */ }
+        showToast(`P${seat + 1} is back`);
+        if (!reservedSeatList().length) {
+            resumeGame(); // 3, 2, 1
+            return true;
+        }
+    }
+    return false;
+}
+
+// Pause menu: "Drop Pn" for each reserved seat (Resume waits until nobody is reserved)
+function mpPauseOptions(base) {
+    const reserved = reservedSeatList();
+    return reserved.length ? [...base, ...reserved.map(s => `Drop P${s + 1}`)] : base;
+}
+
+// Remove a player from the round: their ship (or saucer) goes, their score stays on the
+// results. Versus modes with one player left end with that player winning; otherwise the
+// mode's own end check decides (co-op: over when everyone left is out).
+function dropSeatPlayer(seat) {
+    inputHandler.releaseSeat(seat);
+    inputHandler.seats.leave(seat);
+    const p = playerInSeat(seat);
+    if (p && !p.dropped) {
+        p.dropped = true;
+        p.out = true;
+        p.beacon = null;
+        p.respawnTimer = 0;
+        p.respawnAt = null;
+        p.ship = null;
+        if (saucer && p === saucer.player && saucer.ufo) {
+            const gone = saucer.ufo;
+            ufos = ufos.filter(u => u !== gone);
+            saucer.ufo = null;
+        }
+        showToast(`${p.label} left the round`);
+    }
+    const remaining = players.filter(q => !q.dropped);
+    let end = null;
+    if (mode.kind === 'versus' && remaining.length < 2) {
+        end = { ended: true, outcome: remaining.length ? 'win' : 'draw', winners: remaining.map(q => q.id) };
+    } else {
+        const e = mode.hooks.checkEnd(round, players);
+        if (e && e.ended) end = e;
+    }
+    if (end) {
+        endRound(end);
+        return;
+    }
+    if (!reservedSeatList().length) resumeGame();
+}
+
+// "Change players" after a disconnect: a restored card whose controller is gone leaves
+function dropMissingPadsFromLobby() {
+    if (!lobby || lobby.kind !== 'seats') return;
+    const r = inputHandler.gamepadResult;
+    const connected = new Set((r && r.pads ? r.pads : []).map(p => `pad:${p.index}`));
+    lobby.cards.forEach((card, seat) => {
+        const s = inputHandler.seats.seats[seat];
+        if (card && s && padIndexOf(s.source) !== null && !connected.has(s.source)) {
+            lobby.cards[seat] = null;
+            inputHandler.seats.leave(seat);
+        }
+    });
+}
+
+function disconnectNoticeLines() {
+    const reserved = reservedSeatList();
+    if (!reserved.length) return [];
+    const labels = reserved.map(s => `P${s + 1}`);
+    const a = lobbyPadGlyph(GP.A, 'A');
+    return [
+        `${labels.join(' and ')}'s controller${labels.length > 1 ? 's' : ''} disconnected.`,
+        `Press ${a} on a controller to continue as ${labels[0]},`,
+        `or pause menu › Drop ${labels[0]}`,
+    ];
+}
+
+function drawDisconnectNotice() {
+    const lines = disconnectNoticeLines();
+    if (!lines.length) return;
+    ctx.save();
+    const h = 22 + lines.length * 22;
+    const y = Math.max(8, viewHeight * 0.25 - h - 10);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(viewWidth * 0.08, y, viewWidth * 0.84, h);
+    ctx.strokeStyle = '#FF9F1C';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(viewWidth * 0.08, y, viewWidth * 0.84, h);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    lines.forEach((line, i) => {
+        ctx.fillStyle = i === 0 ? '#FF9F1C' : '#FFFFFF';
+        ctx.font = i === 0 ? 'bold 18px Arial' : '16px Arial';
+        ctx.fillText(line, viewWidth / 2, y + 22 + i * 22, viewWidth * 0.8);
+    });
+    ctx.restore();
+}
+
+// HUD panel status for MP-5 states (null: the usual status)
+function seatStatusMP5(p) {
+    if (p.dropped) return 'LEFT THE ROUND';
+    const seat = p.input && Number.isInteger(p.input.seat) ? p.input.seat : null;
+    if (seat !== null && inputHandler.seats.isReserved(seat)) return 'CONTROLLER DISCONNECTED';
+    if (saucer && p === saucer.player) {
+        return saucer.ufo ? 'SAUCER' : `SAUCER BACK IN ${Math.max(0, saucer.respawnTimer).toFixed(1)}s`;
+    }
+    return null;
+}
+
+// Lobby cards: controller name and its own button glyphs (Ⓐ / ✕ / B ...)
+function seatPadGlyph(source, button) {
+    const index = padIndexOf(source);
+    const pad = index === null ? null : padInfo(index);
+    const glyph = buttonGlyph((pad && pad.family) || 'xbox', button);
+    return CIRCLED_LETTERS[glyph] || glyph;
+}
+function seatSourceLabel(source) {
+    const index = padIndexOf(source);
+    if (index === null) return sourceLabel(source);
+    const pad = padInfo(index);
+    const family = pad ? FAMILY_NAMES[pad.family] : null;
+    return `Controller ${index + 1}${family ? ` · ${family}` : ''}   ${seatPadGlyph(source, GP.A)} ready  ${seatPadGlyph(source, GP.B)} leave`;
+}
+function seatStatusLine(card, source) {
+    if (padIndexOf(source) === null) return card.ready ? 'READY' : 'Joined – FIRE when ready';
+    return card.ready ? `READY   (${seatPadGlyph(source, GP.B)} to unready)` : `Joined – ${seatPadGlyph(source, GP.A)} when ready`;
+}
+
+// Facing layout: a controller player whose side is the top edge (HUD column 'right') holds the
+// tablet's "down" as their up, so their stick is turned 180° (touch sticks never are: a drag
+// on the glass already points the right way; keys turn and thrust relative to the ship).
+function syncSeatOrientations(facing) {
+    for (let seat = 0; seat < inputHandler.seatState.length; seat++) {
+        const p = facing ? playerInSeat(seat) : null;
+        inputHandler.setSeatOrientation(seat, p && hudColumnFor(p) === 'right' ? 180 : 0);
+    }
+}
+function seatOrientations() {
+    return inputHandler.seatState.map(s => s.orientation);
+}
+
+function mp5Snapshot() {
+    return {
+        reserved: reservedSeatList(),
+        disconnectNotice: disconnectNoticeLines().join(' '),
+        dropped: players.filter(p => p.dropped).map(p => p.label),
+        playerCount: players.length,
+        orientations: seatOrientations(),
+    };
+}
+
+// --- MP-5: Saucer (docs/plans/05-local-multiplayer.md §4.5) ---
+// players[0] flies the ship; players[1] steers a UFO (js/ufo.js, `controlled`) with absolute
+// directions (stick, or keys: thrust = up, hyperspace = down, rotate = left/right) and fires
+// ordinary enemy bullets (1 s cooldown, ±30° aim assist onto P1 or a green). P1 scores as usual
+// plus 200 for the saucer, which returns 4 s later at the far edge of the view, translucent and
+// protected for 2 s. P2 scores 1 per green shot and 3 per P1 life taken. P1 must reach the
+// target (Easy 1800, Medium 2500, Hard 3500) within 150 s. No AI UFOs, no boss, standard ships.
+// Saucer rounds use levels (a cleared field brings the next level), so no field refill is needed.
+let saucer = null;                     // { player, pilot, ufo, respawnTimer, strength, spawns } during a Saucer round
+let saucerStrength = DEFAULT_STRENGTH; // lobby handicap (js/saucer.js SAUCER_STRENGTHS)
+// Test seam (seeded before load like other settings, never written by the game):
+// {"time": seconds, "target": points} shortens a Saucer round for the browser tests.
+const SAUCER_TEST_KEY = 'spaceAdventure_testSaucerRound';
+
+function readSaucerTestOverride() {
+    try {
+        const v = JSON.parse(localStorage.getItem(SAUCER_TEST_KEY) || 'null');
+        if (v && typeof v === 'object') {
+            return { time: Number(v.time) > 0 ? Number(v.time) : null, target: Number(v.target) > 0 ? Number(v.target) : null };
+        }
+    } catch (e) { /* ignore */ }
+    return { time: null, target: null };
+}
+
+function setupSaucerRound() {
+    saucer = null;
+    if (mode.id !== 'saucer' || players.length < 2) return;
+    const test = readSaucerTestOverride();
+    round.target = saucerTarget(mode.target, round.difficulty, test.target);
+    if (test.time) round.timeLeft = test.time;
+    const p = players[1];
+    p.lives = 0; // the saucer has no lives, it always comes back
+    saucer = { player: p, pilot: players[0], ufo: null, respawnTimer: 0, strength: saucerStrength, spawns: 0 };
+}
+
+function afterStartGameMP5() {
+    if (saucer) spawnSaucer();
+    if (reservedSeatList().length && currentGameState === GameState.PLAYING) pauseGame('system');
+}
+
+function pilotShip() {
+    const s = saucer && saucer.pilot.ship;
+    return s && s.isAlive && saucer.pilot.respawnTimer <= 0 ? s : null;
+}
+
+// The saucer appears at the far edge of the view from P1, heading toward P1, protected for 2 s
+function spawnSaucer() {
+    if (!saucer || saucer.player.dropped) return;
+    const s = strengthOf(saucer.strength);
+    const pilot = pilotShip();
+    const c = cameraCentre();
+    const pt = farEdgePoint(c.x, c.y, pilot, viewWidth / (2 * camera.zoom), viewHeight / (2 * camera.zoom),
+        WORLD_WIDTH, WORLD_HEIGHT);
+    const ufo = new UFO(viewWidth, viewHeight, pt.x, pt.y);
+    ufo.x = pt.x;
+    ufo.y = pt.y;
+    const heading = pilot
+        ? Math.atan2(wrapDelta(pilot.y - pt.y, WORLD_HEIGHT), wrapDelta(pilot.x - pt.x, WORLD_WIDTH)) : Math.PI / 2;
+    ufo.makeControlled({ speed: s.speed, fireCooldown: s.fireCooldown, colour: saucer.player.colour, heading,
+        invulnerability: SAUCER_RULES.invulnerability });
+    ufos.push(ufo);
+    saucer.ufo = ufo;
+    saucer.respawnTimer = 0;
+    saucer.spawns++;
+    // Where it appeared, relative to the view at that moment (test hook)
+    saucer.lastSpawn = { x: pt.x, y: pt.y, cx: c.x, cy: c.y, zoom: camera.zoom,
+        pilot: pilot ? { x: pilot.x, y: pilot.y } : null };
+}
+
+// P2's controls, read with the other ships' input (quick taps count): absolute steering and fire
+function handleSaucerInput() {
+    const ufo = saucer && saucer.ufo;
+    if (!ufo || !ufo.isAlive) return;
+    const input = saucer.player.input || inputHandler;
+    const v = steerVector({
+        up: input.isPressed('thrust'), down: input.isPressed('hyperspace'),
+        left: input.isPressed('rotateLeft'), right: input.isPressed('rotateRight'),
+    }, input.getJoystick());
+    input.consumeAction('hyperspace'); // ↓ steers; the saucer has no hyperspace
+    ufo.steer(v.x, v.y);
+    if (input.isPressed('fire') && ufo.cooldown <= 0) {
+        const ship = pilotShip();
+        const targets = asteroids.filter(a => a.isAlive && a.isGreen());
+        if (ship && !ship.isInvulnerable) targets.push(ship);
+        const aim = aimAssist(ufo.x, ufo.y, ufo.heading, targets, WORLD_WIDTH, WORLD_HEIGHT, SAUCER_RULES.aimAssistDeg);
+        if (ufo.tryFire(bullets, aim.angle, audioManager)) saucer.player.stats.shots++;
+    }
+}
+
+// Once per frame while playing: a destroyed saucer returns after 4 s
+function updateSaucer(deltaTime) {
+    if (!saucer) return;
+    const p = saucer.player;
+    if (saucer.ufo && !saucer.ufo.isAlive) {
+        saucer.ufo = null;
+        saucer.respawnTimer = SAUCER_RULES.respawnDelay;
+        p.stats.deaths++;
+    }
+    if (!saucer.ufo && !p.dropped) {
+        saucer.respawnTimer = Math.max(0, saucer.respawnTimer - deltaTime);
+        if (saucer.respawnTimer <= 0) spawnSaucer();
+    }
+}
+
+// P1 shot the saucer down: a flat 200 (awarded by the caller) and a banner
+function saucerKillPoints(ufo, shooter) {
+    const at = worldScreenPos(ufo.x, ufo.y);
+    FloatingTexts.spawn(at.x, at.y - 20, `SAUCER DOWN +${SAUCER_RULES.killPoints}`, shooter ? shooter.colour : '#FFD700', 22);
+    return SAUCER_RULES.killPoints;
+}
+
+function saucerScore(points, x, y) {
+    const p = saucer.player;
+    p.score += points;
+    p.stats.hits++;
+    const at = worldScreenPos(x, y);
+    FloatingTexts.spawn(at.x, at.y - 24, `${p.label} +${points}`, p.colour, 18);
+}
+
+// P2 took one of P1's lives (a saucer shot or a ram)
+function creditSaucerKill(victim) {
+    if (!saucer || victim !== saucer.pilot) return;
+    saucer.player.stats.kills++;
+    saucerScore(SAUCER_RULES.pilotKillPoints, victim.ship ? victim.ship.x : 0, victim.ship ? victim.ship.y : 0);
+}
+
+// A saucer shot destroyed a green crystal
+function saucerShotGreen(asteroid) {
+    if (!saucer) return;
+    saucer.player.stats.greensDenied++;
+    saucerScore(SAUCER_RULES.greenShotPoints, asteroid.x, asteroid.y);
+}
+
+function formatRoundClock(seconds) {
+    const s = Math.max(0, Math.ceil(seconds || 0));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// Top centre (facing layout: at each player's own edge): time left, P1's score against the
+// target, P2's score
+function drawSaucerCentreHud(region = null) {
+    const left = round && round.timeLeft !== null ? round.timeLeft : 0;
+    const top = region && region.half ? region.y + region.h - 44 : 28;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = left <= 20 ? '#FF6666' : 'rgba(255, 255, 255, 0.95)';
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText(formatRoundClock(left), viewWidth / 2, top);
+    ctx.font = 'bold 14px Arial';
+    const a = `${saucer.pilot.label} ${saucer.pilot.score} / ${round.target}`;
+    const b = `${saucer.player.label} SAUCER ${saucer.player.score}`;
+    const gap = 24;
+    const wa = ctx.measureText(a).width;
+    const wb = ctx.measureText(b).width;
+    const x0 = viewWidth / 2 - (wa + gap + wb) / 2;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = saucer.pilot.colour;
+    ctx.fillText(a, x0, top + 20);
+    ctx.fillStyle = saucer.player.colour;
+    ctx.fillText(b, x0 + wa + gap, top + 20);
+    ctx.textAlign = 'center';
+}
+
+// Over the field: P2's number at the saucer, an edge arrow when it is off screen, and the
+// countdown while it is away
+function drawSaucerOverlays() {
+    if (!saucer) return;
+    const p = saucer.player;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 13px Arial';
+    const u = saucer.ufo;
+    if (u && u.isAlive) {
+        const pos = worldScreenPos(u.x, u.y);
+        const y = pos.y < 40 ? pos.y + 32 : pos.y - 30;
+        ctx.fillStyle = 'black';
+        ctx.fillText(p.label, pos.x + 1, y + 1);
+        ctx.fillStyle = p.colour;
+        ctx.fillText(p.label, pos.x, y);
+        drawOffscreenArrow(u.x, u.y, p.colour, p.label);
+    } else if (!p.dropped && saucer.respawnTimer > 0) {
+        ctx.fillStyle = p.colour;
+        ctx.font = 'bold 16px Arial';
+        ctx.fillText(`SAUCER BACK IN ${saucer.respawnTimer.toFixed(1)}`, viewWidth / 2, 70);
+    }
+    ctx.restore();
+}
+
+function drawRadarNumber(pos, p) {
+    if (!p) return;
+    ctx.fillStyle = p.colour;
+    ctx.font = 'bold 10px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(p.number || p.slot + 1), pos.x + 5, pos.y - 5);
+}
+
+// Results: why the round ended
+function decorateSaucerResults(results, result) {
+    const pilot = saucer.pilot;
+    const target = round ? round.target : null;
+    let reason = 'Time up';
+    if (typeof target === 'number' && pilot.score >= target) reason = `${pilot.name} reached ${target}`;
+    else if (pilot.dropped) reason = `${pilot.label} left the round`;
+    else if (saucer.player.dropped) reason = `${saucer.player.label} left the round`;
+    else if (pilot.out) reason = 'The ship is out of lives';
+    results.saucer = { target, reason, strength: saucer.strength, outcome: result ? result.outcome : null };
+    results.highlights.unshift(`${reason} · target ${target}`);
+}
+
+// Lobby: P2's ◂ ▸ change the saucer's strength instead of its colour
+function handleSaucerLobbyEvent(ev) {
+    if (lobbyModeId !== 'saucer' || !lobby || lobby.kind !== 'seats') return false;
+    const act = lobbyAction(ev.action);
+    if (act !== 'colourPrev' && act !== 'colourNext') return false;
+    if (lobby.seats.seatOf(ev.source) !== 1 || !lobby.cards[1] || lobby.cards[1].ready) return false;
+    changeLobbyOption(act === 'colourPrev' ? -1 : 1);
+    return true;
+}
+function saucerLobbyRole(seat) {
+    if (lobbyModeId !== 'saucer' || currentGameState !== GameState.LOBBY) return null;
+    return seat === 0 ? 'SHIP' : seat === 1 ? 'SAUCER' : null;
+}
+// Lobby option row "Saucer strength (O)  ◂ Normal ▸": O, a tap on the row, or P2's ◂ ▸
+function saucerStrengthRow() {
+    return { id: 'option', key: 'O', label: () => 'Saucer strength', value: () => strengthOf(saucerStrength).name,
+        change: (d) => changeLobbyOption(d) };
+}
+
+function saucerSnapshot() {
+    const u = saucer && saucer.ufo;
+    const s = strengthOf(saucer ? saucer.strength : saucerStrength);
+    return {
+        strength: saucerStrength, active: !!saucer, speed: s.speed, fireCooldown: s.fireCooldown,
+        target: saucer && round ? round.target : null,
+        playerId: saucer ? saucer.player.id : null, pilotId: saucer ? saucer.pilot.id : null,
+        respawnTimer: saucer ? saucer.respawnTimer : 0, spawns: saucer ? saucer.spawns : 0,
+        lastSpawn: saucer && saucer.lastSpawn ? JSON.parse(JSON.stringify(saucer.lastSpawn)) : null,
+        ufo: u ? {
+            x: u.x, y: u.y, velX: u.velX, velY: u.velY, heading: u.heading, aimAngle: u.aimAngle, cooldown: u.cooldown,
+            isInvulnerable: !!u.isInvulnerable, shots: u.shots, alive: u.isAlive,
+        } : null,
+        bullets: bullets.filter(b => b.fromSaucer && b.isAlive).length,
+    };
 }
 
 // --- Time Attack vs Ghost (docs/plans/05-local-multiplayer.md §4.6, §6, MP-6) ---

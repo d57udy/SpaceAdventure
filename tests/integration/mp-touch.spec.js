@@ -23,7 +23,7 @@ async function openCoopTouchLobby(page, { hard = false } = {}) {
   }
   await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
   await waitForState(page, 'mp_mode_select');
-  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'coop', 'harvest', 'duel', 'timeattack', 'back']);
+  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'coop', 'harvest', 'duel', 'saucer', 'timeattack', 'back']);
   await tapAt(page, await tapRegionCenter(page, 1));
   await waitForState(page, 'lobby');
   expect(await hook(page, 'lobby')).toMatchObject({ kind: 'seats', modeId: 'coop' });

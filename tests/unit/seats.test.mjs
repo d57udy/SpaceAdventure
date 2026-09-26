@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     MAX_SEATS, MAX_TOUCH_SEATS, KEY_PROFILES, MERGED_EXTRA, SHARED_CODES, lookupCode, lookupShared,
-    sourceKind, rotateVector, stickFromDrag, SeatTable,
+    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat,
 } from '../../js/seats.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `expected ${b}, got ${a}`);
@@ -223,4 +223,57 @@ test('snapshot is a plain copy; setMerged(true) clears seats', () => {
     assert.equal(t.seatOf('touch:b'), 0);
     t.setMerged(true);
     assert.deepEqual(t.snapshot().seats, [null, null, null, null]);
+});
+
+test('pickRejoinSeat: same controller (index and id) first, then same index, then lowest reserved', () => {
+    const X = 'Xbox Wireless Controller';
+    const P = 'DualSense Wireless Controller';
+    const seats = [
+        { source: 'kbLeft', colour: 0, reserved: false },
+        { source: null, colour: 1, reserved: true, reservedFrom: { source: 'pad:0', id: X } },
+        null,
+        { source: null, colour: 3, reserved: true, reservedFrom: { source: 'pad:1', id: P } },
+    ];
+    assert.equal(pickRejoinSeat(seats, 'pad:1', P), 3, 'same index and id');
+    assert.equal(pickRejoinSeat(seats, 'pad:0', X), 1);
+    assert.equal(pickRejoinSeat(seats, 'pad:1', 'Renamed pad'), 3, 'same index, different id');
+    assert.equal(pickRejoinSeat(seats, 'pad:2', X), 1, 'another controller: lowest reserved seat');
+    assert.equal(pickRejoinSeat(seats, 'pad:5', null), 1);
+    assert.equal(pickRejoinSeat([seats[0], null, null, null], 'pad:0', X), null, 'nothing reserved');
+    assert.equal(pickRejoinSeat(null, 'pad:0'), null);
+});
+
+test('reserve remembers the controller; rejoin takes the matching seat back', () => {
+    const t = new SeatTable();
+    t.setMerged(false);
+    t.join('kbLeft');
+    t.join('pad:0');
+    t.join('pad:1');
+    assert.equal(t.reserve(1, { id: 'Pad A' }), true);
+    assert.equal(t.reserve(2, { id: 'Pad B' }), true);
+    assert.deepEqual(t.reservedSeats(), [1, 2]);
+    assert.deepEqual(t.snapshot().seats[2], {
+        seat: 2, source: null, colour: 2, reserved: true, reservedFrom: { source: 'pad:1', id: 'Pad B' },
+    });
+    // Reserving an already reserved seat keeps the original controller
+    t.reserve(2, { id: 'other' });
+    assert.equal(t.snapshot().seats[2].reservedFrom.id, 'Pad B');
+    // Controller 1 comes back first: it gets its own seat (2), not the lowest (1)
+    assert.equal(t.rejoin('pad:1', 'Pad B'), 2);
+    assert.equal(t.seatOf('pad:1'), 2);
+    assert.equal(t.colourOf(2), 2);
+    assert.equal(t.snapshot().seats[2].reservedFrom, undefined);
+    assert.equal(t.rejoin('pad:1', 'Pad B'), null, 'already seated');
+    assert.equal(t.rejoin('kbLeft'), null, 'seated keyboard');
+    // A different controller takes the remaining reserved seat
+    assert.equal(t.rejoin('pad:3', 'Pad C'), 1);
+    assert.deepEqual(t.reservedSeats(), []);
+    assert.equal(t.rejoin('pad:4', 'Pad D'), null, 'nothing reserved');
+    // join() also takes a reserved seat and forgets where it came from
+    t.reserve(1, { id: 'Pad C' });
+    assert.equal(t.join('pad:6'), 1);
+    assert.equal(t.snapshot().seats[1].reservedFrom, undefined);
+    // Merged mode never rejoins
+    t.setMerged(true);
+    assert.equal(t.rejoin('pad:0'), null);
 });

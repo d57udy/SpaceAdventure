@@ -46,6 +46,60 @@ export class UFO extends Entity {
         console.log(`UFO spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
     }
 
+    // --- Player-controlled saucer (Saucer mode, plan 05 §4.5) ---
+    // controlled: no AI firing; main.js steers it (steer) and fires it (tryFire). Its bullets are
+    // ordinary enemy bullets (flagged fromSaucer), so the existing collisions kill the pilot and
+    // destroy greens. While isInvulnerable it is drawn translucent and main.js skips its collisions.
+    makeControlled({ speed = 150, fireCooldown = 1, colour = null, heading = 0, invulnerability = 0 } = {}) {
+        this.controlled = true;
+        this.speed = speed;
+        this.fireCooldown = fireCooldown;
+        this.cooldown = 0;
+        this.ownerColour = colour;
+        this.heading = heading;         // turret direction: the last steering direction
+        this.aimAngle = heading;        // last shot's direction (after aim assist)
+        this.shots = 0;
+        this.velX = 0;
+        this.velY = 0;
+        this.setInvulnerable(invulnerability);
+        return this;
+    }
+
+    setInvulnerable(seconds) {
+        this.invulnerableTimer = Math.max(0, seconds || 0);
+        this.isInvulnerable = this.invulnerableTimer > 0;
+    }
+
+    // Steer with an absolute direction vector (length 0..1; 0 stops). The turret follows it.
+    steer(dx, dy) {
+        const m = Math.min(1, Math.hypot(dx, dy));
+        if (!(m > 0)) {
+            this.velX = 0;
+            this.velY = 0;
+            return;
+        }
+        this.heading = Math.atan2(dy, dx);
+        this.velX = Math.cos(this.heading) * m * this.speed;
+        this.velY = Math.sin(this.heading) * m * this.speed;
+    }
+
+    // Fire one enemy bullet at `angle` (default: the turret heading) unless cooling down.
+    // Returns the bullet or null.
+    tryFire(bullets, angle = this.heading, audioManager = null) {
+        if (!this.isAlive || this.cooldown > 0) return null;
+        const speed = this.sizeInfo.bulletSpeed;
+        const x = this.x + Math.cos(angle) * this.radius;
+        const y = this.y + Math.sin(angle) * this.radius;
+        const bullet = new Bullet(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, false);
+        bullet.fromSaucer = true;
+        bullets.push(bullet);
+        this.cooldown = this.fireCooldown;
+        this.aimAngle = angle;
+        this.shots++;
+        if (audioManager && this.isOnScreen !== false) audioManager.play('ufoShoot');
+        return bullet;
+    }
+
     update(deltaTime, canvasWidth, canvasHeight, playerShip, bullets, audioManager, difficulty, asteroids = [], cameraX = 0, cameraY = 0) {
         super.update(deltaTime, canvasWidth, canvasHeight); // Basic movement
 
@@ -53,6 +107,14 @@ export class UFO extends Entity {
 
         // Check if UFO is visible on screen
         const isOnScreen = this.isVisibleOnScreen(cameraX, cameraY, canvasWidth, canvasHeight);
+
+        if (this.controlled) {
+            // A player flies it: no AI shots, only the cooldown and protection timers run
+            this.cooldown = Math.max(0, this.cooldown - deltaTime);
+            if (this.invulnerableTimer > 0) this.setInvulnerable(this.invulnerableTimer - deltaTime);
+            this.isOnScreen = isOnScreen;
+            return;
+        }
 
         // Firing logic
         this.fireTimer -= deltaTime;
@@ -136,7 +198,30 @@ export class UFO extends Entity {
 
     draw(ctx) {
         if (!this.isAlive) return;
+        if (this.controlled) {
+            ctx.save();
+            // Protected after appearing: translucent (blinking)
+            if (this.isInvulnerable) ctx.globalAlpha = 0.25 + 0.2 * Math.sin(Date.now() / 90);
+            this._drawBody(ctx);
+            // Turret along the heading, and a ring in the pilot's colour
+            const r = this.radius;
+            ctx.strokeStyle = this.ownerColour || '#FFFFFF';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(this.x, this.y);
+            ctx.lineTo(this.x + Math.cos(this.heading) * r * 1.6, this.y + Math.sin(this.heading) * r * 1.6);
+            ctx.stroke();
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, r * 1.35, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+        this._drawBody(ctx);
+    }
 
+    _drawBody(ctx) {
         ctx.strokeStyle = '#9933FF'; // Purple: never the collectible hue (Help screen says purple too)
         ctx.lineWidth = 1.5;
         ctx.beginPath();

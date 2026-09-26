@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, frames, loginWithTouch, tapAt, menuItemCenter, tapRegionCenter, canvasToPage,
-  centerOf, rectsOverlap, Fingers,
+  centerOf, rectsOverlap, Fingers, padTap, padStick, PAD,
 } from './helpers.js';
 
 const angDist = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -18,7 +18,7 @@ async function openTouchLobby(page, modeId, { storage = {}, url = '/' } = {}) {
   await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
   await waitForState(page, 'mp_mode_select');
   const rows = await hook(page, 'mp.modeSelect.rows');
-  expect(rows).toEqual(['turns', 'coop', 'harvest', 'duel', 'timeattack', 'back']);
+  expect(rows).toEqual(['turns', 'coop', 'harvest', 'duel', 'saucer', 'timeattack', 'back']);
   await tapAt(page, await tapRegionCenter(page, rows.indexOf(modeId)));
   await waitForState(page, 'lobby');
   expect(await hook(page, 'lobby.modeId')).toBe(modeId);
@@ -213,6 +213,33 @@ test.describe('facing layout (iPad)', () => {
     await expectP2DragDown(page, browserName);
     await frames(page, 5);
     await page.screenshot({ path: `tests/screenshots/${test.info().project.name}-facing-duel.png` });
+    expect(errors).toEqual([]);
+  });
+
+  test('portrait: a controller player at the top edge gets their stick turned 180° (MP-5)', async ({ page }) => {
+    test.skip(isLandscape(page), 'portrait');
+    const errors = await openFresh(page, { gamepads: [{}] });
+    await loginWithTouch(page, 'TOUCHY');
+    await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
+    await waitForState(page, 'mp_mode_select');
+    const rows = await hook(page, 'mp.modeSelect.rows');
+    await tapAt(page, await tapRegionCenter(page, rows.indexOf('coop')));
+    await waitForState(page, 'lobby');
+    // P1 touches the bottom pad, P2 joins with a controller (seat 2: the top side)
+    await tapPad(page, 'a', 0, (c) => !!c && c.source === 'touch:a');
+    await padTap(page, PAD.A);
+    await expect.poll(async () => (await card(page, 1))?.source).toBe('pad:0');
+    await tapPad(page, 'a', 0, (c) => c.ready);
+    await padTap(page, PAD.A);
+    await waitForState(page, 'playing', 6000);
+    await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
+    expect(await hook(page, 'mp.layout')).toBe('facing');
+    await expect.poll(() => hook(page, 'mp.orientations')).toEqual([0, 180, 0, 0]);
+    await expect(page.locator('#mp-hud-right .seat-hud[data-seat="1"]')).toHaveCount(1);
+    // Stick pushed to the controller's right = the screen's left for the top player
+    await padStick(page, 0.5, 0);
+    await expect.poll(async () => angDist(await hook(page, 'players.1.ship.rotation'), Math.PI)).toBeLessThan(0.1);
+    await padStick(page, 0, 0);
     expect(errors).toEqual([]);
   });
 });

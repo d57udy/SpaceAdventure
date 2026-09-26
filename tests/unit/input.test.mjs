@@ -1365,6 +1365,39 @@ test('codeOf() falls back to the typed key when event.code is empty', () => {
     assert.equal(codeOf({}), '');
 });
 
+test('hyperspace keys and buttons also read as held (Saucer steering) but press only once', () => {
+    const { win, input } = seatSetup(['kbLeft', 'kbRight']);
+    win.dispatch('keydown', keyEvent('ArrowDown'));
+    assert.equal(input.isPressed('hyperspace', 1), true);
+    assert.equal(input.isPressed('hyperspace', 0), false);
+    assert.equal(input.consumeAction('hyperspace', 1), true);
+    input.endFrame();
+    win.dispatch('keydown', keyEvent('ArrowDown', null, 'ArrowDown', { repeat: true })); // auto-repeat
+    assert.equal(input.isPressed('hyperspace', 1), true, 'still held');
+    assert.equal(input.consumeAction('hyperspace', 1), false, 'no second jump');
+    win.dispatch('keyup', keyEvent('ArrowDown'));
+    input.endFrame();
+    assert.equal(input.isPressed('hyperspace', 1), false);
+    // A controller's Ⓑ / D-pad down on its seat
+    const a = new FakePad(0);
+    const { input: padInput } = setupPads([a]);
+    padInput.setMerged(false);
+    padInput.seats.join('kbLeft');
+    padInput.seats.join('pad:0');
+    padInput.setContext('game');
+    a.press(GP.DOWN);
+    padInput.pollGamepads();
+    assert.equal(padInput.isPressed('hyperspace', 1), true);
+    assert.equal(padInput.consumeAction('hyperspace', 1), true);
+    padInput.endFrame();
+    padInput.pollGamepads();
+    assert.equal(padInput.isPressed('hyperspace', 1), true);
+    assert.equal(padInput.consumeAction('hyperspace', 1), false);
+    a.release(GP.DOWN);
+    padInput.pollGamepads();
+    assert.equal(padInput.isPressed('hyperspace', 1), false);
+});
+
 test('pushSourceEvent (touch join pads): a lobby event with the source seat, no seat action', () => {
     const { input } = seatSetup([]);
     input.pushSourceEvent('touch:a', 'fire');

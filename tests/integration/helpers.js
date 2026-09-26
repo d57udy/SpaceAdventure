@@ -564,6 +564,15 @@ export async function openCoopLobby(page) {
   expect(await hook(page, 'lobby')).toMatchObject({ kind: 'seats', modeId: 'coop' });
 }
 
+/** Multiplayer mode select rows, in order (MP-5 added Saucer after Duel). */
+export const MP_MODE_ROWS = ['turns', 'coop', 'harvest', 'duel', 'saucer', 'timeattack', 'back'];
+
+/** A controller's Ⓐ in a seat lobby; waits until card `seat` matches `check`. */
+export async function lobbyPad(page, pad, seat, check) {
+  await padTap(page, PAD.A, { pad });
+  await expect.poll(async () => check((await hook(page, 'lobby.cards'))[seat]), { message: `lobby card ${seat} after pad ${pad} Ⓐ` }).toBe(true);
+}
+
 /** P1 (Space) and P2 (Enter) join and ready up in a keyboard lobby; waits for play. */
 export async function joinTwoWithKeyboard(page, startState = 'playing') {
   await lobbyPress(page, 'Space', 0, (c) => !!c);

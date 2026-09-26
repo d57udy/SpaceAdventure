@@ -712,6 +712,26 @@ body.mp-round.mp-hud-dom .mp-hud {
     font-weight: bold;
 }
 
+/* 3-4 players (MP-5): two compact panels per side bar */
+body.mp-many .mp-hud-col {
+    gap: 6px;
+}
+
+body.mp-many .seat-hud {
+    padding: 4px 6px 4px 11px;
+    font-size: 15px;
+    line-height: 1.2;
+}
+
+body.mp-many .seat-hud [data-hud="score"] {
+    font-size: 20px;
+}
+
+body.mp-many .seat-hud [data-hud="combo"],
+body.mp-many .seat-hud [data-hud="status"] {
+    font-size: 13px;
+}
+
 /* --- Lobby join pads (touch) --- */
 .mp-join-pads {
     display: none;
