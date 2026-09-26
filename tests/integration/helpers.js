@@ -3,15 +3,15 @@
 // tests never write game state, they drive the game through real input.
 import { expect } from '@playwright/test';
 
-// Main menu rows (a later step inserts 'Multiplayer' after Start)
+// Main menu rows
 export const MENU = {
-  START: 0, UPGRADES: 1, HIGH_SCORES: 2, ACHIEVEMENTS: 3, HELP: 4, SETTINGS: 5,
-  RESET: 6, CHANGE_USER: 7, DIFFICULTY: 8,
+  START: 0, MULTIPLAYER: 1, UPGRADES: 2, HIGH_SCORES: 3, ACHIEVEMENTS: 4, HELP: 5, SETTINGS: 6,
+  RESET: 7, CHANGE_USER: 8, DIFFICULTY: 9,
 };
 
 export const MENU_LABELS = [
-  'Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Settings', 'Reset Data', 'Change User',
-  'Difficulty',
+  'Start', 'Multiplayer', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Settings', 'Reset Data',
+  'Change User', 'Difficulty',
 ];
 
 /** Drawn text of the single difficulty row, e.g. 'Difficulty: Medium'. */
@@ -414,4 +414,96 @@ export async function tapRegionPoint(page, index, fx = 0.5) {
   await expect.poll(() => hook(page, 'tapRegions.length')).toBeGreaterThan(index);
   const r = (await hook(page, 'tapRegions'))[index];
   return canvasToPage(page, r.x + r.w * fx, r.y + r.h / 2);
+}
+
+// --- Local multiplayer ---
+
+/** Move the main-menu selection with ArrowDown until it reaches `target`. */
+export async function selectMenuRow(page, target) {
+  for (let i = 0; i < 20 && (await hook(page, 'menuIndex')) !== target; i++) {
+    const before = await hook(page, 'menuIndex');
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => hook(page, 'menuIndex')).not.toBe(before);
+  }
+  expect(await hook(page, 'menuIndex')).toBe(target);
+}
+
+/** Main menu -> Multiplayer (keyboard) -> mode select screen. */
+export async function openMultiplayer(page) {
+  await selectMenuRow(page, MENU.MULTIPLAYER);
+  await page.keyboard.press('Enter');
+  await waitForState(page, 'mp_mode_select');
+}
+
+/** Mode select -> Take Turns with Enter -> the seat lobby (keyboard). */
+export async function openTakeTurnsLobby(page) {
+  await openMultiplayer(page);
+  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'back']);
+  await page.keyboard.press('Enter');
+  await waitForState(page, 'lobby');
+  expect(await hook(page, 'lobby.kind')).toBe('seats');
+}
+
+/** Press a key and wait until the lobby card of `seat` matches `check(card)`. */
+export async function lobbyPress(page, key, seat, check) {
+  await page.keyboard.press(key);
+  await expect.poll(async () => check((await hook(page, 'lobby.cards'))[seat]), { message: `lobby card ${seat} after ${key}` }).toBe(true);
+}
+
+/**
+ * Hyperspace with the 10% self-destruct roll forced (a browser API stub, not game state):
+ * the next Math.random() call made by the hyperspace jump returns 0.01. Works in single-player
+ * (H) and in merged multiplayer input.
+ */
+export async function selfDestruct(page, key = 'h') {
+  await page.evaluate(() => {
+    const real = window.__realRandom || Math.random;
+    window.__realRandom = real;
+    Math.random = () => {
+      if (!String(new Error().stack).includes('hyperspace')) return real();
+      Math.random = real;
+      return 0.01;
+    };
+  });
+  await page.keyboard.press(key);
+}
+
+/**
+ * Jump into the path of a drifting green crystal so it runs into the ship (stubs Math.random
+ * only for the jump's own rolls). The ship lands just ahead of the crystal along its drift.
+ */
+export async function collectGreenByJump(page) {
+  await page.evaluate(() => {
+    const real = window.__realRandom || Math.random;
+    window.__realRandom = real;
+    let calls = 0;
+    let target = null;
+    Math.random = () => {
+      if (!String(new Error().stack).includes('hyperspace')) return real();
+      const g = window.__spaceAdventure;
+      const W = g.world.width;
+      const H = g.world.height;
+      const r = 15;
+      calls++;
+      if (calls === 1) {
+        const all = g.asteroids;
+        const clear = (x, y) => all.every((a) => Math.hypot(a.x - x, a.y - y) > a.radius + r + 2);
+        const greens = all.filter((q) => q.type === 'green')
+          .sort((p, q) => Math.hypot(q.velX, q.velY) - Math.hypot(p.velX, p.velY));
+        for (const a of greens) {
+          const speed = Math.hypot(a.velX, a.velY) || 1;
+          const d = a.radius + r + 4;
+          const x = a.x + (a.velX / speed) * d;
+          const y = a.y + (a.velY / speed) * d;
+          if (x > 40 && x < W - 40 && y > 40 && y < H - 40 && clear(x, y)) { target = { x, y }; break; }
+        }
+        if (!target) { Math.random = real; return 0.01; } // no spot: self-destruct instead
+        return 0.5; // no self-destruct
+      }
+      if (calls === 2) return (target.x - r) / (W - 2 * r);
+      Math.random = real;
+      return (target.y - r) / (H - 2 * r);
+    };
+  });
+  await page.keyboard.press('h');
 }

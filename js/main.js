@@ -25,6 +25,13 @@ import { UpgradeState } from './upgrades.js';
 import { createCamera } from './camera.js';
 import { MODES, getMode, scaleForPlayers, pickSpawnPoint, ringSpawnGrid, worldSpawnGrid } from './modes.js';
 import { createPlayer, tickPowerUps, teamScore, isLiving, livingPlayers, nearestLivingShip } from './players.js';
+import {
+    createSeatLobby, createCountLobby, handleLobbyEvent, tickLobby, seatLineup, countLineup, restoreSeatLineup,
+    restoreCountLineup, changePlayerCount, cycleCountName, joinedSeats, canStart,
+    serializeLineup, parseLineup, LINEUP_KEY,
+} from './lobby.js';
+import { buildResults, resultBanner, historyEntry } from './mpResults.js';
+import { MP_KEYS, addHistory, addToBoard, recordRivalry, isHistory, isBoard, isRivalry } from './mpRecords.js';
 
 // Game States Enum
 const GameState = {
@@ -38,7 +45,13 @@ const GameState = {
     HELP: 'help',
     SETTINGS: 'settings',
     TUTORIAL_ASK: 'tutorial_ask', // "First time? Play the tutorial / Skip" before a first game
-    GAME_OVER: 'game_over'
+    GAME_OVER: 'game_over',
+    // Local multiplayer (docs/plans/05-local-multiplayer.md §5)
+    MP_MODE_SELECT: 'mp_mode_select',
+    LOBBY: 'lobby',
+    TURN_CHANGE: 'turn_change', // Take Turns: "PLAYER 2 – GET READY"
+    ROUND_END: 'round_end',     // 2 s slow-motion banner
+    RESULTS: 'results',
 };
 
 // Difficulty Settings
@@ -329,7 +342,7 @@ const DynamicDifficulty = {
 // these show the texts. Single-player keeps the centred texts; with more players they
 // appear near that player's ship in the player's colour.
 function comboTextAnchor(p, fallbackY) {
-    if (players.length > 1 && p.ship) {
+    if (simultaneous() && p.ship) {
         const pos = shipScreenPos(p.ship);
         return { x: pos.x, y: pos.y - 40 };
     }
@@ -339,12 +352,12 @@ function showComboMilestone(p, result) {
     if (!result.streakBonus) return;
     const at = comboTextAnchor(p, viewHeight / 3);
     FloatingTexts.spawn(at.x, at.y, `${result.milestone} STREAK! +${result.streakBonus}`,
-        players.length > 1 ? p.colour : '#FFD700', 36);
+        simultaneous() ? p.colour : '#FFD700', 36);
 }
 function showComboLost(p, result) {
     if (!result || !result.lost) return;
     const at = comboTextAnchor(p, viewHeight / 2);
-    FloatingTexts.spawn(at.x, at.y, 'Combo Lost!', players.length > 1 ? p.colour : '#FF4444', 24);
+    FloatingTexts.spawn(at.x, at.y, 'Combo Lost!', simultaneous() ? p.colour : '#FF4444', 24);
 }
 
 // Floating Text System - for score popups, combo notifications
@@ -643,10 +656,10 @@ function returnToMenu() {
     menuSelectionIndex = 0;
 }
 
-// Main menu rows, top to bottom. Adding a row is one line
-// (e.g. { id: 'multiplayer', label: () => 'Multiplayer', select: openMultiplayer } after Start).
+// Main menu rows, top to bottom. Adding a row is one line.
 const mainMenuItems = [
     { id: 'start', label: () => (pausedGameExists ? 'Resume' : 'Start'), select: () => startOrResume() },
+    { id: 'multiplayer', label: () => 'Multiplayer', select: () => openModeSelect() },
     { id: 'upgrades', label: () => 'Upgrades', select: () => { upgradeMenuIndex = 0; currentGameState = GameState.UPGRADES; } },
     { id: 'highScores', label: () => 'High Scores', select: () => openHighScores() },
     { id: 'achievements', label: () => 'Achievements', select: () => { currentGameState = GameState.ACHIEVEMENTS; } },
@@ -713,6 +726,8 @@ function inputHint(keyboard, touch, gamepad = null) {
 }
 function inputContextFor(state) {
     if (state === GameState.PLAYING) return 'game';
+    // Seat lobby: controllers use their game buttons (Ⓐ fire = join/ready, Ⓑ = leave, ◂ ▸ colour)
+    if (state === GameState.LOBBY && lobby && lobby.kind === 'seats') return 'game';
     if (state === GameState.PAUSED) return 'pause';
     return 'menu';
 }
@@ -923,7 +938,430 @@ function syncTutorialDom() {
     });
 }
 function getPauseMenuOptions() {
+    if (isMultiplayer()) return MP_PAUSE_OPTIONS;
     return tutorial.active ? [...pauseMenuOptions, 'Skip Tutorial'] : pauseMenuOptions;
+}
+
+// --- Local multiplayer (docs/plans/05-local-multiplayer.md §5, §10, §11) ---
+// MENU ─Multiplayer─► MP_MODE_SELECT ─► LOBBY ─► (TURN_CHANGE ⇄) PLAYING ⇄ PAUSED
+// PLAYING ─round over─► ROUND_END (2 s slow motion) ─► RESULTS ─► Rematch (LOBBY) / Change mode / Main menu
+const MP_MODE_IDS = ['turns']; // playable modes, in the order shown on the mode select screen
+const MP_MODE_INFO = {
+    turns: ['2 to 4 players pass one device.', 'One ship at a time; the highest score wins.'],
+};
+const MP_PAUSE_OPTIONS = ['Resume', 'Restart round', 'Change players', 'Main menu'];
+const RESULTS_BUTTONS = ['Rematch', 'Change mode', 'Main menu'];
+const ROUND_END_SECONDS = 2;
+const ROUND_END_SLOWMO = 0.3;      // world speed during the round-end banner
+const RESULTS_INPUT_DELAY = 1.5;   // s before the Results screen takes input (a held fire can't skip it)
+const RESUME_COUNTDOWN = 3;        // multiplayer resumes after 3, 2, 1
+const TURN_HANDOVER_DELAY = 1.2;   // s the explosion plays before "PLAYER N – GET READY"
+const TURN_READY_DELAY = 1;        // s before the hand-over screen accepts fire/tap
+const LOBBY_EXIT_NOTICE = 2;       // s the "press Esc again" notice stays up
+
+let mpModeIndex = 0;          // mode select row
+let lobby = null;             // js/lobby.js lobby: 'seats' (own inputs) or 'count' (pass one device)
+let lobbyModeId = 'turns';
+let lobbyIndex = 0;           // count lobby row
+let lobbyExitNotice = 0;      // seconds left of the "Esc again to leave" notice
+let lastLineup = null;        // { modeId, kind, players } of the last round started (rematch)
+let turn = null;              // Take Turns: { index, worlds, started, handover, readyDelay, needsWorld }
+let roundEndTimer = 0;
+let lastResults = null;       // js/mpResults.js record of the last multiplayer round
+let resultsIndex = 0;
+let resultsInputDelay = 0;
+let pausedBy = null;          // seat number, 'system' or null
+let pausedFrom = null;        // PLAYING or TURN_CHANGE
+let resumeCountdown = 0;      // seconds until play resumes (multiplayer)
+
+function isMultiplayer() { return mode.id !== 'solo'; }
+function isTurns() { return mode.kind === 'turns' && !!turn; }
+// Ships in play this frame (Take Turns: only the active player's)
+function activePlayers() { return isTurns() ? [players[turn.index]] : players; }
+// States of a round in progress
+function inRound() {
+    return [GameState.PLAYING, GameState.PAUSED, GameState.TURN_CHANGE, GameState.ROUND_END].includes(currentGameState);
+}
+// The player the HUD shows: player 1, or whoever's turn it is
+function hudPlayer() { return isTurns() && inRound() ? players[turn.index] : p1(); }
+// Several ships share the screen (not single-player, not Take Turns)
+function simultaneous() { return players.length > 1 && !isTurns(); }
+function seatColour(index) {
+    const list = palette.seats;
+    return list[((index % list.length) + list.length) % list.length];
+}
+
+// Seat routing: seat mode in a 'seats' lobby and in rounds whose players use their own input;
+// merged (every input drives seat 0) everywhere else, including Take Turns.
+function syncSeatMode() {
+    let wantSeats = false;
+    if (currentGameState === GameState.LOBBY) wantSeats = !!lobby && lobby.kind === 'seats';
+    else if (inRound()) wantSeats = isMultiplayer() && mode.kind !== 'turns';
+    if (wantSeats === inputHandler.seats.merged) inputHandler.setMerged(!wantSeats);
+}
+
+// --- Mode select ---
+function openModeSelect() {
+    pausedGameExists = false; // a paused single-player game is abandoned
+    mpModeIndex = 0;
+    currentGameState = GameState.MP_MODE_SELECT;
+}
+function mpModeRows() {
+    return [
+        ...MP_MODE_IDS.map(id => ({ id, label: () => MODES[id].name, select: () => openLobby(id) })),
+        { id: 'back', label: () => 'Back', select: () => returnToMenu() },
+    ];
+}
+
+// --- Lobby ---
+function savedLineup() {
+    try {
+        const parsed = parseLineup(sessionStorage.getItem(LINEUP_KEY));
+        if (parsed) return parsed;
+    } catch (e) { /* storage unavailable */ }
+    return lastLineup;
+}
+function saveLineup(modeId, kind, lineup) {
+    lastLineup = { modeId, kind, players: lineup.map(e => ({ ...e })) };
+    try { sessionStorage.setItem(LINEUP_KEY, serializeLineup(modeId, kind, lineup)); } catch (e) { /* ignore */ }
+}
+
+// kind: 'seats' (join with own keys/controllers) or 'count' (pass one device). By default a
+// tap or click picks 'count' (touch devices), a key or controller press 'seats'.
+// lineup: players to restore joined but not ready (rematch, change players).
+function openLobby(modeId, { kind = null, lineup = null } = {}) {
+    const m = getMode(modeId) || MODES.turns;
+    lobbyModeId = m.id;
+    const pointer = inputHandler.lastInputSource === 'touch' || inputHandler.lastInputSource === 'mouse';
+    const k = kind || (pointer ? 'count' : 'seats');
+    const profiles = persistenceManager.getAllUsernames();
+    if (k === 'seats') {
+        inputHandler.setMerged(false);
+        lobby = createSeatLobby({ seats: inputHandler.seats, min: m.players.min, max: m.players.max, currentUser, profiles });
+        restoreSeatLineup(lobby, lineup || []);
+    } else {
+        inputHandler.setMerged(true);
+        lobby = createCountLobby({ min: m.players.min, max: m.players.max, currentUser, profiles });
+        if (lineup) restoreCountLineup(lobby, lineup);
+    }
+    lobbyIndex = 0;
+    lobbyExitNotice = 0;
+    pausedGameExists = false;
+    currentGameState = GameState.LOBBY;
+}
+function reopenLobby() {
+    const saved = savedLineup();
+    if (saved && saved.modeId && getMode(saved.modeId)) openLobby(saved.modeId, { kind: saved.kind, lineup: saved.players });
+    else openModeSelect();
+}
+function leaveLobby() {
+    lobby = null;
+    lobbyExitNotice = 0;
+    inputHandler.setMerged(true);
+    mpModeIndex = Math.max(0, MP_MODE_IDS.indexOf(lobbyModeId));
+    currentGameState = GameState.MP_MODE_SELECT;
+}
+// Escape in a lobby: asks first ("press again") when anyone has joined
+function requestLobbyExit() {
+    if (lobby && lobby.kind === 'seats' && joinedSeats(lobby).length > 0 && lobbyExitNotice <= 0) {
+        lobbyExitNotice = LOBBY_EXIT_NOTICE;
+        return;
+    }
+    leaveLobby();
+}
+function countLobbyRows() {
+    const rows = [
+        { id: 'count', label: () => 'Players', value: () => String(lobby.count), change: (d) => changePlayerCount(lobby, d) },
+    ];
+    for (let i = 0; i < lobby.count; i++) {
+        rows.push({ id: `name${i + 1}`, label: () => `Player ${i + 1}`, value: () => lobby.names[i].name,
+            change: (d) => cycleCountName(lobby, i, d) });
+    }
+    rows.push({ id: 'start', label: () => 'Start', select: () => startFromLobby() });
+    rows.push({ id: 'seats', label: () => 'Join with keys or controllers', select: () => openLobby(lobbyModeId, { kind: 'seats' }),
+        visible: () => !isTouchDevice || gamepadSeen });
+    rows.push({ id: 'back', label: () => 'Back', select: () => leaveLobby() });
+    return visibleRows(rows);
+}
+function handleLobbyInput(deltaTime) {
+    if (lobbyExitNotice > 0) lobbyExitNotice = Math.max(0, lobbyExitNotice - deltaTime);
+    if (lobby.kind === 'count') {
+        inputHandler.consumeSourceEvents(); // shared input: rows only
+        if (inputHandler.consumeAction('escape')) { leaveLobby(); return; }
+        navigateRows(countLobbyRows(), () => lobbyIndex, (i) => { lobbyIndex = i; });
+        return;
+    }
+    // Seat lobby: every input acts for its own card (source events), Esc/Start/P go back
+    let back = false;
+    for (const ev of inputHandler.consumeSourceEvents()) {
+        if (ev.action === 'pause') { if (ev.seat === null) back = true; continue; }
+        const r = handleLobbyEvent(lobby, ev);
+        if (r && r.type !== 'full') {
+            lobbyExitNotice = 0;
+            if (audioManager && (r.type === 'joined' || r.type === 'ready')) audioManager.play('collectGreen');
+        }
+    }
+    if (inputHandler.consumeAction('escape') || inputHandler.consumeAction('pause') || back) {
+        requestLobbyExit();
+        if (currentGameState !== GameState.LOBBY) return;
+    }
+    if (tickLobby(lobby, deltaTime) === 'start') startFromLobby();
+}
+// Start the round with the lobby's players (in seat order)
+function startFromLobby() {
+    if (!lobby) return;
+    const m = getMode(lobbyModeId) || MODES.turns;
+    const lineup = lobby.kind === 'seats' ? seatLineup(lobby) : countLineup(lobby);
+    if (lineup.length < m.players.min) return;
+    const kind = lobby.kind;
+    saveLineup(m.id, kind, lineup);
+    const shared = m.kind === 'turns'; // one set of controls, passed around
+    const entries = lineup.map(e => ({
+        name: e.name, profile: e.profile, colour: seatColour(e.colour), colourIndex: e.colour,
+        bindingId: e.source, ...(shared ? {} : { seat: e.seat }),
+    }));
+    lobby = null;
+    startGame(m.id, { kind, players: entries });
+}
+
+// --- Take Turns: one world per player, parked while the others play (plan §4.1) ---
+const DDA_FIELDS = Object.keys(DynamicDifficulty).filter(k => typeof DynamicDifficulty[k] !== 'function');
+function captureWorld() {
+    return {
+        level, asteroids, ufos, powerUps, boss: currentBoss, bossDefeatedThisLevel,
+        ufoSpawnTimer, powerUpSpawnTimer,
+        dda: Object.fromEntries(DDA_FIELDS.map(k => [k, DynamicDifficulty[k]])),
+        parkedAt: Date.now(),
+    };
+}
+function clearWorldEffects() {
+    bullets = [];
+    FloatingTexts.clear();
+    Particles.clear();
+    ScreenShake.reset();
+}
+function restoreWorld(w) {
+    level = w.level;
+    asteroids = w.asteroids;
+    ufos = w.ufos;
+    powerUps = w.powerUps;
+    currentBoss = w.boss;
+    bossDefeatedThisLevel = w.bossDefeatedThisLevel;
+    ufoSpawnTimer = w.ufoSpawnTimer;
+    powerUpSpawnTimer = w.powerUpSpawnTimer;
+    Object.assign(DynamicDifficulty, w.dda);
+    // The difficulty clock doesn't run while a world is parked
+    const away = Date.now() - w.parkedAt;
+    DynamicDifficulty.sessionStartTime += away;
+    DynamicDifficulty.lastCheckTime += away;
+    clearWorldEffects();
+}
+function freshWorld() {
+    level = 1;
+    asteroids = [];
+    ufos = [];
+    powerUps = [];
+    currentBoss = null;
+    bossDefeatedThisLevel = false;
+    powerUpSpawnTimer = currentScaling().powerUpInterval;
+    DynamicDifficulty.reset();
+    clearWorldEffects();
+    createLevelAsteroids();
+    resetUfoSpawnTimer();
+}
+// After a lost life: let the explosion play, then hand over
+function beginHandover(nextIndex) {
+    turn.handover = { next: nextIndex, timer: TURN_HANDOVER_DELAY };
+}
+function handOverTurn() {
+    const leaving = players[turn.index];
+    for (const key of Object.keys(leaving.powerUps)) leaving.powerUps[key] = 0;
+    turn.worlds[turn.index] = captureWorld();
+    turn.index = turn.handover.next;
+    turn.handover = null;
+    turn.needsWorld = true;
+    turn.readyDelay = TURN_READY_DELAY;
+    audioManager.stopThrustSound();
+    audioManager.stopUfoHum();
+    stopVibration();
+    saveAllUpgrades();
+    currentGameState = GameState.TURN_CHANGE;
+    updateUI();
+}
+// "GET READY" confirmed: the player's own world comes back and their ship appears
+function confirmTurn() {
+    const p = players[turn.index];
+    if (turn.needsWorld) {
+        const w = turn.worlds[turn.index];
+        if (w) restoreWorld(w);
+        else freshWorld();
+        turn.worlds[turn.index] = null;
+        turn.needsWorld = false;
+    }
+    const first = !turn.started.includes(turn.index);
+    if (first) turn.started.push(turn.index);
+    currentGameState = GameState.PLAYING;
+    p.ship = null;
+    p.respawnTimer = 0;
+    respawnPlayer(p, first); // later turns start with the usual respawn protection
+    levelUpNotificationTimer = LEVEL_UP_NOTIFICATION_DURATION;
+    updateUI();
+}
+function handleTurnChangeInput(deltaTime) {
+    if (inputHandler.consumeAction('escape') || inputHandler.consumeAction('pause')) {
+        pauseGame(inputHandler.pressedBy('pause') ?? inputHandler.pressedBy('escape'));
+        return;
+    }
+    if (turn.readyDelay > 0) {
+        turn.readyDelay = Math.max(0, turn.readyDelay - deltaTime);
+        inputHandler.clearPending();
+        return;
+    }
+    const fired = inputHandler.consumeSourceEvents().some(e => e.action === 'fire');
+    if (inputHandler.consumeAction('menuSelect') || fired) confirmTurn();
+}
+
+// --- Round end and results ---
+function newAchievementNames(p) {
+    if (!p.achievements || !p.achievementsAtStart) return [];
+    const defs = Object.values(Achievements);
+    return [...p.achievements.unlockedAchievementIds]
+        .filter(id => !p.achievementsAtStart.has(id))
+        .map(id => (defs.find(a => a.id === id) || { name: id }).name);
+}
+function finishMultiplayerRound(result) {
+    for (const p of players) if (p.ship) p.ship.isThrusting = false;
+    audioManager.stopThrustSound();
+    audioManager.stopUfoHum();
+    stopVibration();
+    vibrate('gameOver');
+    players.forEach((p, i) => {
+        // Take Turns: each player's own world level
+        p.level = turn ? (i === turn.index ? level : (turn.worlds[i] ? turn.worlds[i].level : 1)) : level;
+        p.newAchievements = newAchievementNames(p);
+    });
+    lastResults = buildResults({
+        mode, result, players, duration: round ? round.elapsed : 0,
+        level: turn ? null : level, difficulty: selectedDifficulty.id,
+    });
+    // Take Turns plays by single-player rules: every profile gets a normal high-score entry
+    if (mode.leaderboard === 'highScores') {
+        for (const p of players) if (p.profile) checkAndAddHighScore(p.score, p.profile);
+    }
+    saveAllUpgrades();
+    saveMultiplayerRecords(lastResults);
+    if (turn) turn.handover = null;
+    pausedGameExists = false;
+    levelUpNotificationTimer = 0; // the banner owns the centre of the screen
+    roundEndTimer = ROUND_END_SECONDS;
+    currentGameState = GameState.ROUND_END;
+}
+// History for every round; boards and rivalries where the mode keeps them (this device only)
+function saveMultiplayerRecords(results) {
+    try {
+        const pm = persistenceManager;
+        pm.saveJson(MP_KEYS.history, addHistory(pm.loadJson(MP_KEYS.history, isHistory, []), historyEntry(results)));
+        const rows = results.players;
+        if (mode.leaderboard === 'coop') {
+            const entry = { score: results.teamScore, level: results.level, difficulty: results.difficulty, date: results.date,
+                players: rows.map(r => ({ name: r.name, profile: r.profile })) };
+            pm.saveJson(MP_KEYS.boardCoop, addToBoard(pm.loadJson(MP_KEYS.boardCoop, isBoard, []), entry));
+        } else if (mode.leaderboard === 'harvest' && results.outcome === 'win') {
+            const w = rows.find(r => r.winner);
+            if (w) {
+                const entry = { score: w.score, name: w.name, profile: w.profile, date: results.date };
+                pm.saveJson(MP_KEYS.boardHarvest, addToBoard(pm.loadJson(MP_KEYS.boardHarvest, isBoard, []), entry));
+            }
+        }
+        if (mode.kind !== 'coop' && rows.length > 1) {
+            const winners = rows.filter(r => r.winner);
+            const winner = results.outcome === 'win' && winners.length === 1 ? (winners[0].profile || winners[0].name) : null;
+            const rivalry = recordRivalry(pm.loadJson(MP_KEYS.rivalry, isRivalry, {}), mode.id,
+                rows.map(r => ({ name: r.name, profile: r.profile })), winner);
+            pm.saveJson(MP_KEYS.rivalry, rivalry);
+        }
+    } catch (e) {
+        console.error('Saving multiplayer records failed:', e);
+    }
+}
+function openResults() {
+    currentBoss = null;
+    resultsIndex = 0;
+    resultsInputDelay = RESULTS_INPUT_DELAY;
+    currentGameState = GameState.RESULTS;
+    updateUI(); // the HUD line shows player 1 again
+}
+function selectResultsButton(index) {
+    switch (RESULTS_BUTTONS[index]) {
+        case 'Rematch': reopenLobby(); break;
+        case 'Change mode': openModeSelect(); break;
+        default: returnToMenu(); break;
+    }
+}
+function handleResultsInput(deltaTime) {
+    if (resultsInputDelay > 0) {
+        resultsInputDelay = Math.max(0, resultsInputDelay - deltaTime);
+        inputHandler.clearPending();
+        return;
+    }
+    const n = RESULTS_BUTTONS.length;
+    if (inputHandler.consumeAction('menuLeft') || inputHandler.consumeAction('menuUp')) resultsIndex = (resultsIndex - 1 + n) % n;
+    if (inputHandler.consumeAction('menuRight') || inputHandler.consumeAction('menuDown')) resultsIndex = (resultsIndex + 1) % n;
+    if (inputHandler.consumeAction('menuSelect')) { selectResultsButton(resultsIndex); return; }
+    if (inputHandler.consumeAction('escape')) returnToMenu();
+}
+// Round-end banner: the world keeps moving in slow motion, nothing collides
+function updateRoundEnd(deltaTime) {
+    const dt = deltaTime * ROUND_END_SLOWMO;
+    asteroids.forEach(a => { a.updateInfinite(dt); wrapWorldPosition(a); });
+    bullets.forEach(b => { b.update(dt, viewWidth, viewHeight); wrapWorldPosition(b); });
+    bullets = bullets.filter(b => b.isAlive);
+    FloatingTexts.update(dt);
+    Particles.update(dt);
+    ScreenShake.update(dt);
+    roundEndTimer -= deltaTime;
+    if (roundEndTimer <= 0) openResults();
+}
+
+// --- Multiplayer pause ---
+// Anyone can resume; in multiplayer play restarts after a 3 s countdown (single-player: at once)
+function resumeGame() {
+    if (pausedFrom === GameState.TURN_CHANGE) {
+        currentGameState = GameState.TURN_CHANGE;
+        return;
+    }
+    currentGameState = GameState.PLAYING;
+    resumeCountdown = isMultiplayer() ? RESUME_COUNTDOWN : 0;
+}
+function pausedByName() {
+    if (pausedBy === 'system' || pausedBy === null || pausedBy === undefined) return null;
+    if (isTurns()) return players[turn.index].name; // one shared input: whoever is playing
+    const p = players.find(q => q.input && q.input.seat === pausedBy);
+    return p ? p.name : `P${pausedBy + 1}`;
+}
+function selectMultiplayerPauseOption(option) {
+    switch (option) {
+        case 'Resume': resumeGame(); break;
+        case 'Restart round':
+            saveAllUpgrades();
+            startGame(mode.id, lastLobby);
+            break;
+        case 'Change players':
+            saveAllUpgrades();
+            reopenLobby();
+            break;
+        case 'Main menu':
+            saveAllUpgrades();
+            pausedGameExists = false;
+            returnToMenu();
+            break;
+    }
+}
+// Every achievement manager in play (signed-in user first, then other profiles)
+function achievementManagers() {
+    const list = [achievementManager];
+    for (const p of players) if (p.achievements && !list.includes(p.achievements)) list.push(p.achievements);
+    return list;
 }
 
 function openHighScores() {
@@ -1564,9 +2002,38 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         // Shared camera: centre (x, y), top-left of the view (left, top) and zoom
         get camera() { return { x: camera.cx, y: camera.cy, left: camera.x, top: camera.y, zoom: camera.zoom }; },
+        // Asteroids in the current world (position, type, radius)
+        get asteroids() {
+            return asteroids.filter(a => a.isAlive).map(a => ({ x: a.x, y: a.y, velX: a.velX, velY: a.velY, type: a.type, radius: a.radius }));
+        },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
         get tapRegions() { return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })); },
         isPressed(action) { return inputHandler.isPressed(action); },
+        isPressedSeat(action, seat) { return inputHandler.isPressed(action, seat); },
+        // Local multiplayer (read-only copies)
+        get mp() {
+            return {
+                active: isMultiplayer(), modeId: mode.id, pausedBy, pausedFrom, resumeCountdown,
+                roundEndTimer: currentGameState === GameState.ROUND_END ? roundEndTimer : 0,
+                modeSelect: { index: mpModeIndex, rows: mpModeRows().map(r => r.id) },
+                lineup: savedLineup() ? JSON.parse(JSON.stringify(savedLineup())) : null,
+            };
+        },
+        get seats() { return inputHandler.seats.snapshot(); },
+        get lobby() { return lobbySnapshot(); },
+        get turn() {
+            if (!turn) return null;
+            return {
+                index: turn.index, playerId: players[turn.index] ? players[turn.index].id : null,
+                handover: !!turn.handover, readyDelay: turn.readyDelay, started: turn.started.slice(),
+                worlds: turn.worlds.map(w => (w ? { level: w.level, asteroids: w.asteroids.length } : null)),
+            };
+        },
+        get results() {
+            if (!lastResults) return null;
+            return { ...JSON.parse(JSON.stringify(lastResults)), index: resultsIndex, inputDelay: resultsInputDelay,
+                buttons: RESULTS_BUTTONS.slice() };
+        },
     };
 
     console.log(`Starting Game Loop in State: ${currentGameState}`);
@@ -1578,7 +2045,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // Read-only copy of a ship for the test hook
 function shipSnapshot(ship) {
     return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY,
-        isAlive: ship.isAlive, isThrusting: ship.isThrusting, ownerId: ship.ownerId } : null;
+        isAlive: ship.isAlive, isThrusting: ship.isThrusting, isInvulnerable: !!ship.isInvulnerable,
+        ownerId: ship.ownerId } : null;
 }
 
 // Function to load data for a specific user
@@ -1653,6 +2121,16 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     mode = getMode(modeId) || MODES.solo;
     lastLobby = lobby;
     lastRoundResult = null;
+    lastResults = null;
+    roundEndTimer = 0;
+    pausedBy = null;
+    pausedFrom = null;
+    resumeCountdown = 0;
+    // Take Turns: only the active player has a ship; each player's world is parked while the
+    // others play (index: whose turn, worlds: parked worlds, started: players who have flown)
+    turn = mode.kind === 'turns'
+        ? { index: 0, worlds: [], started: [], handover: null, readyDelay: TURN_READY_DELAY, needsWorld: false }
+        : null;
     if (mode.id !== 'solo') withTutorial = false;
     console.log(`Starting New Game (User: ${currentUser}, Mode: ${mode.id}, Difficulty: ${selectedDifficulty.name})`);
     // Fresh player records (score 0, extra-life threshold reset); upgrade: extra starting lives
@@ -1680,7 +2158,8 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     // Initialize camera at center of the world
     camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, cameraView());
 
-    for (const p of players) respawnPlayer(p, true); // Fresh ships; before creating asteroids
+    // Fresh ships; before creating asteroids (Take Turns: player 1's ship appears after "GET READY")
+    if (!turn) for (const p of players) respawnPlayer(p, true);
     tutorial.reset();
     tutorialPending = [];
     tutorialTarget = null;
@@ -1694,9 +2173,12 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     resetUfoSpawnTimer();
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
+    currentGameState = turn ? GameState.TURN_CHANGE : GameState.PLAYING;
     updateUI();
-    currentGameState = GameState.PLAYING;
-    for (const p of players) if (p.achievements) p.achievements.resetSessionStats();
+    for (const p of players) {
+        if (p.achievements) p.achievements.resetSessionStats();
+        p.achievementsAtStart = p.achievements ? new Set(p.achievements.unlockedAchievementIds) : null;
+    }
     pauseMenuSelectionIndex = 0;
     pausedGameExists = false;
 
@@ -1801,7 +2283,11 @@ function setupTouchSupport() {
     });
 }
 
-function pauseGame() {
+// by: the seat that paused (a number), 'system' (tab hidden, controller lost) or null (unknown)
+function pauseGame(by = 'system') {
+    pausedFrom = currentGameState === GameState.TURN_CHANGE ? GameState.TURN_CHANGE : GameState.PLAYING;
+    pausedBy = by;
+    resumeCountdown = 0;
     currentGameState = GameState.PAUSED;
     pauseMenuSelectionIndex = 0;
     audioManager.stopThrustSound();
@@ -1936,13 +2422,15 @@ function updateUI() {
     const creditsElement = document.getElementById('credits');
     const userElement = document.getElementById('user-display'); // Get user display element
 
-    if (scoreElement) scoreElement.textContent = `Score: ${p1().score}`;
-    if (livesElement) livesElement.textContent = `Lives: ${p1().lives}`;
+    const hp = hudPlayer(); // player 1, or whoever's turn it is (Take Turns)
+    if (scoreElement) scoreElement.textContent = `Score: ${hp.score}`;
+    if (livesElement) livesElement.textContent = `Lives: ${hp.lives}`;
     if (levelElement) levelElement.textContent = `Level: ${tutorial.active ? 'Training' : level}`;
-    if (creditsElement) creditsElement.textContent = `Credits: ${ShipUpgrades.currency}`;
+    const credits = hp !== p1() && hp.upgrades ? hp.upgrades.currency : ShipUpgrades.currency;
+    if (creditsElement) creditsElement.textContent = `Credits: ${credits}`;
     // Update user display, show placeholder if no user
     if (userElement) {
-        userElement.textContent = `User: ${currentUser || '---'}`;
+        userElement.textContent = `User: ${hp !== p1() ? hp.name : (currentUser || '---')}`;
         userElement.style.display = (currentGameState === GameState.PROMPT_USER) ? 'none' : 'block'; // Hide in prompt state
     }
 }
@@ -1975,6 +2463,7 @@ let gameOverInputDelay = 0; // Ignore input briefly after game over to avoid acc
 // Forget one-shot inputs queued in a previous screen. Runs right after the frame's update,
 // i.e. at the moment the state changed, so input arriving for the new screen is kept.
 function syncStateTransition() {
+    if (inputHandler) syncSeatMode();
     if (currentGameState === lastInputState) return;
     inputHandler.clearPending();
     if (currentGameState === GameState.PLAYING || lastInputState === GameState.PLAYING) {
@@ -2081,11 +2570,38 @@ function handleInput(deltaTime) {
             navigateRows(visibleRows(settingsRows), () => settingsIndex, (i) => { settingsIndex = i; });
             break;
 
-        case GameState.PLAYING: {
-            if (inputHandler.consumeAction('pause') || inputHandler.consumeAction('escape')) {
-                pauseGame();
+        case GameState.MP_MODE_SELECT:
+            if (inputHandler.consumeAction('escape')) {
+                returnToMenu();
                 break;
             }
+            navigateRows(mpModeRows(), () => mpModeIndex, (i) => { mpModeIndex = i; });
+            break;
+
+        case GameState.LOBBY:
+            if (lobby) handleLobbyInput(deltaTime);
+            else leaveLobby();
+            break;
+
+        case GameState.TURN_CHANGE:
+            if (turn) handleTurnChangeInput(deltaTime);
+            break;
+
+        case GameState.ROUND_END:
+            inputHandler.clearPending(); // the banner can't be skipped
+            break;
+
+        case GameState.RESULTS:
+            handleResultsInput(deltaTime);
+            break;
+
+        case GameState.PLAYING: {
+            const pausePressed = inputHandler.consumeAction('pause');
+            if (pausePressed || inputHandler.consumeAction('escape')) {
+                pauseGame(inputHandler.pressedBy(pausePressed ? 'pause' : 'escape'));
+                break;
+            }
+            if (resumeCountdown > 0) break; // multiplayer resume: 3, 2, 1
             // Training: Enter or controller View skips it
             const skipByEnter = inputHandler.consumeAction('enter');
             const skipByPad = inputHandler.consumeAction('skipTutorial');
@@ -2093,7 +2609,7 @@ function handleInput(deltaTime) {
                 skipTutorial();
                 break;
             }
-            for (const p of players) {
+            for (const p of activePlayers()) {
                 handleShipInput(p, deltaTime);
                 if (currentGameState !== GameState.PLAYING) break; // the last life was lost
             }
@@ -2107,9 +2623,8 @@ function handleInput(deltaTime) {
             const pauseOptions = getPauseMenuOptions();
             if (pauseMenuSelectionIndex >= pauseOptions.length) pauseMenuSelectionIndex = 0;
             if (inputHandler.consumeAction('pause') || inputHandler.consumeAction('escape')) {
-                console.log("Consumed pause/escape (to PLAYING)");
-                currentGameState = GameState.PLAYING;
-                console.log("Game Resumed");
+                console.log("Consumed pause/escape (resume)");
+                resumeGame(); // anyone resumes; multiplayer counts down first
                 break; // Exit switch after resuming
             }
 
@@ -2123,9 +2638,13 @@ function handleInput(deltaTime) {
             if (inputHandler.consumeAction('menuSelect')) {
                 const selection = pauseOptions[pauseMenuSelectionIndex];
                 console.log(`Pause menu selection: ${selection}`);
+                if (isMultiplayer()) {
+                    selectMultiplayerPauseOption(selection);
+                    break;
+                }
                 switch (selection) {
                     case 'Resume':
-                        currentGameState = GameState.PLAYING;
+                        resumeGame();
                         console.log("Game Resumed");
                         break;
                     case 'Restart':
@@ -2260,15 +2779,24 @@ function updateGame(deltaTime) {
     syncTutorialDom();
     inputHandler.endFrame();
     if (currentGameState !== GameState.MENU && currentGameState !== GameState.PROMPT_USER) {
-        achievementManager.updateNotifications(deltaTime);
+        for (const m of achievementManagers()) m.updateNotifications(deltaTime);
+    }
+    if (currentGameState === GameState.ROUND_END) {
+        updateRoundEnd(deltaTime);
+        return;
     }
     if (currentGameState !== GameState.PLAYING) {
+        return;
+    }
+    if (resumeCountdown > 0) {
+        // Multiplayer resume: the world waits for 3, 2, 1
+        resumeCountdown = Math.max(0, resumeCountdown - deltaTime);
         return;
     }
 
     // --- Game Playing Logic ---
 
-    for (const p of players) {
+    for (const p of activePlayers()) {
         if (p.respawnTimer > 0) {
             p.respawnTimer -= deltaTime;
             if (p.respawnTimer <= 0 && p.lives > 0 && currentGameState !== GameState.GAME_OVER) {
@@ -2282,7 +2810,7 @@ function updateGame(deltaTime) {
         return; // No updates if game is over
     }
 
-    for (const p of players) updateShip(p, deltaTime);
+    for (const p of activePlayers()) updateShip(p, deltaTime);
     updateCamera(deltaTime);
 
     // Update asteroids and wrap their positions
@@ -2331,7 +2859,7 @@ function updateGame(deltaTime) {
     powerUps = powerUps.filter(p => p.isAlive);
 
     // Update active power-up timers (per player)
-    for (const p of players) tickPlayerPowerUps(p, deltaTime);
+    for (const p of activePlayers()) tickPlayerPowerUps(p, deltaTime);
 
     // Spawn random power-ups periodically (DDA modifier affects spawn rate; none in training)
     if (!tutorial.active) powerUpSpawnTimer -= deltaTime;
@@ -2345,7 +2873,7 @@ function updateGame(deltaTime) {
     }
 
     // Magnet effect - attract green asteroids toward the magnet holder's ship
-    for (const p of players) applyMagnet(p, deltaTime);
+    for (const p of activePlayers()) applyMagnet(p, deltaTime);
 
     checkCollisions();
 
@@ -2367,17 +2895,17 @@ function updateGame(deltaTime) {
             levelUp();
         }
 
-        for (const p of players) checkPlayerAchievements(p);
+        for (const p of activePlayers()) checkPlayerAchievements(p);
 
-        // Evaluate performance (team-wide) and adjust difficulty
-        if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(players));
+        // Evaluate performance (team-wide; Take Turns: the active player's world) and adjust difficulty
+        if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(activePlayers()));
 
         // Round timer and the mode's end conditions
         updateRound(deltaTime);
     }
 
     // Update visual effects systems
-    for (const p of players) showComboLost(p, p.combo.update(deltaTime));
+    for (const p of activePlayers()) showComboLost(p, p.combo.update(deltaTime));
     FloatingTexts.update(deltaTime);
     Particles.update(deltaTime);
     ScreenShake.update(deltaTime);
@@ -2389,6 +2917,12 @@ function updateGame(deltaTime) {
         if (currentBoss.phase === Boss.PHASES.FIGHTING) {
             wrapWorldPosition(currentBoss);
         }
+    }
+
+    // Take Turns: after a lost life the next player takes over once the explosion has played
+    if (turn && turn.handover && currentGameState === GameState.PLAYING) {
+        turn.handover.timer -= deltaTime;
+        if (turn.handover.timer <= 0) handOverTurn();
     }
 
     updateUI();
@@ -2469,7 +3003,8 @@ function renderGame() {
     // the camera translate composes on top of it.
     ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
     // The starfield's gradient covers the whole view while playing/paused
-    if (currentGameState !== GameState.PLAYING && currentGameState !== GameState.PAUSED) {
+    if (currentGameState !== GameState.PLAYING && currentGameState !== GameState.PAUSED &&
+        currentGameState !== GameState.ROUND_END) {
         ctx.fillStyle = 'black';
         ctx.fillRect(0, 0, viewWidth, viewHeight);
     }
@@ -2544,6 +3079,7 @@ function renderGame() {
             break;
 
         case GameState.PLAYING:
+        case GameState.ROUND_END:
             // Draw starfield background (parallax effect)
             drawStarfield();
 
@@ -2576,7 +3112,7 @@ function renderGame() {
 
             // Draw HUD elements (screen-space)
             drawRadar();
-            drawActivePowerUps();
+            drawActivePowerUps(hudPlayer());
 
             // Draw remaining asteroids count
             ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
@@ -2593,7 +3129,7 @@ function renderGame() {
             }
 
             // Draw combo indicator (player 1's in single-player)
-            drawComboIndicator(p1());
+            drawComboIndicator(hudPlayer());
 
             // Draw floating texts (screen-space)
             FloatingTexts.draw(ctx);
@@ -2610,6 +3146,24 @@ function renderGame() {
                 ctx.globalAlpha = 1;
             }
 
+            drawMultiplayerOverlay(); // whose turn, resume countdown, round-end banner
+            break;
+
+        case GameState.MP_MODE_SELECT:
+            drawModeSelect();
+            break;
+
+        case GameState.LOBBY:
+            if (lobby && lobby.kind === 'seats') drawSeatLobby();
+            else if (lobby) drawCountLobby();
+            break;
+
+        case GameState.TURN_CHANGE:
+            drawTurnChange();
+            break;
+
+        case GameState.RESULTS:
+            drawResults();
             break;
 
         case GameState.PAUSED:
@@ -2902,9 +3456,9 @@ function gameLoop(timestamp = 0) {
 function updateMusic() {
     try {
         musicMood = selectMood({
-            state: currentGameState,
+            state: currentGameState === GameState.ROUND_END ? GameState.GAME_OVER : currentGameState,
             bossActive: !!(currentBoss && currentBoss.isAlive),
-            lives: p1().lives,
+            lives: hudPlayer().lives,
             tutorialActive: tutorial.active,
         });
     } catch (e) { /* keep the previous mood */ }
@@ -3127,7 +3681,7 @@ function checkShipCollisions(p) {
 
 function checkCollisions() {
     let shipDestroyed = false;
-    for (const p of players) {
+    for (const p of activePlayers()) {
         if (checkShipCollisions(p)) shipDestroyed = true;
     }
     if (shipDestroyed) return;
@@ -3293,7 +3847,7 @@ function checkCollisions() {
 
     // Boss bullets are added to the main bullets array in boss.update, so the ship-bullet
     // checks above already cover them. Last: ships crashing into the boss body.
-    for (const p of players) checkShipBossCollision(p);
+    for (const p of activePlayers()) checkShipBossCollision(p);
 }
 
 // One ship against the boss body (elliptical saucer shape)
@@ -3364,6 +3918,7 @@ function handlePlayerDeath(p, forced = false) {
         p.stats.deaths++;
         updateUI();
         const decision = mode.hooks.onDeath(round, p, players) || {};
+        const handOver = isTurns() && decision.turnChange && Number.isInteger(decision.nextIndex);
         if (decision.out || (!unlimitedLives && p.lives <= 0)) {
             // Out of lives: the round may be over (single-player: game over)
             p.out = true;
@@ -3373,7 +3928,14 @@ function handlePlayerDeath(p, forced = false) {
             } else {
                 vibrate('lifeLost');
                 p.ship = null; // out until revived or the round ends
+                if (handOver) beginHandover(decision.nextIndex); // Take Turns: the next player's turn
             }
+        } else if (handOver) {
+            // Take Turns: a life lost hands the device to the next player with lives left
+            vibrate('lifeLost');
+            p.ship = null;
+            p.respawnTimer = 0;
+            beginHandover(decision.nextIndex);
         } else {
             vibrate('lifeLost');
             const delay = mode.respawn.delay ?? RESPAWN_DELAY;
@@ -3388,7 +3950,7 @@ function handlePlayerDeath(p, forced = false) {
 // starting together line up around the centre; later respawns follow the mode's placement.
 function respawnPoint(p, isInitialSpawn) {
     const centre = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
-    if (players.length === 1) return centre;
+    if (!simultaneous()) return centre; // single-player and Take Turns: one ship per world
     if (isInitialSpawn) {
         return { x: centre.x + (p.slot - (players.length - 1) / 2) * 80, y: centre.y };
     }
@@ -3439,7 +4001,7 @@ function respawnPlayer(p, isInitialSpawn = false) {
          }
 
          // Reset camera to player position (single-player; a shared camera keeps framing everyone)
-         if (players.length === 1) camera.reset(centerX, centerY, cameraView());
+         if (!simultaneous()) camera.reset(centerX, centerY, cameraView());
     } else {
         console.log("Respawning Player - Conditions NOT Met");
     }
@@ -3490,14 +4052,18 @@ function levelUp() {
     resetUfoSpawnTimer();
 
     updateUI();
-    for (const p of players) checkPlayerAchievements(p);
+    for (const p of activePlayers()) checkPlayerAchievements(p);
 }
 
-// The mode says the round is over. Single-player (and, until the results screen exists, every
-// mode) goes to the existing Game Over screen.
+// The mode says the round is over. Single-player goes to the Game Over screen; multiplayer
+// saves credits and records, shows the round-end banner and then the Results screen.
 function endRound(result) {
     lastRoundResult = result;
-    gameOver();
+    if (!isMultiplayer()) {
+        gameOver();
+        return;
+    }
+    finishMultiplayerRound(result);
 }
 
 // Round clock and mode checks, once per frame while playing (not in training)
@@ -3542,13 +4108,13 @@ function gameOver() {
     currentBoss = null;
 }
 
-function checkAndAddHighScore(currentScore) {
-    if (!persistenceManager || !currentUser || currentScore <= 0) return;
-    const playerName = currentUser.substring(0, 3).toUpperCase();
+function checkAndAddHighScore(currentScore, username = currentUser) {
+    if (!persistenceManager || !username || currentScore <= 0) return;
+    const playerName = username.substring(0, 3).toUpperCase();
     const newEntry = { name: playerName, score: currentScore }; // Note: name here is just for display if needed, user is implicit
 
     // Load current user's scores for comparison
-    let currentUserScores = persistenceManager.loadHighScores(currentUser);
+    let currentUserScores = persistenceManager.loadHighScores(username);
 
     let insertIndex = currentUserScores.findIndex(entry => currentScore > entry.score);
     if (insertIndex === -1 && currentUserScores.length < MAX_HIGH_SCORES) {
@@ -3556,15 +4122,15 @@ function checkAndAddHighScore(currentScore) {
     }
 
     if (insertIndex !== -1) {
-        console.log(`New high score for ${currentUser}: ${playerName} - ${currentScore}`);
+        console.log(`New high score for ${username}: ${playerName} - ${currentScore}`);
         currentUserScores.splice(insertIndex, 0, newEntry);
         if (currentUserScores.length > MAX_HIGH_SCORES) {
             currentUserScores.pop();
         }
         // Save the updated list for the current user
-        persistenceManager.saveHighScores(currentUser, currentUserScores);
+        persistenceManager.saveHighScores(username, currentUserScores);
         // Update the local copy used by the game state if needed immediately
-        highScores = currentUserScores;
+        if (username === currentUser) highScores = currentUserScores;
     }
 }
 
@@ -3870,7 +4436,7 @@ function drawUpgradesMenu() {
 }
 
 function drawAchievementNotifications() {
-    const notifications = achievementManager.getActiveNotifications();
+    const notifications = achievementManagers().flatMap(m => m.getActiveNotifications());
     if (notifications.length > 0) {
         const startY = viewHeight * 0.85;
         const lineHeight = 30;
@@ -3901,7 +4467,7 @@ function cameraCentre() {
 // before; with more players the boss hovers around the camera centre and rotates its attacks
 // between the living ships (Boss.update accepts both).
 function bossTarget() {
-    if (players.length === 1) return p1().ship;
+    if (!simultaneous()) return hudPlayer().ship;
     return { anchor: cameraCentre(), ships: livingPlayers(players).map(p => p.ship) };
 }
 
@@ -3942,6 +4508,13 @@ function drawPauseMenu() {
     ctx.font = '36px Arial';
     const titleY = viewHeight * 0.35;
     ctx.fillText("PAUSED", viewWidth / 2, titleY);
+    const byName = isMultiplayer() ? pausedByName() : null;
+    if (byName) {
+        ctx.font = '16px Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText(`by ${byName}`, viewWidth / 2, titleY + 24);
+        ctx.fillStyle = 'white';
+    }
 
     ctx.font = '24px Arial';
     const pauseStartY = titleY + 60;
@@ -3960,6 +4533,426 @@ function drawPauseMenu() {
     ctx.fillStyle = 'lightgray';
     ctx.fillText(inputHint("(Press P or Esc to Resume)", "(Tap an option)",
         () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Resume`), viewWidth / 2, viewHeight * 0.75 - 20);
+}
+
+// --- Multiplayer screens (canvas) ---
+
+// Small ship icon in a player's colour (lobby cards, hand-over screen, results)
+function drawShipIcon(x, y, size, colour, rotation = -Math.PI / 2) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+    ctx.strokeStyle = colour;
+    ctx.fillStyle = colour;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.7, -size * 0.6);
+    ctx.lineTo(-size * 0.4, 0);
+    ctx.lineTo(-size * 0.7, size * 0.6);
+    ctx.closePath();
+    ctx.globalAlpha = 0.35;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawScreenTitle(title, subtitle = null) {
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = '36px Arial';
+    const y = viewHeight * 0.12;
+    ctx.fillText(title, viewWidth / 2, y);
+    if (subtitle) {
+        ctx.font = '16px Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText(subtitle, viewWidth / 2, y + 28);
+    }
+    return y + (subtitle ? 50 : 30);
+}
+
+function drawHintLine(text, y = viewHeight - 20) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#888888';
+    ctx.fillText(text, viewWidth / 2, y);
+}
+
+// Mode select: one box per playable mode (name + two lines of rules), then Back
+function drawModeSelect() {
+    const top = drawScreenTitle('MULTIPLAYER', 'Choose a mode');
+    const rows = mpModeRows();
+    if (mpModeIndex >= rows.length) mpModeIndex = 0;
+    const w = Math.min(520, viewWidth - 60);
+    const x = (viewWidth - w) / 2;
+    let y = top + 10;
+    rows.forEach((row, i) => {
+        const selected = i === mpModeIndex;
+        const isMode = row.id !== 'back';
+        const h = isMode ? 96 : 48;
+        drawButtonBox(x, y, w, h, '', selected);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
+        ctx.font = 'bold 24px Arial';
+        if (isMode) {
+            ctx.fillText(row.label(), x + w / 2, y + 34);
+            ctx.font = '15px Arial';
+            ctx.fillStyle = '#CCCCCC';
+            (MP_MODE_INFO[row.id] || []).forEach((line, k) => ctx.fillText(line, x + w / 2, y + 60 + k * 20));
+        } else {
+            ctx.font = 'bold 20px Arial';
+            ctx.fillText(row.label(), x + w / 2, y + 31);
+        }
+        addRowTapRegion(x, y, w, h, row, i, (k) => { mpModeIndex = k; });
+        y += h + 14;
+    });
+    drawHintLine(inputHint('UP/DOWN to choose, ENTER to select, ESC to go back', 'Tap a mode',
+        () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`));
+}
+
+// Controller glyph once a controller is known, else the Xbox letter (Ⓐ, Ⓑ)
+function lobbyPadGlyph(button, letter) {
+    return inputHandler.gamepadInfo().connected ? padGlyph(button) : CIRCLED_LETTERS[letter];
+}
+const SOURCE_LABELS = {
+    kbLeft: 'Keys: W A S D · SPACE',
+    kbRight: 'Keys: ← ↑ → ↓ · ENTER',
+};
+function sourceLabel(source) {
+    if (SOURCE_LABELS[source]) return SOURCE_LABELS[source];
+    const m = /^pad:(\d+)$/.exec(source || '');
+    if (m) return `Controller ${Number(m[1]) + 1}`;
+    if (source && source.startsWith('touch:')) return source === 'touch:a' ? 'Touch left' : 'Touch right';
+    return '';
+}
+
+// Seat lobby: a 2 x 2 grid of cards, one per seat (§10.2)
+function drawSeatLobby() {
+    const m = getMode(lobbyModeId);
+    const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', 'Each player presses FIRE on their own keys or controller');
+    const gap = 12;
+    const cols = 2;
+    const w = Math.min(300, (viewWidth - 40 - gap) / cols);
+    const h = Math.min(170, (viewHeight - top - 150 - gap) / 2);
+    const x0 = (viewWidth - (w * cols + gap)) / 2;
+    const snapshot = inputHandler.seats.snapshot().seats;
+    for (let seat = 0; seat < 4; seat++) {
+        const x = x0 + (seat % cols) * (w + gap);
+        const y = top + Math.floor(seat / cols) * (h + gap);
+        drawLobbyCard(seat, x, y, w, h, lobby.cards[seat], snapshot[seat]);
+    }
+    const infoY = top + 2 * (h + gap) + 24;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const joined = joinedSeats(lobby).length;
+    if (lobby.countdown !== null) {
+        ctx.font = 'bold 30px Arial';
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(`Starting in ${Math.ceil(lobby.countdown)}`, viewWidth / 2, infoY);
+    } else {
+        ctx.font = '18px Arial';
+        ctx.fillStyle = '#FFFFFF';
+        const text = joined < lobby.min ? `Waiting for players (${joined}/${lobby.min})`
+            : canStart(lobby) ? 'Get ready...' : 'Press FIRE again when ready';
+        ctx.fillText(text, viewWidth / 2, infoY);
+    }
+    if (lobbyExitNotice > 0) {
+        ctx.font = 'bold 16px Arial';
+        ctx.fillStyle = '#FF9F1C';
+        ctx.fillText('Players have joined: press Esc again to leave', viewWidth / 2, infoY + 26);
+    }
+    // Pass-and-play instead (touch, mouse)
+    const bw = Math.min(360, viewWidth - 60);
+    const bx = (viewWidth - bw) / 2;
+    const by = viewHeight - 88;
+    drawButtonBox(bx, by, bw, 36, 'Pass one device instead ▸', false, 'bold 16px Arial');
+    addTapRegion(bx, by, bw, 36, () => openLobby(lobbyModeId, { kind: 'count' }));
+    drawHintLine('Fire: join / ready   ↓ or S: leave   ← →: colour   ↑: name   Esc: back', viewHeight - 30);
+    drawHintLine(`Controllers: ${lobbyPadGlyph(GP.A, 'A')} join / ready   ${lobbyPadGlyph(GP.B, 'B')} leave   D-pad colour and name`, viewHeight - 12);
+}
+
+function drawLobbyCard(seat, x, y, w, h, card, seatInfo) {
+    const colour = seatInfo ? seatColour(seatInfo.colour) : '#555555';
+    ctx.save();
+    ctx.fillStyle = card ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.03)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = card ? colour : 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = card && card.ready ? 4 : 2;
+    if (!card) ctx.setLineDash([6, 6]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = card ? colour : '#777777';
+    ctx.font = 'bold 26px Arial';
+    ctx.fillText(`P${seat + 1}`, x + 12, y + 32);
+    if (card) {
+        drawShipIcon(x + w - 30, y + 26, 14, colour);
+        ctx.font = 'bold 20px Arial';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(card.name, x + 12, y + 62);
+        ctx.font = '13px Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText(sourceLabel(seatInfo && seatInfo.source), x + 12, y + 84);
+        // Key-test lights: thrust, left, right, fire
+        const lights = [['thrust', '▲'], ['rotateLeft', '◀'], ['rotateRight', '▶'], ['fire', '●']];
+        lights.forEach(([action, glyph], i) => {
+            const on = inputHandler.isPressed(action, seat);
+            const lx = x + 22 + i * 30;
+            const ly = y + h - 58;
+            ctx.beginPath();
+            ctx.arc(lx, ly, 10, 0, Math.PI * 2);
+            ctx.fillStyle = on ? colour : 'rgba(255, 255, 255, 0.1)';
+            ctx.fill();
+            ctx.fillStyle = on ? '#000000' : '#888888';
+            ctx.font = '11px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(glyph, lx, ly + 1);
+        });
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        ctx.font = 'bold 16px Arial';
+        ctx.fillStyle = card.ready ? '#00FF88' : '#FFD700';
+        ctx.fillText(card.ready ? 'READY' : 'Joined – FIRE when ready', x + 12, y + h - 18);
+    } else {
+        ctx.font = '16px Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText('Press FIRE to join', x + 12, y + 62);
+        ctx.font = '12px Arial';
+        ctx.fillStyle = '#777777';
+        ctx.fillText(`Space · Enter · ${lobbyPadGlyph(GP.A, 'A')}`, x + 12, y + 84);
+    }
+    ctx.restore();
+}
+
+// Pass-and-play lobby: how many players, their names, Start (one shared input; works on touch)
+function drawCountLobby() {
+    const m = getMode(lobbyModeId);
+    const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', 'How many players? Pass the device when it says GET READY');
+    const rows = countLobbyRows();
+    if (lobbyIndex >= rows.length) lobbyIndex = 0;
+    const listStartY = top + 30;
+    const lineHeight = Math.min(52, (viewHeight - 70 - listStartY) / rows.length);
+    const x = viewWidth * 0.12;
+    const w = viewWidth * 0.76;
+    rows.forEach((row, index) => {
+        const selected = index === lobbyIndex;
+        const y = listStartY + index * lineHeight;
+        const rowTop = y - lineHeight * 0.62;
+        const h = lineHeight - 6;
+        if (selected) {
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+            ctx.fillRect(x, rowTop, w, h);
+        }
+        ctx.textBaseline = 'alphabetic';
+        ctx.font = 'bold 20px Arial';
+        const nameRow = /^name\d$/.test(row.id);
+        const colour = nameRow ? seatColour(Number(row.id.slice(4)) - 1) : null;
+        ctx.fillStyle = selected ? '#FFFF00' : (colour || '#FFFFFF');
+        if (rowHasValue(row)) {
+            ctx.textAlign = 'left';
+            ctx.fillText(row.label(), x + 15, y);
+            ctx.textAlign = 'right';
+            ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
+            ctx.fillText(`◂  ${rowValue(row)}  ▸`, x + w - 15, y);
+        } else {
+            ctx.textAlign = 'center';
+            ctx.fillText(row.id === 'start' ? '▶ Start' : row.label(), viewWidth / 2, y);
+        }
+        addRowTapRegion(x, rowTop, w, h, row, index, (i) => { lobbyIndex = i; });
+    });
+    drawHintLine(inputHint('UP/DOWN to choose, LEFT/RIGHT to change, ENTER to select, ESC to go back',
+        'Tap the left or right side of a row to change it',
+        () => `◂ ▸ Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`), viewHeight - 24);
+}
+
+// Take Turns hand-over: "PLAYER 2 – GET READY" (fire, tap or Ⓐ after 1 s)
+function drawTurnChange() {
+    const p = players[turn.index];
+    const cx = viewWidth / 2;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    drawShipIcon(cx, viewHeight * 0.2, 26, p.colour);
+    ctx.fillStyle = p.colour;
+    ctx.font = 'bold 44px Arial';
+    ctx.fillText(`PLAYER ${turn.index + 1} – GET READY`, cx, viewHeight * 0.33, viewWidth - 30);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 30px Arial';
+    ctx.fillText(p.name, cx, viewHeight * 0.33 + 44);
+    const w = turn.worlds[turn.index];
+    const lvl = turn.needsWorld ? (w ? w.level : 1) : level;
+    ctx.font = '20px Arial';
+    ctx.fillStyle = '#CCCCCC';
+    ctx.fillText(`Score ${p.score}   Lives ${p.lives}   Level ${lvl}`, cx, viewHeight * 0.33 + 80);
+
+    // Everyone's standing
+    ctx.font = '16px Arial';
+    players.forEach((q, i) => {
+        const y = viewHeight * 0.58 + i * 24;
+        ctx.fillStyle = i === turn.index ? q.colour : '#888888';
+        const status = q.out ? 'OUT' : `${q.lives} ${q.lives === 1 ? 'life' : 'lives'}`;
+        ctx.fillText(`P${i + 1} ${q.name}   ${q.score}   ${status}`, cx, y);
+    });
+
+    ctx.font = 'bold 20px Arial';
+    if (turn.readyDelay > 0) {
+        ctx.fillStyle = '#666666';
+        ctx.fillText('Pass the device...', cx, viewHeight * 0.88);
+    } else {
+        ctx.fillStyle = '#FFD700';
+        ctx.globalAlpha = 0.65 + 0.35 * Math.sin(Date.now() / 250);
+        ctx.fillText(inputHint('Press FIRE or Enter to start', 'Tap to start', () => `Press ${padGlyph(GP.A)} to start`),
+            cx, viewHeight * 0.88);
+        ctx.globalAlpha = 1;
+    }
+    addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
+}
+
+// Over the playing field: whose turn (Take Turns), the resume countdown, the round-end banner
+function drawMultiplayerOverlay() {
+    if (!isMultiplayer()) return;
+    ctx.save();
+    if (isTurns() && currentGameState === GameState.PLAYING) {
+        const p = players[turn.index];
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'alphabetic';
+        ctx.font = 'bold 16px Arial';
+        ctx.fillStyle = p.colour;
+        ctx.fillText(`P${turn.index + 1} ${p.name}`, viewWidth - 10, viewHeight - 10);
+    }
+    if (resumeCountdown > 0 && currentGameState === GameState.PLAYING) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        ctx.fillRect(0, 0, viewWidth, viewHeight);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 96px Arial';
+        ctx.fillText(String(Math.ceil(resumeCountdown)), viewWidth / 2, viewHeight / 2);
+        ctx.font = '20px Arial';
+        ctx.fillText('Get ready', viewWidth / 2, viewHeight / 2 + 70);
+    }
+    if (currentGameState === GameState.ROUND_END) {
+        const h = 120;
+        const y = viewHeight / 2 - h / 2;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, y, viewWidth, h);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 40px Arial';
+        ctx.fillText('ROUND OVER', viewWidth / 2, y + 42);
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 26px Arial';
+        ctx.fillText(resultBanner(lastResults), viewWidth / 2, y + 88);
+    }
+    ctx.restore();
+}
+
+// Results (§11): banner, one column per player (ranked), highlights, Rematch / Change mode / Main menu
+function drawResults() {
+    const r = lastResults;
+    if (!r) return;
+    const mins = Math.floor(r.duration / 60);
+    const secs = String(Math.floor(r.duration % 60)).padStart(2, '0');
+    const top = drawScreenTitle(resultBanner(r), `${r.modeName} · ${mins}:${secs}`);
+    const rows = r.players;
+    const labelW = Math.min(150, viewWidth * 0.24);
+    const left = 16 + labelW;
+    const colW = (viewWidth - left - 16) / Math.max(1, rows.length);
+    const fields = [
+        ['Score', (p) => p.score],
+        ...(r.kind === 'turns' ? [['Level', (p) => p.level ?? '-']] : []),
+        ['Greens', (p) => p.greens],
+        ['Rocks shot', (p) => p.redsShot],
+        ['UFOs', (p) => p.ufos],
+        ['Deaths', (p) => p.deaths],
+        ['Best combo', (p) => p.bestCombo],
+        ['Accuracy', (p) => `${Math.round(p.accuracy * 100)}%`],
+        ['Credits', (p) => (p.profile ? `+${p.credits}` : '-')],
+    ];
+    const lineH = Math.min(28, (viewHeight * 0.52) / (fields.length + 2));
+    const headY = top + 10;
+    ctx.textBaseline = 'alphabetic';
+    rows.forEach((p, i) => {
+        const cx = left + colW * i + colW / 2;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = p.winner ? '#FFD700' : '#AAAAAA';
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(p.winner ? 'WINNER' : `#${i + 1}`, cx, headY);
+        ctx.fillStyle = p.colour || '#FFFFFF';
+        ctx.font = 'bold 18px Arial';
+        ctx.fillText(p.name, cx, headY + 22, colW - 6);
+        fields.forEach(([, get], k) => {
+            ctx.fillStyle = k === 0 ? '#FFFFFF' : '#DDDDDD';
+            ctx.font = k === 0 ? 'bold 18px Arial' : '16px Arial';
+            ctx.fillText(String(get(p)), cx, headY + 22 + (k + 1) * lineH, colW - 6);
+        });
+    });
+    ctx.textAlign = 'left';
+    ctx.font = '15px Arial';
+    ctx.fillStyle = '#999999';
+    fields.forEach(([label], k) => ctx.fillText(label, 16, headY + 22 + (k + 1) * lineH));
+
+    // Highlights and new achievements
+    let y = headY + 22 + (fields.length + 1) * lineH + 8;
+    ctx.textAlign = 'center';
+    ctx.font = '15px Arial';
+    const extra = [...r.highlights];
+    rows.forEach(p => { if (p.newAchievements.length) extra.push(`${p.name}: ${p.newAchievements.join(', ')}`); });
+    extra.slice(0, 4).forEach(line => {
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(line, viewWidth / 2, y, viewWidth - 30);
+        y += 20;
+    });
+
+    // Buttons
+    const n = RESULTS_BUTTONS.length;
+    const gap = 10;
+    const bw = Math.min(190, (viewWidth - 40 - gap * (n - 1)) / n);
+    const bh = 48;
+    const bx0 = (viewWidth - (bw * n + gap * (n - 1))) / 2;
+    const by = viewHeight - 90;
+    const waiting = resultsInputDelay > 0;
+    RESULTS_BUTTONS.forEach((label, i) => {
+        const bx = bx0 + i * (bw + gap);
+        ctx.globalAlpha = waiting ? 0.4 : 1;
+        drawButtonBox(bx, by, bw, bh, label, i === resultsIndex, 'bold 18px Arial');
+        ctx.globalAlpha = 1;
+        addTapRegion(bx, by, bw, bh, () => {
+            resultsIndex = i;
+            inputHandler.triggerAction('menuSelect');
+        });
+    });
+    drawHintLine(inputHint('LEFT/RIGHT to choose, ENTER to select', 'Tap a button',
+        () => `◂ ▸ Choose   ${padGlyph(GP.A)} Select`), viewHeight - 18);
+}
+
+// Read-only lobby copy for the test hook
+function lobbySnapshot() {
+    if (!lobby) return null;
+    if (lobby.kind === 'count') {
+        return {
+            kind: 'count', modeId: lobbyModeId, count: lobby.count, index: lobbyIndex,
+            names: lobby.names.slice(0, lobby.count).map(n => ({ ...n })),
+            rows: countLobbyRows().map(r => r.id),
+        };
+    }
+    const seats = inputHandler.seats.snapshot().seats;
+    return {
+        kind: 'seats', modeId: lobbyModeId, countdown: lobby.countdown, exitNotice: lobbyExitNotice,
+        min: lobby.min, max: lobby.max, joined: joinedSeats(lobby).length, canStart: canStart(lobby),
+        cards: lobby.cards.map((c, seat) => (c ? {
+            seat, name: c.name, profile: c.profile, ready: c.ready,
+            source: seats[seat] ? seats[seat].source : null,
+            colour: seats[seat] ? seats[seat].colour : null,
+            colourHex: seats[seat] ? seatColour(seats[seat].colour) : null,
+        } : null)),
+    };
 }
 
 // Small saucer icon matching UFO.draw (Help screen)
