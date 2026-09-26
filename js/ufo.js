@@ -74,8 +74,7 @@ export class UFO extends Entity {
         // Find nearby green asteroids
         const greenAsteroids = asteroids.filter(a => a.isAlive && a.isGreen && a.isGreen());
         const nearbyGreenAsteroids = greenAsteroids.filter(a => {
-            const dx = a.x - this.x;
-            const dy = a.y - this.y;
+            const { dx, dy } = Entity.wrappedDelta(this.x, this.y, a.x, a.y);
             return Math.sqrt(dx * dx + dy * dy) < 400; // Only consider nearby green asteroids
         });
 
@@ -94,7 +93,9 @@ export class UFO extends Entity {
         console.log(`UFO Firing at ${targetType}!`);
 
         // Calculate base angle towards target
-        const angleToTarget = Math.atan2(target.y - this.y, target.x - this.x);
+        // (use shortest wrapped delta so UFOs aim across the world seam correctly)
+        const toTarget = Entity.wrappedDelta(this.x, this.y, target.x, target.y);
+        const angleToTarget = Math.atan2(toTarget.dy, toTarget.dx);
 
         // Add inaccuracy
         const angleOffset = (1 - accuracy) * Math.PI;
@@ -116,8 +117,13 @@ export class UFO extends Entity {
 
     // Check if UFO is visible on screen given camera position
     isVisibleOnScreen(cameraX, cameraY, canvasWidth, canvasHeight) {
-        const screenX = this.x - cameraX;
-        const screenY = this.y - cameraY;
+        // Measure from the camera center using the shortest wrapped delta, since the
+        // camera may sit outside [0, world) while the UFO is drawn at a wrapped copy
+        const centerX = cameraX + canvasWidth / 2;
+        const centerY = cameraY + canvasHeight / 2;
+        const { dx, dy } = Entity.wrappedDelta(centerX, centerY, this.x, this.y);
+        const screenX = dx + canvasWidth / 2;
+        const screenY = dy + canvasHeight / 2;
         const margin = this.radius * 2; // Small margin
 
         return screenX > -margin &&

@@ -1,10 +1,29 @@
 export class AudioManager {
     constructor() {
-        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
         this.sounds = {}; // Store loaded audio buffers
         this.isMuted = false;
-        this.masterGain = this.audioContext.createGain();
-        this.masterGain.connect(this.audioContext.destination);
+        this.audioContext = null;
+        this.masterGain = null;
+        this.thrustSoundSource = null; // To control the looping thrust sound
+        this.ufoHumSource = null; // To control the looping UFO hum
+
+        // Web Audio may be missing (old browsers) or throw; the game must still run silently
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                this.audioContext = new AudioCtx();
+                this.masterGain = this.audioContext.createGain();
+                this.masterGain.connect(this.audioContext.destination);
+            }
+        } catch (e) {
+            console.error("Web Audio not available:", e);
+            this.audioContext = null;
+            this.masterGain = null;
+        }
+        if (!this.audioContext) {
+            console.warn("Audio disabled (no AudioContext).");
+            return;
+        }
 
         // List of sound files to load (paths relative to index.html)
         // NOTE: Using .mp3 extension now.
@@ -22,10 +41,64 @@ export class AudioManager {
             // extraLife: 'assets/audio/extra_life.mp3', // Add later
         };
 
-        this.thrustSoundSource = null; // To control the looping thrust sound
-        this.ufoHumSource = null; // To control the looping UFO hum
+        this.installUnlockHandlers();
+        this.installVisibilityHandler();
 
-        this.loadSounds();
+        this.loadSounds().catch(e => console.error("Error loading sounds:", e));
+    }
+
+    // iOS/Safari only allow starting audio from inside a user gesture handler.
+    // Resume the context (and play a silent buffer for older iOS) on the first
+    // touch/click/key, and keep listening until the context is actually running.
+    installUnlockHandlers() {
+        const events = ['touchstart', 'touchend', 'pointerdown', 'mousedown', 'keydown'];
+        const unlock = () => {
+            if (!this.audioContext) return;
+            this.resumeContext();
+            try {
+                const buffer = this.audioContext.createBuffer(1, 1, 22050);
+                const source = this.audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(this.audioContext.destination);
+                source.start(0);
+            } catch (e) {
+                // Ignore - silent unlock buffer is best-effort
+            }
+            if (this.audioContext.state === 'running') {
+                events.forEach(evt => document.removeEventListener(evt, unlock, true));
+            }
+        };
+        events.forEach(evt => document.addEventListener(evt, unlock, true));
+    }
+
+    // Looping sources (thrust, UFO hum) keep playing when the tab is hidden because
+    // requestAnimationFrame stops and the game loop never stops them. Suspend audio while hidden.
+    installVisibilityHandler() {
+        document.addEventListener('visibilitychange', () => {
+            if (!this.audioContext) return;
+            try {
+                if (document.hidden) {
+                    if (this.audioContext.state === 'running') {
+                        const p = this.audioContext.suspend();
+                        if (p && p.catch) p.catch(() => {});
+                    }
+                } else {
+                    this.resumeContext();
+                }
+            } catch (e) {
+                console.error("Error handling audio visibility change:", e);
+            }
+        });
+    }
+
+    // decodeAudioData is callback-only in older Safari (webkitAudioContext)
+    decodeAudio(arrayBuffer) {
+        return new Promise((resolve, reject) => {
+            const result = this.audioContext.decodeAudioData(arrayBuffer, resolve, reject);
+            if (result && typeof result.then === 'function') {
+                result.then(resolve, reject);
+            }
+        });
     }
 
     async loadSounds() {
@@ -37,7 +110,7 @@ export class AudioManager {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 const arrayBuffer = await response.arrayBuffer();
-                const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+                const audioBuffer = await this.decodeAudio(arrayBuffer);
                 this.sounds[key] = audioBuffer;
                 console.log(`Loaded sound: ${key}`);
             } catch (error) {
@@ -50,7 +123,8 @@ export class AudioManager {
     }
 
     play(soundName, loop = false, volume = 1.0) {
-        if (this.isMuted || this.audioContext.state === 'suspended') {
+        // 'suspended' (autoplay policy) or 'interrupted' (iOS, e.g. phone call) cannot play
+        if (!this.audioContext || this.isMuted || this.audioContext.state !== 'running') {
             return null;
         }
 
@@ -80,7 +154,7 @@ export class AudioManager {
 
     // Procedural collect sound - a pleasant rising chime
     playCollectSound() {
-        if (this.isMuted) return null;
+        if (!this.audioContext || this.isMuted) return null;
 
         const now = this.audioContext.currentTime;
         const oscillator = this.audioContext.createOscillator();
@@ -113,7 +187,11 @@ export class AudioManager {
 
     stopThrustSound() {
         if (this.thrustSoundSource) {
-            this.thrustSoundSource.stop(0);
+            try {
+                this.thrustSoundSource.stop(0);
+            } catch (e) {
+                // Already stopped
+            }
             this.thrustSoundSource = null;
         }
     }
@@ -127,7 +205,11 @@ export class AudioManager {
 
     stopUfoHum() {
         if (this.ufoHumSource) {
-            this.ufoHumSource.stop(0);
+            try {
+                this.ufoHumSource.stop(0);
+            } catch (e) {
+                // Already stopped
+            }
             this.ufoHumSource = null;
         }
     }
@@ -137,9 +219,10 @@ export class AudioManager {
         let soundName = 'asteroidExplodeS'; // Default to small
         // Check sizeInfo exists and has radius
         if (sizeInfo && sizeInfo.radius != null) {
-             if (sizeInfo.radius > 30) { // Approx Large size radius (Correct: L = 40)
+             // Radii: Large = 40, Medium = 30, Small = 20
+             if (sizeInfo.radius > 35) {
                  soundName = 'asteroidExplodeL';
-             } else if (sizeInfo.radius > 15) { // Approx Medium size radius (Correct: M = 20)
+             } else if (sizeInfo.radius > 25) {
                  soundName = 'asteroidExplodeM';
              }
         } else {
@@ -152,6 +235,9 @@ export class AudioManager {
 
     toggleMute() {
         this.isMuted = !this.isMuted;
+        if (!this.audioContext) {
+            return this.isMuted;
+        }
         if (this.isMuted) {
             this.masterGain.gain.setValueAtTime(0, this.audioContext.currentTime);
             // Stop any active loops immediately
@@ -167,10 +253,19 @@ export class AudioManager {
 
     // Resume audio context if suspended (e.g., by browser auto-play policy)
     resumeContext() {
-        if (this.audioContext.state === 'suspended') {
-            this.audioContext.resume().then(() => {
-                console.log("AudioContext resumed successfully.");
-            }).catch(e => console.error("Error resuming AudioContext:", e));
+        if (!this.audioContext || this.audioContext.state === 'running' || this.audioContext.state === 'closed') {
+            return;
+        }
+        if (document.hidden) return; // Stay suspended while the tab is hidden
+        try {
+            const p = this.audioContext.resume();
+            if (p && typeof p.then === 'function') {
+                p.then(() => {
+                    console.log("AudioContext resumed successfully.");
+                }).catch(e => console.warn("Error resuming AudioContext:", e));
+            }
+        } catch (e) {
+            console.warn("Error resuming AudioContext:", e);
         }
     }
 } 

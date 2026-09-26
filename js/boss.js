@@ -19,16 +19,19 @@ export class Boss extends Entity {
         this.phase = Boss.PHASES.ENTERING;
         this.phaseTimer = 0;
 
-        // Health scales with level
-        this.maxHealth = 100 + (level * 20);
-        this.health = this.maxHealth;
-
         // Weak points - positions relative to boss center
         this.weakPoints = this.createWeakPoints();
+
+        // Health is the sum of weak point health (kept in sync in damageWeakPoint)
+        this.maxHealth = this.getMaxTotalHealth();
+        this.health = this.maxHealth;
 
         // Movement
         this.targetX = x;
         this.targetY = y;
+        // Target is kept as an offset from the player so the boss stays on screen
+        this.targetOffsetX = null;
+        this.targetOffsetY = null;
         this.moveSpeed = 50 + (level * 5);
         this.moveTimer = 0;
         this.moveDuration = 3;
@@ -146,16 +149,20 @@ export class Boss extends Entity {
     updateFighting(deltaTime, canvasWidth, canvasHeight, ship, bullets, audioManager) {
         // Movement
         this.moveTimer += deltaTime;
-        if (this.moveTimer >= this.moveDuration) {
+        if (this.moveTimer >= this.moveDuration || this.targetOffsetX === null) {
             this.moveTimer = 0;
-            // Pick new target position
-            this.targetX = randomRange(this.radius + 50, canvasWidth - this.radius - 50);
-            this.targetY = randomRange(this.radius + 50, canvasHeight * 0.4);
+            // Pick new target position in the upper part of the player's view.
+            // Stored relative to the player (world coords), not absolute canvas coords.
+            this.targetOffsetX = randomRange(-canvasWidth / 2 + this.radius + 50, canvasWidth / 2 - this.radius - 50);
+            this.targetOffsetY = randomRange(-canvasHeight / 2 + this.radius + 50, -canvasHeight / 2 + canvasHeight * 0.4);
+        }
+        if (ship) {
+            this.targetX = ship.x + this.targetOffsetX;
+            this.targetY = ship.y + this.targetOffsetY;
         }
 
-        // Move toward target
-        const dx = this.targetX - this.x;
-        const dy = this.targetY - this.y;
+        // Move toward target (shortest path in the wrapping world)
+        const { dx, dy } = Entity.wrappedDelta(this.x, this.y, this.targetX, this.targetY);
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist > 5) {
             this.x += (dx / dist) * this.moveSpeed * deltaTime;
@@ -187,7 +194,8 @@ export class Boss extends Entity {
     }
 
     fireSpread(ship, bullets, audioManager) {
-        const angleToShip = Math.atan2(ship.y - this.y, ship.x - this.x);
+        const toShip = Entity.wrappedDelta(this.x, this.y, ship.x, ship.y);
+        const angleToShip = Math.atan2(toShip.dy, toShip.dx);
         const spreadCount = 5;
         const spreadAngle = degToRad(15);
 
@@ -206,7 +214,8 @@ export class Boss extends Entity {
     }
 
     fireAimed(ship, bullets, audioManager) {
-        const angleToShip = Math.atan2(ship.y - this.y, ship.x - this.x);
+        const toShip = Entity.wrappedDelta(this.x, this.y, ship.x, ship.y);
+        const angleToShip = Math.atan2(toShip.dy, toShip.dx);
         const speed = 300;
 
         bullets.push(new Bullet(
@@ -262,8 +271,7 @@ export class Boss extends Entity {
 
             const wpX = this.x + wp.offsetX;
             const wpY = this.y + wp.offsetY;
-            const dx = bullet.x - wpX;
-            const dy = bullet.y - wpY;
+            const { dx, dy } = Entity.wrappedDelta(wpX, wpY, bullet.x, bullet.y);
             const dist = Math.sqrt(dx * dx + dy * dy);
 
             if (dist < wp.radius + bullet.radius) {
@@ -282,7 +290,10 @@ export class Boss extends Entity {
         if (wp.health <= 0) {
             wp.destroyed = true;
             wp.health = 0;
+        }
+        this.health = this.getTotalHealth();
 
+        if (wp.destroyed) {
             // Check if all points destroyed
             if (this.weakPoints.every(p => p.destroyed)) {
                 this.phase = Boss.PHASES.DEFEATED;

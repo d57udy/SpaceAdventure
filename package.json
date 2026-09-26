@@ -5,20 +5,22 @@
   "main": "index.js",
   "scripts": {
     "start": "python3 -m http.server 8080",
-    "test": "npx playwright test",
-    "test:headed": "npx playwright test --headed"
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"tests/unit/*.test.mjs\"",
+    "test:e2e": "playwright test",
+    "test:headed": "playwright test --headed"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/d57udy/Astroids.git"
+    "url": "git+https://github.com/d57udy/SpaceAdventure.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/d57udy/Astroids/issues"
+    "url": "https://github.com/d57udy/SpaceAdventure/issues"
   },
-  "homepage": "https://github.com/d57udy/Astroids#readme",
+  "homepage": "https://d57udy.github.io/SpaceAdventure/",
   "devDependencies": {
     "@playwright/test": "^1.57.0"
   }

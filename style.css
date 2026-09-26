@@ -5,6 +5,7 @@ body {
     justify-content: center;
     align-items: center;
     height: 100vh;
+    height: 100dvh;
     background-color: #111; /* Dark background */
     overflow: hidden; /* Prevent scrollbars */
     font-family: 'Arial', sans-serif;
@@ -16,6 +17,14 @@ body {
     -ms-user-select: none;
     /* Improve touch responsiveness */
     touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+}
+
+canvas,
+.touch-btn {
+    touch-action: none; /* No scroll/zoom gestures on the play surface */
 }
 
 .game-container {
@@ -62,64 +71,167 @@ canvas {
     /* Maybe add margin-right if needed */
 }
 
-/* --- Touch Controls --- */
-.touch-controls {
+/* --- Username prompt (DOM input so touch devices get an on-screen keyboard) --- */
+.user-prompt {
     position: absolute;
-    bottom: 20px; /* Adjust as needed */
-    left: 20px;
-    right: 20px;
+    left: 50%;
+    top: 42%;
+    transform: translate(-50%, -50%);
     display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 80%;
+    max-width: 360px;
+    z-index: 20;
+}
+
+.user-prompt.hidden {
+    display: none;
+}
+
+.user-prompt label {
+    font-size: 20px;
+    text-align: center;
+}
+
+.user-prompt input {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 28px; /* >= 16px so iOS doesn't auto-zoom on focus */
+    text-align: center;
+    text-transform: uppercase;
+    color: yellow;
+    background: #111;
+    border: 2px solid #666;
+    border-radius: 6px;
+    padding: 8px;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+.user-prompt button {
+    font-size: 20px;
+    min-width: 120px;
+    min-height: 44px;
+    color: white;
+    background: #2a5;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.prompt-error {
+    min-height: 1.2em;
+    color: #FF6666;
+    font-size: 16px;
+}
+
+/* --- Touch Controls --- */
+/* Fixed to the viewport corners so on tablets they sit in the space beside/below the
+   square play area instead of covering it. Shown only on touch devices while playing. */
+.touch-controls {
+    display: none;
+    position: fixed;
+    inset: 0;
     pointer-events: none; /* Container doesn't block canvas */
-    z-index: 10; /* Above canvas */
+    z-index: 10;
+}
+
+body.touch-enabled.state-playing .touch-controls {
+    display: block;
 }
 
 .touch-left,
-.touch-right {
+.touch-right,
+.touch-top {
+    position: absolute;
     display: flex;
-    flex-direction: column; /* Stack buttons vertically if needed, or use row */
-    gap: 15px;
+    gap: 10px;
 }
 
 .touch-left {
-    align-items: flex-start;
-    flex-direction: row; /* Place rotate side-by-side */
+    left: calc(8px + env(safe-area-inset-left, 0px));
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    align-items: flex-end;
 }
 
+/* Right cluster: fire under the thumb, thrust above it, hyperspace to its left */
 .touch-right {
-    align-items: flex-end;
-    flex-direction: row; /* Place action buttons side-by-side */
+    right: calc(8px + env(safe-area-inset-right, 0px));
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-template-areas:
+        ".     thrust"
+        "hyper fire";
+    align-items: end;
+    justify-items: center;
+}
+
+.touch-right .thrust { grid-area: thrust; }
+.touch-right .fire { grid-area: fire; }
+.touch-right .hyper { grid-area: hyper; }
+
+.touch-top {
+    right: calc(8px + env(safe-area-inset-right, 0px));
+    top: calc(8px + env(safe-area-inset-top, 0px));
 }
 
 .touch-btn {
-    width: 60px; /* Adjust size */
-    height: 60px;
-    background-color: rgba(255, 255, 255, 0.2); /* Semi-transparent */
+    width: 72px;
+    height: 72px;
+    background-color: rgba(255, 255, 255, 0.18);
     border: 2px solid rgba(255, 255, 255, 0.5);
-    border-radius: 50%; /* Circular buttons */
+    border-radius: 50%;
     display: flex;
     justify-content: center;
     align-items: center;
     pointer-events: auto; /* Buttons are interactive */
-    cursor: pointer; /* Indicate clickable */
+    cursor: pointer;
     padding: 0;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.touch-btn.fire {
+    width: 84px;
+    height: 84px;
+    background-color: rgba(255, 80, 80, 0.25);
+}
+
+.touch-btn.hyper {
+    width: 60px;
+    height: 60px;
+}
+
+.touch-btn.small {
+    width: 48px;
+    height: 48px;
 }
 
 .touch-btn svg {
     width: 50%;
     height: 50%;
+    pointer-events: none;
 }
 
+.touch-btn.active,
 .touch-btn:active {
-    background-color: rgba(255, 255, 255, 0.4); /* Feedback on press */
+    background-color: rgba(255, 255, 255, 0.45); /* Feedback on press */
 }
 
-/* Hide touch controls on larger screens (e.g., tablets/desktops) */
-@media (min-width: 768px) {
-    .touch-controls {
-        display: none;
-    }
+/* Small phones: slightly smaller buttons */
+@media (max-width: 480px), (max-height: 480px) {
+    .touch-btn { width: 60px; height: 60px; }
+    .touch-btn.fire { width: 70px; height: 70px; }
+    .touch-btn.hyper { width: 50px; height: 50px; }
+    .touch-btn.small { width: 42px; height: 42px; }
+    .ui-overlay { font-size: 1em; }
 }
 
-/* Add more styles later for menus, buttons, etc. */ 
+/* Muted: dim the speaker and strike it through */
+.touch-btn.muted {
+    opacity: 0.6;
+    background-image: linear-gradient(45deg, transparent 46%, #FF6666 46%, #FF6666 54%, transparent 54%);
+}

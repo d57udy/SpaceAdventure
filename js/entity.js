@@ -1,6 +1,19 @@
-import { wrapAroundEdges } from './utils.js';
+import { wrapAroundEdges, wrapDelta } from './utils.js';
 
 export class Entity {
+    // World size used for wrap-aware distance checks (0 = no wrapping).
+    // Set by main.js whenever the world is resized.
+    static worldWidth = 0;
+    static worldHeight = 0;
+
+    // Shortest delta from (fromX, fromY) to (toX, toY), accounting for world wrapping
+    static wrappedDelta(fromX, fromY, toX, toY) {
+        return {
+            dx: wrapDelta(toX - fromX, Entity.worldWidth),
+            dy: wrapDelta(toY - fromY, Entity.worldHeight)
+        };
+    }
+
     constructor(x, y, radius = 10) {
         this.x = x;
         this.y = y;
@@ -52,8 +65,7 @@ export class Entity {
         if (!this.isAlive || !otherEntity.isAlive) {
             return false;
         }
-        const dx = this.x - otherEntity.x;
-        const dy = this.y - otherEntity.y;
+        const { dx, dy } = Entity.wrappedDelta(otherEntity.x, otherEntity.y, this.x, this.y);
         const distance = Math.sqrt(dx * dx + dy * dy);
         return distance < this.radius + otherEntity.radius;
     }

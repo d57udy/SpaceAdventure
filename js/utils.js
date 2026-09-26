@@ -37,3 +37,17 @@ export function degToRad(degrees) {
 export function randomRange(min, max) {
     return Math.random() * (max - min) + min;
 } 
+
+/**
+ * Returns the shortest signed delta along one axis of a wrapping world.
+ * If size is not a positive number, the delta is returned unchanged.
+ * @param {number} delta
+ * @param {number} size - World size along this axis (0 = no wrapping).
+ * @returns {number}
+ */
+export function wrapDelta(delta, size) {
+    if (!(size > 0)) return delta;
+    if (delta > size / 2) return delta - size;
+    if (delta < -size / 2) return delta + size;
+    return delta;
+}

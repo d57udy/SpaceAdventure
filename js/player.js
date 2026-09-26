@@ -4,7 +4,7 @@ import { Bullet } from './bullet.js'; // Will create this file next
 
 // Constants for the ship
 const SHIP_THRUST = 5; // Acceleration per frame when thrusting
-const SHIP_FRICTION = 0.995; // Slowdown factor (closer to 1 = less friction)
+const SHIP_FRICTION = 0.995; // Slowdown factor per 1/60s (closer to 1 = less friction)
 const SHIP_TURN_SPEED = 360; // Degrees per second
 const SHIP_INVULNERABILITY_DURATION = 3; // Seconds
 const SHIP_BLINK_INTERVAL = 0.2; // Seconds per blink
@@ -57,10 +57,8 @@ export class PlayerShip extends Entity {
     }
 
     fire(bullets, audioManager) {
-        console.log(`PlayerShip.fire called. canShoot=${this.canShoot}, shootTimer=${this.shootTimer.toFixed(2)}`);
-
+        // Note: no per-call logging here; fire() runs every frame while the button is held
         if (this.canShoot && this.shootTimer <= 0) {
-            console.log("PlayerShip.fire: Conditions met, firing!");
             const bulletVelX = Math.cos(this.rotation) * Bullet.PLAYER_SPEED;
             const bulletVelY = Math.sin(this.rotation) * Bullet.PLAYER_SPEED;
             const noseX = this.x + Math.cos(this.rotation) * (this.radius);
@@ -70,9 +68,6 @@ export class PlayerShip extends Entity {
             if (audioManager) {
                 audioManager.play('playerShoot');
             }
-        } else {
-            // Log if conditions fail
-            console.log(`PlayerShip.fire: Conditions NOT met. canShoot=${this.canShoot}, shootTimer=${this.shootTimer.toFixed(2)}`);
         }
     }
 
@@ -91,7 +86,8 @@ export class PlayerShip extends Entity {
             console.log("Hyperspace failed - Self-destruct!");
             // if (audioManager) audioManager.play('hyperspaceFail');
             this.destroy(audioManager, true); // Pass audioManager and force
-            return false;
+            // Return true: the jump happened (fatally). Caller checks isAlive to handle death.
+            return true;
         }
 
         // Relocate to a random position
@@ -124,7 +120,8 @@ export class PlayerShip extends Entity {
             console.log("Hyperspace failed - Materialized inside object!");
             // if (audioManager) audioManager.play('hyperspaceFail');
             this.destroy(audioManager, true); // Pass audioManager and force
-             return false;
+            // Return true: the jump happened (fatally). Caller checks isAlive to handle death.
+            return true;
         }
 
         console.log(`Hyperspace successful to (${this.x.toFixed(0)}, ${this.y.toFixed(0)})`);
@@ -134,7 +131,7 @@ export class PlayerShip extends Entity {
         this.hyperspaceCooldownTimer = HYPERSPACE_COOLDOWN;
         this.canHyperspace = false;
 
-        return true; // Indicate successful jump
+        return true; // Indicate the jump happened (ship survived)
     }
 
     update(deltaTime, canvasWidth, canvasHeight, audioManager) {
@@ -152,9 +149,10 @@ export class PlayerShip extends Entity {
             }
         }
 
-        // Apply friction (inertia)
-        this.velX *= SHIP_FRICTION;
-        this.velY *= SHIP_FRICTION;
+        // Apply friction (inertia), scaled by deltaTime so it is frame-rate independent
+        const friction = Math.pow(SHIP_FRICTION, deltaTime * 60);
+        this.velX *= friction;
+        this.velY *= friction;
 
         // Note: isThrusting flag is managed by main.js input handling
         // It's set true by thrust() and false when thrust key is not pressed

@@ -13,10 +13,13 @@ export class PersistenceManager {
     }
 
     isLocalStorageAvailable() {
+        // Only probe read access: a write probe fails when storage is full (or in
+        // old Safari private mode), which would wrongly hide existing saved data.
+        // Individual writes are wrapped in try/catch anyway.
         try {
-            const testKey = '__testLocalStorage__';
-            localStorage.setItem(testKey, testKey);
-            localStorage.removeItem(testKey);
+            const storage = window.localStorage;
+            if (!storage) return false;
+            storage.getItem('__testLocalStorage__');
             return true;
         } catch (e) {
             return false;
@@ -25,6 +28,8 @@ export class PersistenceManager {
 
     // --- User Management --- 
     setCurrentUser(username) {
+        // Keep the in-memory cache correct even if storage is unavailable
+        this.currentUser = username ? username : null;
         if (!this.isLocalStorageAvailable()) return;
         try {
             if (username) {
@@ -64,7 +69,9 @@ export class PersistenceManager {
         if (!this.isLocalStorageAvailable() || !username) return;
         try {
             let userList = this.getAllUsernames(); // Get current list
-            if (!userList.includes(username)) {
+            // Data keys are upper-cased, so treat usernames case-insensitively
+            const upper = username.toUpperCase();
+            if (!userList.some(u => u.toUpperCase() === upper)) {
                 userList.push(username);
                 localStorage.setItem(USER_LIST_KEY, JSON.stringify(userList));
                 console.log(`User ${username} added to list.`);
@@ -82,7 +89,16 @@ export class PersistenceManager {
             if (storedList) {
                 const list = JSON.parse(storedList);
                 if (Array.isArray(list)) {
-                    return list;
+                    // Drop corrupt entries and case-insensitive duplicates (data keys are
+                    // upper-cased, so 'bob' and 'BOB' share data and would double-count)
+                    const seen = new Set();
+                    return list.filter(u => {
+                        if (typeof u !== 'string' || u.trim().length === 0) return false;
+                        const upper = u.toUpperCase();
+                        if (seen.has(upper)) return false;
+                        seen.add(upper);
+                        return true;
+                    });
                 }
             }
         } catch (error) {
@@ -94,7 +110,7 @@ export class PersistenceManager {
     // --- Data Management (User Specific & Combined) --- 
 
     _getUserSpecificKey(baseKey, username) {
-        if (!username) {
+        if (!username || typeof username !== 'string') {
             console.warn(`Cannot generate key for base ${baseKey} without a username.`);
             return null;
         }
@@ -125,8 +141,11 @@ export class PersistenceManager {
                     const scores = JSON.parse(storedScores);
                     if (Array.isArray(scores)) {
                         console.log(`High scores loaded for user: ${username}`);
-                        // Add username to each entry for consistency when combining later
-                        return scores.map(s => ({ ...s, user: username }));
+                        // Add username to each entry for consistency when combining later.
+                        // Skip corrupt entries (non-objects / non-numeric scores).
+                        return scores
+                            .filter(s => s && typeof s === 'object' && Number.isFinite(s.score))
+                            .map(s => ({ ...s, user: username }));
                     }
                     console.warn(`Invalid high score data found for user ${username}.`);
                 }
@@ -175,7 +194,7 @@ export class PersistenceManager {
                     const ids = JSON.parse(storedAchievements);
                     if (Array.isArray(ids)) {
                         console.log(`Achievements loaded for user: ${username}`);
-                        return new Set(ids);
+                        return new Set(ids.filter(id => typeof id === 'string'));
                     }
                      console.warn(`Invalid achievement data found for user ${username}.`);
                 }
@@ -215,8 +234,25 @@ export class PersistenceManager {
             const storedUpgrades = localStorage.getItem(key);
             if (storedUpgrades) {
                 const data = JSON.parse(storedUpgrades);
+                if (!data || typeof data !== 'object' || Array.isArray(data)) {
+                    console.warn(`Invalid upgrade data found for user ${username}.`);
+                    return null;
+                }
+                // Sanitize numeric fields so corrupt values can't produce NaN in the game
+                let levels; // left undefined if missing so callers keep their defaults
+                if (data.levels && typeof data.levels === 'object') {
+                    levels = {};
+                    for (const key in data.levels) {
+                        const lvl = Number(data.levels[key]);
+                        levels[key] = Number.isFinite(lvl) && lvl > 0 ? Math.floor(lvl) : 0;
+                    }
+                }
+                const currency = Number(data.currency);
                 console.log(`Upgrades loaded for user: ${username}`);
-                return data;
+                return {
+                    levels,
+                    currency: Number.isFinite(currency) && currency > 0 ? currency : 0
+                };
             }
         } catch (error) {
             console.error(`Error loading upgrades for ${username}:`, error);
@@ -237,11 +273,12 @@ export class PersistenceManager {
             if (upKey) localStorage.removeItem(upKey);
             console.log(`Data reset for user: ${username}`);
             // After resetting, if it was the current user, clear the current user setting
-            if (this.currentUser === username) {
+            const sameUser = (name) => typeof name === 'string' && name.toUpperCase() === username.toUpperCase();
+            if (sameUser(this.currentUser)) {
                 this.setCurrentUser(null);
             }
             // If resetting the currently active user, also clear the global user setting
-            if (localStorage.getItem(CURRENT_USER_KEY) === username) {
+            if (sameUser(localStorage.getItem(CURRENT_USER_KEY))) {
                 localStorage.removeItem(CURRENT_USER_KEY);
                 this.currentUser = null; // Update internal cache
             }

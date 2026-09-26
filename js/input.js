@@ -1,20 +1,15 @@
+// Unified input: keyboard, on-screen touch buttons (pointer events, multi-touch)
+// and taps/clicks on the canvas (used for menu selection).
 export class InputHandler {
-    constructor() {
-        this.keys = {}; // Stores state for continuous actions (thrust, rotate)
-        this.singlePressActions = {}; // Stores state for consumable actions (fire, hyper, menu nav)
+    constructor(canvas = null) {
+        this.canvas = canvas;
+        this.keys = {}; // Continuous state from the keyboard (thrust, rotate, fire)
+        this.singlePressActions = {}; // Consumable actions (hyperspace, pause, menu nav, typing)
         this.keyProcessed = {}; // Prevents keyboard auto-repeat for single press
-        this.activeTouches = {}; // Tracks active touches on buttons
-
-        // Keyboard handlers
-        this._keydownHandler = (e) => this.handleKeyEvent(e, true);
-        this._keyupHandler = (e) => this.handleKeyEvent(e, false);
-        window.addEventListener('keydown', this._keydownHandler);
-        window.addEventListener('keyup', this._keyupHandler);
-
-        // Touch handlers
-        this._touchStartHandler = (e) => this.handleTouchEvent(e, true);
-        this._touchEndHandler = (e) => this.handleTouchEvent(e, false);
-        this._touchCancelHandler = (e) => this.handleTouchEvent(e, false);
+        this.pointerActions = new Map(); // pointerId -> action held by an on-screen button
+        this.pendingTaps = []; // Taps/clicks on the canvas in canvas pixel coordinates
+        this.charQueue = []; // Typed characters in order (username entry)
+        this.latched = new Set(); // Continuous actions pressed this frame (so quick taps still count)
 
         // Define key mappings (Action Name -> Keys)
         this.keyToAction = {
@@ -31,215 +26,225 @@ export class InputHandler {
             menuUp: ['ArrowUp', 'w', 'W'],
             menuDown: ['ArrowDown', 's', 'S'],
             menuSelect: ['Enter', ' ', 'Space'],
-            // Add keys for prompt input
+            // Keys for prompt input
             backspace: ['Backspace'],
-            key_a: ['a', 'A'], key_b: ['b', 'B'], key_c: ['c', 'C'],
-            key_d: ['d', 'D'], key_e: ['e', 'E'], key_f: ['f', 'F'],
-            key_g: ['g', 'G'], key_h: ['h', 'H'], key_i: ['i', 'I'],
-            key_j: ['j', 'J'], key_k: ['k', 'K'], key_l: ['l', 'L'],
-            key_m: ['m', 'M'], key_n: ['n', 'N'], key_o: ['o', 'O'],
-            key_p: ['p', 'P'], key_q: ['q', 'Q'], key_r: ['r', 'R'],
-            key_s: ['s', 'S'], key_t: ['t', 'T'], key_u: ['u', 'U'],
-            key_v: ['v', 'V'], key_w: ['w', 'W'], key_x: ['x', 'X'],
-            key_y: ['y', 'Y'], key_z: ['z', 'Z'],
-            key_0: ['0', ')'], key_1: ['1', '!'], key_2: ['2', '@'],
-            key_3: ['3', '#'], key_4: ['4', '$'], key_5: ['5', '%'],
-            key_6: ['6', '^'], key_7: ['7', '&'], key_8: ['8', '*'],
-            key_9: ['9', '('],
         };
+        for (const char of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') {
+            this.keyToAction[`key_${char}`] = char === char.toLowerCase() ? [char] : [char, char.toLowerCase()];
+        }
 
-        // Reverse map for quick lookup (Key -> Action Name)
+        // Reverse map for quick lookup (Key -> Action Names)
         this.actionForKey = {};
         for (const action in this.keyToAction) {
             this.keyToAction[action].forEach(key => {
-                // Keys might map to multiple actions (e.g., ArrowUp -> thrust, menuUp)
                 if (!this.actionForKey[key]) this.actionForKey[key] = [];
                 this.actionForKey[key].push(action);
             });
         }
 
-        // Define which actions are treated as single-press / consumable
-        this.singlePressActionNames = new Set([
-            'hyperspace', 'pause', 'enter', 'escape', 'toggleMute',
-            'menuUp', 'menuDown', 'menuSelect',
-            // Add prompt input keys
-            'backspace',
-            'key_a', 'key_b', 'key_c', 'key_d', 'key_e', 'key_f', 'key_g',
-            'key_h', 'key_i', 'key_j', 'key_k', 'key_l', 'key_m', 'key_n',
-            'key_o', 'key_p', 'key_q', 'key_r', 'key_s', 'key_t', 'key_u',
-            'key_v', 'key_w', 'key_x', 'key_y', 'key_z',
-            'key_0', 'key_1', 'key_2', 'key_3', 'key_4', 'key_5',
-            'key_6', 'key_7', 'key_8', 'key_9'
-        ]);
+        // Actions that are held down rather than consumed once
+        this.continuousActionNames = new Set(['thrust', 'rotateLeft', 'rotateRight', 'fire']);
 
-        // Map touch button IDs to actions
-        this.touchMap = {
-            'touch-left-btn': 'rotateLeft',
-            'touch-right-btn': 'rotateRight',
-            'touch-thrust-btn': 'thrust',
-            'touch-fire-btn': 'fire',
-            'touch-hyper-btn': 'hyperspace'
-        };
-
-        // Initialize state for all *possible* actions
         Object.keys(this.keyToAction).forEach(action => {
             this.keys[action] = false;
             this.singlePressActions[action] = false;
         });
-        Object.values(this.touchMap).forEach(action => {
-            if(action && this.keys[action] === undefined) this.keys[action] = false;
-            if(action && this.singlePressActions[action] === undefined) this.singlePressActions[action] = false;
-        });
 
-        this.setupTouchListeners();
+        this._keydownHandler = (e) => this.handleKeyEvent(e, true);
+        this._keyupHandler = (e) => this.handleKeyEvent(e, false);
+        this._pointerDownHandler = (e) => this.handlePointerDown(e);
+        this._pointerMoveHandler = (e) => this.handlePointerMove(e);
+        this._pointerUpHandler = (e) => this.handlePointerUp(e);
+        this._releaseAllHandler = () => this.releaseAll();
+        this._preventTouchDefault = (e) => {
+            // Stop iOS double-tap zoom, scrolling and long-press callouts on game surfaces
+            if (e.target.closest && e.target.closest('.touch-btn, canvas')) e.preventDefault();
+        };
+
+        window.addEventListener('keydown', this._keydownHandler);
+        window.addEventListener('keyup', this._keyupHandler);
+        document.addEventListener('pointerdown', this._pointerDownHandler, { passive: false });
+        document.addEventListener('pointermove', this._pointerMoveHandler);
+        document.addEventListener('pointerup', this._pointerUpHandler);
+        document.addEventListener('pointercancel', this._pointerUpHandler);
+        document.addEventListener('touchstart', this._preventTouchDefault, { passive: false });
+        document.addEventListener('touchmove', this._preventTouchDefault, { passive: false });
+        // Keys/fingers released while the window is not focused would otherwise stay "stuck"
+        window.addEventListener('blur', this._releaseAllHandler);
     }
 
-    setupTouchListeners() {
-        Object.keys(this.touchMap).forEach(buttonId => {
-            const button = document.getElementById(buttonId);
-            if (button) {
-                button.addEventListener('touchstart', this._touchStartHandler, { passive: false });
-                button.addEventListener('touchend', this._touchEndHandler, { passive: false });
-                button.addEventListener('touchcancel', this._touchCancelHandler, { passive: false });
-            }
-        });
+    isContinuous(action) {
+        return this.continuousActionNames.has(action);
     }
 
     handleKeyEvent(event, isPressed) {
-        const key = event.key;
-        const actions = this.actionForKey[key]; // Get all actions for this key
+        // Let text fields (username entry) receive keys normally
+        const target = event.target;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
 
-        if (actions) {
-            // Prevent default for specific keys/actions
-            const shouldPreventDefault = actions.some(action =>
-                ['thrust', 'rotateLeft', 'rotateRight', 'fire', 'hyperspace', 'enter', 'menuUp', 'menuDown'].includes(action)
-            );
-            if (shouldPreventDefault) {
-                event.preventDefault();
+        const actions = this.actionForKey[event.key];
+        if (!actions) return;
+
+        const shouldPreventDefault = actions.some(action =>
+            ['thrust', 'rotateLeft', 'rotateRight', 'fire', 'hyperspace', 'enter', 'menuUp', 'menuDown', 'backspace'].includes(action)
+        );
+        if (shouldPreventDefault) event.preventDefault();
+
+        actions.forEach(action => {
+            if (this.isContinuous(action)) {
+                if (isPressed) this.latched.add(action);
+                this.keys[action] = isPressed;
+            } else if (isPressed && !this.keyProcessed[action]) {
+                this.singlePressActions[action] = true;
+                this.keyProcessed[action] = true;
+                if (action.startsWith('key_')) this.charQueue.push(action.slice(4));
+            } else if (!isPressed) {
+                this.keyProcessed[action] = false;
             }
+        });
+    }
 
-            actions.forEach(action => {
-                if (this.singlePressActionNames.has(action)) {
-                    // Handle single-press actions
-                    if (isPressed && !this.keyProcessed[action]) {
-                        console.log(`[InputHandler] Setting singlePressAction: ${action}`);
-                        this.singlePressActions[action] = true;
-                        this.keyProcessed[action] = true;
-                    }
-                    if (!isPressed) {
-                        this.keyProcessed[action] = false;
-                        // Optional: Reset singlePressActions on key up? Usually consumed.
-                        // this.singlePressActions[action] = false;
-                    }
-                } else {
-                    // Handle continuous actions
-                    if (action === 'fire') { // Log specifically for fire
-                         console.log(`[InputHandler] Setting continuous key: ${action} = ${isPressed}`);
-                    }
-                    this.keys[action] = isPressed;
-                }
+    // --- Pointer (touch / mouse / pen) ---
+
+    buttonAt(clientX, clientY) {
+        const el = document.elementFromPoint(clientX, clientY);
+        return el && el.closest ? el.closest('.touch-btn[data-action]') : null;
+    }
+
+    setButtonActive(action, active) {
+        document.querySelectorAll(`.touch-btn[data-action="${action}"]`).forEach(btn => {
+            btn.classList.toggle('active', active);
+        });
+    }
+
+    pressPointerAction(pointerId, action) {
+        this.pointerActions.set(pointerId, action);
+        if (this.isContinuous(action)) this.latched.add(action);
+        else this.singlePressActions[action] = true;
+        this.setButtonActive(action, true);
+    }
+
+    releasePointer(pointerId) {
+        const action = this.pointerActions.get(pointerId);
+        if (action === undefined) return;
+        this.pointerActions.delete(pointerId);
+        if (![...this.pointerActions.values()].includes(action)) {
+            this.setButtonActive(action, false);
+        }
+    }
+
+    handlePointerDown(event) {
+        const button = event.target.closest ? event.target.closest('.touch-btn[data-action]') : null;
+        if (button) {
+            event.preventDefault();
+            // Allow the finger to slide between buttons (e.g. rotate left -> rotate right)
+            if (button.hasPointerCapture && button.hasPointerCapture(event.pointerId)) {
+                button.releasePointerCapture(event.pointerId);
+            }
+            this.pressPointerAction(event.pointerId, button.dataset.action);
+            return;
+        }
+        if (this.canvas && event.target === this.canvas) {
+            event.preventDefault();
+            if (event.pointerType === 'mouse' && event.button !== 0) return;
+            const rect = this.canvas.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            this.pendingTaps.push({
+                x: (event.clientX - rect.left) * (this.canvas.width / rect.width),
+                y: (event.clientY - rect.top) * (this.canvas.height / rect.height),
             });
         }
     }
 
-    handleTouchEvent(event, isPressed) {
-        event.preventDefault();
-        const targetId = event.currentTarget.id;
-        const action = this.touchMap[targetId];
-
-        if (!action) return;
-
-        if (isPressed) {
-            for (let i = 0; i < event.changedTouches.length; i++) {
-                const touchId = event.changedTouches[i].identifier;
-                this.activeTouches[touchId] = action;
-            }
-            // Set continuous state
-            if (action === 'fire') { // Log specifically for fire
-                 console.log(`[InputHandler] Setting touch key: ${action} = true`);
-            }
-            this.keys[action] = true;
-            // Trigger single press immediately
-            if (this.singlePressActionNames.has(action)) {
-                 this.singlePressActions[action] = true;
-            }
-        } else {
-            let stillPressed = false;
-            for (let i = 0; i < event.changedTouches.length; i++) {
-                const touchId = event.changedTouches[i].identifier;
-                if (this.activeTouches[touchId] === action) {
-                    delete this.activeTouches[touchId];
-                }
-            }
-            for (const touchId in this.activeTouches) {
-                if (this.activeTouches[touchId] === action) {
-                    stillPressed = true;
-                    break;
-                }
-            }
-            if (!stillPressed) {
-                // Unset continuous state
-                 if (action === 'fire') { // Log specifically for fire
-                     console.log(`[InputHandler] Setting touch key: ${action} = false`);
-                 }
-                this.keys[action] = false;
-                // Reset single press state on touch end (it gets consumed anyway)
-                if (this.singlePressActionNames.has(action)) {
-                    this.singlePressActions[action] = false;
-                }
-            }
+    handlePointerMove(event) {
+        const current = this.pointerActions.get(event.pointerId);
+        if (current === undefined || !this.isContinuous(current)) return;
+        const button = this.buttonAt(event.clientX, event.clientY);
+        const next = button ? button.dataset.action : null;
+        // Slide onto another continuous control: switch; slide off everything: keep holding
+        if (next && next !== current && this.isContinuous(next)) {
+            this.releasePointer(event.pointerId);
+            this.pressPointerAction(event.pointerId, next);
         }
     }
 
-    // Check continuous state
+    handlePointerUp(event) {
+        this.releasePointer(event.pointerId);
+    }
+
+    // Release everything (window blur, tab hidden, state changes)
+    releaseAll() {
+        for (const action in this.keys) this.keys[action] = false;
+        for (const action in this.keyProcessed) this.keyProcessed[action] = false;
+        for (const action of this.pointerActions.values()) this.setButtonActive(action, false);
+        this.pointerActions.clear();
+        this.latched.clear();
+    }
+
+    // Drop queued one-shot actions and taps (called on game state transitions so a key
+    // pressed in one screen, e.g. 'S' while typing a name, doesn't fire in the next)
+    clearPending() {
+        for (const action in this.singlePressActions) this.singlePressActions[action] = false;
+        this.pendingTaps.length = 0;
+        this.charQueue.length = 0;
+        this.latched.clear();
+    }
+
+    // Called once per game frame after input has been read
+    endFrame() {
+        this.latched.clear();
+    }
+
+    // Programmatically trigger a one-shot action (used by tap handling)
+    triggerAction(action) {
+        this.singlePressActions[action] = true;
+    }
+
+    // Check continuous state (keyboard or any finger holding the button)
     isPressed(action) {
-        return this.keys[action] || false;
+        if (this.keys[action] || this.latched.has(action)) return true;
+        for (const held of this.pointerActions.values()) {
+            if (held === action) return true;
+        }
+        return false;
     }
 
     // Check and consume single-press state
     consumeAction(action) {
-        const wasPressed = this.singlePressActions[action]; // Check state *before* consuming
-        // Add log specific to escape action check
-        if (action === 'escape') {
-            console.log(`[InputHandler] consumeAction called for '${action}'. State was: ${wasPressed}`);
-        }
-        if (wasPressed) {
-            this.singlePressActions[action] = false; // Consume
+        if (this.singlePressActions[action]) {
+            this.singlePressActions[action] = false;
             return true;
         }
         return false;
     }
 
-    // Add helper to get last pressed character key for prompt
+    consumeTap() {
+        return this.pendingTaps.shift() || null;
+    }
+
+    // Get last pressed character key for the username prompt
     consumeLastCharKey() {
-        const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        for (const char of chars) {
-            const action = `key_${char}`;
-            if (this.consumeAction(action)) {
-                return char;
-            }
+        // Typed order first, so fast typing isn't reordered or deduplicated
+        if (this.charQueue.length > 0) {
+            const char = this.charQueue.shift();
+            this.singlePressActions[`key_${char}`] = false;
+            return char;
         }
-         // Check lowercase keys too if mapping was case-sensitive (shouldn't be with current map)
-         for (const char of chars.toLowerCase()) {
-             const action = `key_${char}`;
-             if (this.consumeAction(action)) {
-                 return char.toUpperCase(); // Return uppercase always
-             }
-         }
+        for (const char of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') {
+            if (this.consumeAction(`key_${char}`)) return char;
+        }
         return null;
     }
 
     destroy() {
         window.removeEventListener('keydown', this._keydownHandler);
         window.removeEventListener('keyup', this._keyupHandler);
-        Object.keys(this.touchMap).forEach(buttonId => {
-            const button = document.getElementById(buttonId);
-            if (button) {
-                button.removeEventListener('touchstart', this._touchStartHandler);
-                button.removeEventListener('touchend', this._touchEndHandler);
-                button.removeEventListener('touchcancel', this._touchCancelHandler);
-            }
-        });
-        console.log("Input listeners removed.");
+        document.removeEventListener('pointerdown', this._pointerDownHandler);
+        document.removeEventListener('pointermove', this._pointerMoveHandler);
+        document.removeEventListener('pointerup', this._pointerUpHandler);
+        document.removeEventListener('pointercancel', this._pointerUpHandler);
+        document.removeEventListener('touchstart', this._preventTouchDefault);
+        document.removeEventListener('touchmove', this._preventTouchDefault);
+        window.removeEventListener('blur', this._releaseAllHandler);
     }
-} 
+}

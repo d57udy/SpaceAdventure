@@ -46,6 +46,22 @@ Navigate your spaceship through an infinite asteroid field with two types of ast
 | Pause | P / Escape |
 | Mute | M |
 
+### Touch (tablets and phones)
+
+On a touch screen the game shows on-screen buttons while you play. No keyboard is needed.
+
+| Action | Touch |
+|--------|-------|
+| Rotate Left/Right | Arrow buttons, bottom left (slide your finger between them) |
+| Thrust Forward | Up arrow button, bottom right |
+| Fire | Red button, bottom right (hold for continuous fire) |
+| Hyperspace (risky!) | Star button, next to Fire |
+| Pause / Mute | Buttons in the top right corner |
+| Menus | Tap a menu item. Tap anywhere to leave Help, High Scores, Achievements and Game Over |
+| Username | Tap the box to open the on-screen keyboard, then tap OK |
+
+Multi-touch works, so you can rotate, thrust and fire at the same time. Menus can also be clicked with a mouse. For a full-screen experience on iPad, use Safari's "Add to Home Screen".
+
 ## Running Locally
 
 **IMPORTANT: The game must be run from a web server, not by opening the HTML file directly!**
@@ -71,11 +87,17 @@ Serve the files from any web server and open in browser.
 # Install dependencies
 npm install
 
-# Run tests
-npm test
+# One-time: install the test browsers
+npx playwright install chromium webkit
 
-# Run tests with browser visible
-npm run test:headed
+# Unit tests (Node's built-in runner, no browser)
+npm run test:unit
+
+# Integration and acceptance tests (Playwright: desktop keyboard, iPad touch)
+npm run test:e2e
+
+# Everything
+npm test
 ```
 
 ## GitHub Pages Deployment
