@@ -219,6 +219,16 @@ export class MusicEngine {
     }
 
     _ramp(param, target, t, dur) {
+        // Hold whatever the automation reaches at t (param.value is only the value "now",
+        // and is stale before rendering starts; restarting from it made filters snap open
+        // and ring, peaking near 2.0 in the ambient pad sweep).
+        if (typeof param.cancelAndHoldAtTime === 'function') {
+            try {
+                param.cancelAndHoldAtTime(t);
+                param.linearRampToValueAtTime(target, t + Math.max(0.01, dur));
+                return;
+            } catch (e) { /* fall back below */ }
+        }
         let cur = param.value;
         if (!Number.isFinite(cur)) cur = target;
         if (typeof param.cancelScheduledValues === 'function') param.cancelScheduledValues(t);

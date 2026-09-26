@@ -17,13 +17,21 @@ export const MENU_LABELS = [
 /** Drawn text of the single difficulty row, e.g. 'Difficulty: Medium'. */
 export const difficultyText = (name) => `Difficulty: ${name}`;
 
-// Settings screen rows (Controls only on touch devices)
-export const SETTINGS_ROWS_TOUCH = ['controls', 'colours', 'sound', 'back'];
-export const SETTINGS_ROWS_DESKTOP = ['colours', 'sound', 'back'];
+// Settings screen rows (Controls only on touch devices; Vibration only on touch devices
+// whose browser has navigator.vibrate, see touchSettingsRows)
+export const SETTINGS_ROWS_TOUCH = ['controls', 'colours', 'sound', 'music', 'musicVolume', 'sfxVolume', 'back'];
+export const SETTINGS_ROWS_DESKTOP = ['colours', 'sound', 'music', 'musicVolume', 'sfxVolume', 'back'];
+export const touchSettingsRows = (withVibration) => (withVibration
+  ? [...SETTINGS_ROWS_TOUCH.slice(0, -1), 'vibration', 'back'] : SETTINGS_ROWS_TOUCH);
 
 export const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
 export const PALETTE_KEY = 'spaceAdventure_palette';
 export const MUTED_KEY = 'spaceAdventure_muted';
+export const HAPTICS_KEY = 'spaceAdventure_haptics';
+export const MUSIC_TUNE_KEY = 'spaceAdventure_musicTune';
+export const MUSIC_VOLUME_KEY = 'spaceAdventure_musicVolume';
+export const SFX_VOLUME_KEY = 'spaceAdventure_sfxVolume';
+export const TUNE_LABELS = { off: 'Off', synthwave: 'Synthwave', ambient: 'Ambient', chiptune: 'Chiptune' };
 export const CONTROL_LABELS = { joystick: 'Drag to Steer', buttons: 'Buttons' };
 export const PALETTE_LABELS = { standard: 'Standard', safe: 'Colour-safe' };
 
@@ -77,9 +85,11 @@ export async function waitForState(page, state, timeout = 5000) {
  *                player had picked it in Settings earlier); omitted = no saved choice.
  *   storage:     { key: value } more localStorage entries to seed (e.g. PALETTE_KEY: 'safe').
  *   recordText:  true -> record the strings drawn with fillText on the canvas (see drawnTexts).
+ *   vibrate:     true -> install a recording navigator.vibrate stub before load (also on
+ *                WebKit, which lacks the API); calls land in window.__vibrations (see vibrations).
  * Returns the array that page errors are pushed into.
  */
-export async function openFresh(page, { controlMode = null, storage = {}, recordText = false } = {}) {
+export async function openFresh(page, { controlMode = null, storage = {}, recordText = false, vibrate = false } = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
   const seed = { ...storage };
@@ -105,9 +115,29 @@ export async function openFresh(page, { controlMode = null, storage = {}, record
       };
     });
   }
+  if (vibrate) {
+    // Stub a browser API (never game state): record every pattern the game asks for
+    await page.addInitScript(() => {
+      window.__vibrations = [];
+      Object.defineProperty(navigator, 'vibrate', {
+        configurable: true,
+        value: (pattern) => { window.__vibrations.push(pattern); return true; },
+      });
+    });
+  }
   await page.goto('/');
   await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: 10000 });
   return errors;
+}
+
+/** Patterns recorded by the openFresh({ vibrate: true }) stub. */
+export function vibrations(page) {
+  return page.evaluate(() => window.__vibrations.slice());
+}
+
+/** Does this browser (or the stub) provide navigator.vibrate? */
+export function hasVibrate(page) {
+  return page.evaluate(() => typeof navigator.vibrate === 'function');
 }
 
 /** Strings drawn on the canvas during the next few frames (needs openFresh recordText). */

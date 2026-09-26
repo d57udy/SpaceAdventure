@@ -16,6 +16,9 @@ import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
 import { Particles } from './particles.js';
 import { createSettings } from './settings.js';
 import { findPalette } from './palette.js';
+import { Haptics } from './haptics.js';
+import { MusicEngine, selectMood } from './music.js';
+import { tuneName } from './tunes.js';
 
 // Game States Enum
 const GameState = {
@@ -649,6 +652,23 @@ let palette = findPalette('standard');  // Colour palette (js/palette.js), from 
 // Device-level settings (js/settings.js; keys spaceAdventure_<name>)
 const settings = createSettings();
 
+// Vibration (Android): follows the 'haptics' setting; independent of mute.
+const haptics = new Haptics({ enabled: () => settings.get('haptics') });
+function vibrate(name) {
+    try { haptics.play(name); } catch (e) { /* never let haptics break the game */ }
+}
+function stopVibration() {
+    try { haptics.stop(); } catch (e) { /* ignore */ }
+}
+
+// Background music (js/music.js), routed into the audio manager's music bus.
+let music = null;
+let musicMood = 'menu';
+function withMusic(fn) {
+    if (!music) return undefined;
+    try { return fn(music); } catch (e) { return undefined; } // audio problems must not escape
+}
+
 // Finger tremor on a short drag swings the aim by several degrees; ignore direction
 // changes smaller than a threshold (larger when the drag is short and less precise).
 let stickHeading = null;
@@ -678,6 +698,15 @@ function applySettings() {
     Asteroid.palette = palette;
 }
 
+function applyAudioSettings() {
+    if (!audioManager) return;
+    try {
+        audioManager.setSfxVolume(settings.get('sfxVolume'));
+        audioManager.setMusicVolume(settings.get('musicVolume'));
+    } catch (e) { /* ignore */ }
+    withMusic(m => m.setTune(settings.get('musicTune')));
+}
+
 function applyMuted() {
     if (!audioManager) return;
     const muted = !!settings.get('muted');
@@ -689,7 +718,17 @@ function applyMuted() {
 settings.onChange((name) => {
     if (name === 'controlMode' || name === 'palette') applySettings();
     if (name === 'muted') applyMuted();
+    if (name === 'musicTune' || name === 'musicVolume' || name === 'sfxVolume') applyAudioSettings();
+    if (name === 'haptics') {
+        try { haptics.setEnabled(settings.get('haptics')); } catch (e) { /* ignore */ } // tick when switched on
+    }
 });
+
+// Music row: cycle Off / tunes and play a short preview of the newly picked tune.
+function changeMusicTune(dir) {
+    const id = settings.cycle('musicTune', dir);
+    if (id && id !== 'off') withMusic(m => m.playPreview(id));
+}
 
 // --- Row lists (main menu and Settings) ---
 // A row is { id, label(), visible?() } plus either
@@ -776,6 +815,11 @@ const settingsRows = [
         visible: () => isTouchDevice },
     { id: 'colours', label: () => 'Colours', setting: 'palette', format: (v) => findPalette(v).name },
     { id: 'sound', label: () => 'Sound', setting: 'muted', format: (v) => (v ? 'Off' : 'On') },
+    { id: 'music', label: () => 'Music', value: () => tuneName(settings.get('musicTune')), change: changeMusicTune },
+    { id: 'musicVolume', label: () => 'Music volume', setting: 'musicVolume' },
+    { id: 'sfxVolume', label: () => 'Sound effects', setting: 'sfxVolume' },
+    { id: 'vibration', label: () => 'Vibration', setting: 'haptics', format: (v) => (v ? 'On' : 'Off'),
+        visible: () => isTouchDevice && haptics.supported },
     { id: 'back', label: () => 'Back', select: () => returnToMenu() },
 ];
 
@@ -1279,6 +1323,9 @@ document.addEventListener('DOMContentLoaded', () => {
     setupUserPromptForm();
     audioManager = new AudioManager();
     applyMuted(); // Sound setting is remembered between visits
+    // The engine is inert until the audio context is unlocked (running) by a user gesture.
+    music = audioManager.attachMusic((ctx, dest) => new MusicEngine(ctx, dest));
+    applyAudioSettings();
     persistenceManager = new PersistenceManager();
     achievementManager = new AchievementManager(persistenceManager);
 
@@ -1307,6 +1354,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             inputHandler.releaseAll();
+            stopVibration();
             if (currentGameState === GameState.PLAYING) pauseGame();
             ShipUpgrades.save(persistenceManager, currentUser);
         }
@@ -1333,6 +1381,13 @@ document.addEventListener('DOMContentLoaded', () => {
         get settingsIndex() { return settingsIndex; },
         get settingsRows() { return visibleRows(settingsRows).map(r => ({ id: r.id, label: r.label(), value: rowValue(r) })); },
         get palette() { return palette.id; },
+        get haptics() {
+            return { supported: haptics.supported, enabled: haptics.enabled, calls: haptics.stats.calls,
+                stops: haptics.stats.stops, last: haptics.stats.last };
+        },
+        get musicMood() { return musicMood; },
+        get musicTune() { return settings.get('musicTune'); },
+        get music() { return music ? music.snapshot() : null; },
         get particles() { return Particles.countByShape(); },
         get joystick() { return inputHandler.getJoystick(); },
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
@@ -1520,6 +1575,7 @@ function pauseGame() {
     pauseMenuSelectionIndex = 0;
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
+    stopVibration();
     ShipUpgrades.save(persistenceManager, currentUser);
     console.log("Game Paused");
 }
@@ -1774,11 +1830,13 @@ function handleInput(deltaTime) {
             }
 
             if (inputHandler.consumeAction('hyperspace')) {
-                if (ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager) && !ship.isAlive) {
-                    handlePlayerDeath(true); // May set ship = null (respawn pending)
+                const jumped = ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager);
+                if (jumped && !ship.isAlive) {
+                    handlePlayerDeath(true); // May set ship = null (respawn pending); vibrates
                     audioManager.stopThrustSound();
                     break;
                 }
+                if (jumped) vibrate('hyperspace');
             }
             if (ship.isThrusting && !audioManager.isMuted) audioManager.startThrustSound();
             else audioManager.stopThrustSound();
@@ -2324,6 +2382,20 @@ function gameLoop(timestamp = 0) {
         loopErrorCount++;
         if (loopErrorCount <= 5) console.error('[gameLoop] frame error (game continues):', error);
     }
+    updateMusic();
+}
+
+// Every frame, in every state: follow the game's mood and schedule the next notes.
+function updateMusic() {
+    try {
+        musicMood = selectMood({
+            state: currentGameState,
+            bossActive: !!(currentBoss && currentBoss.isAlive),
+            lives,
+            tutorialActive: false,
+        });
+    } catch (e) { /* keep the previous mood */ }
+    withMusic(m => { m.setMood(musicMood); m.update(); });
 }
 
 // --- Helper Functions ---
@@ -2392,6 +2464,7 @@ function checkCollisions() {
             if (powerUp.isAlive && ship.collidesWith(powerUp)) {
                 console.log(`Collected power-up: ${powerUp.type.name}`);
                 activatePowerUp(powerUp.type);
+                vibrate('powerUp');
                 powerUp.isAlive = false;
             }
         }
@@ -2454,6 +2527,7 @@ function checkCollisions() {
                     if (audioManager) {
                         audioManager.play('collectGreen');
                     }
+                    vibrate('collect');
                     achievementManager.trackAsteroidCollected();
                     DynamicDifficulty.trackGreenCollected(ComboSystem.count);
                 } else {
@@ -2461,6 +2535,7 @@ function checkCollisions() {
                     if (activePowerUps.shield > 0) {
                         console.log("Collision: Ship <-> Red Asteroid (Shield blocked!)");
                         activePowerUps.shield = 0; // Shield breaks on impact
+                        vibrate('shieldHit');
                         ship.makeInvulnerable(1); // Grace period so the fragments don't kill instantly
                         Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                         asteroid.split(asteroids, audioManager);
@@ -2481,6 +2556,7 @@ function checkCollisions() {
                 if (activePowerUps.shield > 0) {
                     console.log("Collision: Ship <-> UFO (Shield blocked!)");
                     activePowerUps.shield = 0;
+                    vibrate('shieldHit');
                     ship.makeInvulnerable(1);
                     ufo.destroy(audioManager);
                 } else {
@@ -2497,6 +2573,7 @@ function checkCollisions() {
                 if (activePowerUps.shield > 0) {
                     console.log("Collision: Ship <-> UFO Bullet (Shield blocked!)");
                     activePowerUps.shield = 0;
+                    vibrate('shieldHit');
                     ship.makeInvulnerable(1);
                     bullet.destroy();
                 } else {
@@ -2610,11 +2687,13 @@ function checkCollisions() {
                     ScreenShake.trigger(10, 0.3);
                     updateScore(200);
                     ShipUpgrades.addCurrency(20); // Credits for weak point
+                    vibrate('bossWeakPoint');
                 }
 
                 if (bossDefeated) {
                     // Boss defeated!
                     console.log('Boss defeated! Awarding bonus score.');
+                    vibrate('bossDefeated');
                     FloatingTexts.spawn(viewWidth / 2, viewHeight / 3,
                         `BOSS DEFEATED! +${currentBoss.scoreValue}`, '#FFD700', 36, 3);
                     updateScore(currentBoss.scoreValue);
@@ -2671,6 +2750,7 @@ function checkCollisions() {
             console.log('Boss collision detected!');
             if (activePowerUps.shield > 0) {
                 activePowerUps.shield = 0;
+                vibrate('shieldHit');
                 console.log('Shield absorbed boss collision!');
                 ship.isInvulnerable = true;
                 ship.invulnerabilityTimer = 1;
@@ -2703,8 +2783,9 @@ function handlePlayerDeath(forced = false) {
         lives--;
         updateUI();
         if (lives <= 0) {
-            gameOver();
+            gameOver(); // plays the game-over vibration
         } else {
+            vibrate('lifeLost');
             console.log(`Starting respawn timer (${RESPAWN_DELAY}s)`);
             respawnTimer = RESPAWN_DELAY;
             ship = null;
@@ -2750,6 +2831,7 @@ function levelUp() {
     if (audioManager) {
         audioManager.play('collectGreen'); // Satisfying chime
     }
+    vibrate('levelUp');
 
     // Reset boss defeated flag for new level
     bossDefeatedThisLevel = false;
@@ -2793,6 +2875,10 @@ function gameOver() {
     }
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
+    // The game-over pattern (top priority) replaces whatever is running; nothing plays
+    // after it because the game-over screen has no vibrating events.
+    stopVibration();
+    vibrate('gameOver');
     checkAndAddHighScore(finalScore);
 
     // Save upgrade currency earned this session
@@ -3249,7 +3335,8 @@ function drawHelpScreen() {
         { action: 'Fire', keys: 'Red button' },
         { action: 'Hyperspace (Risky!)', keys: 'Star button' },
         { action: 'Pause Game', keys: 'Pause button (top right)' },
-        { action: 'Controls, colours, sound', keys: 'Menu > Settings' },
+        { action: 'Controls, colours, sound, music', keys: 'Menu > Settings' },
+        ...(haptics.supported ? [{ action: 'Vibration', keys: 'Menu > Settings' }] : []),
     ] : isTouchDevice ? [
         { action: 'Rotate Left/Right', keys: 'Arrow buttons (bottom left)' },
         { action: 'Thrust Forward', keys: 'Up arrow button' },
@@ -3257,7 +3344,8 @@ function drawHelpScreen() {
         { action: 'Hyperspace (Risky!)', keys: 'Star button' },
         { action: 'Pause Game', keys: 'Pause button (top right)' },
         { action: 'Toggle Mute', keys: 'Speaker button (top right)' },
-        { action: 'Controls, colours, sound', keys: 'Menu > Settings' },
+        { action: 'Controls, colours, sound, music', keys: 'Menu > Settings' },
+        ...(haptics.supported ? [{ action: 'Vibration', keys: 'Menu > Settings' }] : []),
     ] : [
         { action: 'Rotate Left/Right', keys: 'Arrow Keys / A,D' },
         { action: 'Thrust Forward', keys: 'Up Arrow / W' },
@@ -3265,7 +3353,7 @@ function drawHelpScreen() {
         { action: 'Hyperspace (Risky!)', keys: 'H / S / Down Arrow' },
         { action: 'Pause Game', keys: 'P / Escape' },
         { action: 'Toggle Mute', keys: 'M' },
-        { action: 'Colours, sound', keys: 'Menu > Settings' },
+        { action: 'Colours, sound, music', keys: 'Menu > Settings' },
     ];
 
     controls.forEach((ctrl, index) => {

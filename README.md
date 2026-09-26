@@ -78,6 +78,12 @@ In both schemes:
 - Tap the username box to open the on-screen keyboard, then tap OK.
 - Menus can also be clicked with a mouse. For a full-screen experience on iPad, use Safari's "Add to Home Screen".
 
+### Music, sound and vibration
+
+**Settings > Music** picks the background tune (Off, Synthwave, Ambient or Chiptune) and plays a short preview. The music is generated in the browser and follows the game: quiet in menus, fuller in play, tense on your last life and in boss fights, and dimmed while paused. **Music volume** and **Sound effects** go from 0 to 10; Mute (M or the speaker button) silences everything. All choices are remembered on that device.
+
+**Vibration (Android):** on phones and tablets whose browser supports it, pickups, hits, level-ups and boss kills give a short buzz. Turn it off with **Settings > Vibration**. iPhone, iPad and desktop browsers have no vibration support, so the setting does not appear there.
+
 ## Running Locally
 
 **IMPORTANT: The game must be run from a web server, not by opening the HTML file directly!**

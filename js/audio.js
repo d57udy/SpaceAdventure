@@ -1,9 +1,40 @@
+// Perceptual volume curve for the 0..10 settings scale: gain = (v / 10)^2.
+export function volumeToGain(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 1;
+    const x = Math.min(10, Math.max(0, n)) / 10;
+    return x * x;
+}
+
+// Let iOS/iPadOS treat game audio as "ambient": it follows the ring/silent switch and
+// mixes with the player's own music. Feature-detected; no-op elsewhere.
+export function preferAmbientAudioSession(nav = (typeof navigator !== 'undefined' ? navigator : null)) {
+    try {
+        const session = nav && nav.audioSession;
+        if (session && 'type' in session && session.type !== 'ambient') {
+            session.type = 'ambient';
+            return session.type === 'ambient';
+        }
+        return !!(session && session.type === 'ambient');
+    } catch (e) {
+        return false;
+    }
+}
+
+// Routing: sound effects -> sfxGain -> masterGain -> destination
+//          music         -> musicGain -> masterGain (the music engine applies its own
+//                           volume curve, so musicGain stays at unity)
+// Mute sets masterGain to 0 and silences both.
 export class AudioManager {
     constructor() {
         this.sounds = {}; // Store loaded audio buffers
         this.isMuted = false;
         this.audioContext = null;
         this.masterGain = null;
+        this.sfxGain = null;
+        this.musicGain = null;
+        this.sfxVolume = 10; // 0..10
+        this.music = null; // optional MusicEngine (see attachMusic)
         this.thrustSoundSource = null; // To control the looping thrust sound
         this.ufoHumSource = null; // To control the looping UFO hum
 
@@ -14,12 +45,19 @@ export class AudioManager {
                 this.audioContext = new AudioCtx();
                 this.masterGain = this.audioContext.createGain();
                 this.masterGain.connect(this.audioContext.destination);
+                this.sfxGain = this.audioContext.createGain();
+                this.sfxGain.connect(this.masterGain);
+                this.musicGain = this.audioContext.createGain();
+                this.musicGain.connect(this.masterGain);
             }
         } catch (e) {
             console.error("Web Audio not available:", e);
             this.audioContext = null;
             this.masterGain = null;
+            this.sfxGain = null;
+            this.musicGain = null;
         }
+        preferAmbientAudioSession();
         if (!this.audioContext) {
             console.warn("Audio disabled (no AudioContext).");
             return;
@@ -124,7 +162,7 @@ export class AudioManager {
 
     play(soundName, loop = false, volume = 1.0) {
         // 'suspended' (autoplay policy) or 'interrupted' (iOS, e.g. phone call) cannot play
-        if (!this.audioContext || this.isMuted || this.audioContext.state !== 'running') {
+        if (!this.audioContext || this.isMuted || this.sfxVolume <= 0 || this.audioContext.state !== 'running') {
             return null;
         }
 
@@ -145,7 +183,7 @@ export class AudioManager {
         gainNode.gain.value = volume;
 
         source.connect(gainNode);
-        gainNode.connect(this.masterGain);
+        gainNode.connect(this.sfxGain);
 
         source.loop = loop;
         source.start(0);
@@ -154,14 +192,14 @@ export class AudioManager {
 
     // Procedural collect sound - a pleasant rising chime
     playCollectSound() {
-        if (!this.audioContext || this.isMuted) return null;
+        if (!this.audioContext || this.isMuted || this.sfxVolume <= 0) return null;
 
         const now = this.audioContext.currentTime;
         const oscillator = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
 
         oscillator.connect(gainNode);
-        gainNode.connect(this.masterGain);
+        gainNode.connect(this.sfxGain);
 
         oscillator.type = 'sine';
         // Rising pitch for satisfying collection feeling
@@ -180,7 +218,7 @@ export class AudioManager {
 
     // Specific function for looping thrust sound
     startThrustSound() {
-        if (!this.thrustSoundSource && !this.isMuted && this.sounds.playerThrust) {
+        if (!this.thrustSoundSource && !this.isMuted && this.sfxVolume > 0 && this.sounds.playerThrust) {
             this.thrustSoundSource = this.play('playerThrust', true, 0.5); // Lower volume for loop
         }
     }
@@ -198,7 +236,7 @@ export class AudioManager {
 
     // Specific function for looping UFO hum
     startUfoHum() {
-        if (!this.ufoHumSource && !this.isMuted && this.sounds.ufoHum) {
+        if (!this.ufoHumSource && !this.isMuted && this.sfxVolume > 0 && this.sounds.ufoHum) {
             this.ufoHumSource = this.play('ufoHum', true, 0.4); // Lower volume
         }
     }
@@ -240,15 +278,58 @@ export class AudioManager {
         }
         if (this.isMuted) {
             this.masterGain.gain.setValueAtTime(0, this.audioContext.currentTime);
+            if (this.music) this.music.stop(); // no point scheduling notes nobody hears
             // Stop any active loops immediately
             this.stopThrustSound();
             this.stopUfoHum();
         } else {
             this.masterGain.gain.setValueAtTime(1, this.audioContext.currentTime);
+            if (this.music) this.music.start();
             // Loops will need to be restarted by the game logic if they should resume
         }
         console.log("Audio Muted:", this.isMuted);
         return this.isMuted;
+    }
+
+    // Sound effects volume on the settings scale 0..10 (v^2 curve applied here, once).
+    setSfxVolume(v) {
+        const n = Number(v);
+        this.sfxVolume = Number.isFinite(n) ? Math.min(10, Math.max(0, n)) : this.sfxVolume;
+        if (this.sfxVolume <= 0) {
+            this.stopThrustSound();
+            this.stopUfoHum();
+        }
+        if (this.sfxGain && this.audioContext) {
+            try {
+                this.sfxGain.gain.setValueAtTime(volumeToGain(this.sfxVolume), this.audioContext.currentTime);
+            } catch (e) { /* ignore */ }
+        }
+        return this.sfxVolume;
+    }
+
+    // Music volume 0..10. The music engine owns the v^2 curve (MusicEngine.setVolume), so
+    // this only forwards the value; musicGain stays at unity.
+    setMusicVolume(v) {
+        if (!this.music) return 0;
+        try {
+            return this.music.setVolume(v);
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    // Create the music engine on this context, routed into musicGain. Returns it (a silent
+    // no-op engine when Web Audio is unavailable). engineFactory: (ctx, destination) => engine.
+    attachMusic(engineFactory) {
+        if (this.music) return this.music;
+        try {
+            this.music = engineFactory(this.audioContext, this.musicGain);
+            if (this.isMuted && this.music) this.music.stop();
+        } catch (e) {
+            console.warn("Music unavailable:", e);
+            this.music = null;
+        }
+        return this.music;
     }
 
     // Resume audio context if suspended (e.g., by browser auto-play policy)

@@ -586,3 +586,29 @@ test('snapshot reports tune, mood and scheduling state', () => {
     assert.equal(s.scheduling, true);
     assert.equal(s.running, true);
 });
+
+// ---------------------------------------------------------------------------
+// Ramps continue from the automated value (regression: stale param.value made the
+// ambient pad filter snap open at each bar and ring, peaking near 2.0 when rendered)
+// ---------------------------------------------------------------------------
+test('ramps use cancelAndHoldAtTime when available and never jump to param.value', () => {
+    const { engine } = makeEngine('ambient', 'calm');
+    const p = new FakeParam(18000);
+    const holds = [];
+    p.cancelAndHoldAtTime = (t) => { holds.push(t); p.events.push({ type: 'hold', t }); return p; };
+    engine._ramp(p, 900, 2, 1);
+    assert.deepEqual(holds, [2]);
+    assert.ok(!p.events.some(e => e.type === 'set'), 'no setValueAtTime from the stale value');
+    assert.deepEqual(p.events.at(-1), { type: 'linear', v: 900, t: 3 });
+});
+
+test('ramps fall back to cancel + set + ramp without cancelAndHoldAtTime (or when it throws)', () => {
+    const { engine } = makeEngine('ambient', 'calm');
+    const p = new FakeParam(0.5);
+    engine._ramp(p, 1, 1, 0.5);
+    assert.deepEqual(p.events.map(e => e.type), ['cancel', 'set', 'linear']);
+    const q = new FakeParam(0.5);
+    q.cancelAndHoldAtTime = () => { throw new RangeError('not supported'); };
+    engine._ramp(q, 1, 1, 0.5);
+    assert.deepEqual(q.events.map(e => e.type), ['cancel', 'set', 'linear']);
+});
