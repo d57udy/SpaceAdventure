@@ -22,7 +22,7 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
-import { createPlayer, tickPowerUps } from './players.js';
+import { createPlayer, tickPowerUps, teamScore } from './players.js';
 
 // Game States Enum
 const GameState = {
@@ -901,7 +901,7 @@ function finishTutorial(skipped) {
     ScreenShake.reset();
     currentBoss = null;
     bossDefeatedThisLevel = false;
-    achievementManager.resetSessionStats();
+    if (p.achievements) p.achievements.resetSessionStats();
     p.ship = null;
     respawnPlayer(p, true);
     createLevelAsteroids();
@@ -1577,6 +1577,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
         lives: selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives(),
     })];
     players[0].input = inputHandler;
+    players[0].achievements = achievementManager; // the signed-in user's achievements
     level = 1;
     bullets = [];
     asteroids = [];
@@ -1615,7 +1616,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
     audioManager.stopUfoHum();
     updateUI();
     currentGameState = GameState.PLAYING;
-    achievementManager.resetSessionStats();
+    for (const p of players) if (p.achievements) p.achievements.resetSessionStats();
     pauseMenuSelectionIndex = 0;
     pausedGameExists = false;
 
@@ -1935,6 +1936,7 @@ function handleShipInput(p, deltaTime) {
         // Track shots fired for DDA
         if (bullets.length > bulletCountBefore) {
             DynamicDifficulty.trackShotFired();
+            p.stats.shots++;
         }
 
         // Triple shot: add 2 more bullets at angles if power-up active and we fired
@@ -2276,11 +2278,10 @@ function updateGame(deltaTime) {
             levelUp();
         }
 
-        const currentSnapshot = { score: p1().score, level: level, user: currentUser };
-        achievementManager.checkUnlockConditions(currentSnapshot);
+        for (const p of players) checkPlayerAchievements(p);
 
-        // Evaluate player performance and adjust difficulty
-        DynamicDifficulty.evaluate(p1().score);
+        // Evaluate performance (team-wide) and adjust difficulty
+        DynamicDifficulty.evaluate(teamScore(players));
     }
 
     // Update visual effects systems
@@ -2916,11 +2917,10 @@ function checkShipCollisions(p) {
                         scoreGained += comboResult.streakBonus;
                     }
 
-                    updateScore(scoreGained);
-
-                    // Add credits for upgrades (10% of score)
-                    const creditsEarned = Math.ceil(scoreGained * 0.1);
-                    ShipUpgrades.addCurrency(creditsEarned);
+                    // Points, plus credits for upgrades (10% of score)
+                    awardPoints(p, scoreGained);
+                    p.stats.greens++;
+                    p.stats.bestCombo = Math.max(p.stats.bestCombo, p.combo.count);
 
                     asteroid.destroy();
 
@@ -2940,7 +2940,7 @@ function checkShipCollisions(p) {
                         audioManager.play('collectGreen');
                     }
                     vibrate('collect');
-                    achievementManager.trackAsteroidCollected();
+                    trackAchievement(p, 'trackAsteroidCollected');
                     DynamicDifficulty.trackGreenCollected(p.combo.count);
                 } else {
                     // RED asteroid: Lose a life (unless shield is active)!
@@ -3010,6 +3010,7 @@ function checkCollisions() {
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
         if (!bullet.isAlive || !bullet.isPlayerBullet) continue;
+        const shooter = bulletOwner(bullet);
         let bulletHit = false;
         for (let j = asteroids.length - 1; j >= 0; j--) {
             const asteroid = asteroids[j];
@@ -3018,6 +3019,7 @@ function checkCollisions() {
                 bullet.destroy();
 
                 DynamicDifficulty.trackShotHit(); // Track bullet hit
+                if (shooter) shooter.stats.hits++;
                 if (asteroid.isGreen()) {
                     // Shooting green asteroids: NO points! (wasteful - should collect instead)
                     console.log("Collision: Player Bullet <-> Green Asteroid (Wasted!)");
@@ -3037,7 +3039,8 @@ function checkCollisions() {
                     spawnPowerUpAt(asteroid.x, asteroid.y);
                     Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                     asteroid.split(asteroids, audioManager);
-                    achievementManager.trackAsteroidDestroyed();
+                    trackAchievement(shooter, 'trackAsteroidDestroyed');
+                    if (shooter) shooter.stats.redsShot++;
                     DynamicDifficulty.trackRedDestroyed();
                     rumble('redDestroyed');
                 }
@@ -3053,17 +3056,17 @@ function checkCollisions() {
                 console.log("Collision: Player Bullet <-> UFO");
                 bullet.destroy();
                 DynamicDifficulty.trackShotHit(); // Track bullet hit
+                if (shooter) shooter.stats.hits++;
                 const scoreGained = Math.round(ufo.scoreValue * selectedDifficulty.scoreMultiplier);
-                updateScore(scoreGained);
-                // Award credits for UFO kill (10% of score)
-                const creditsEarned = Math.ceil(scoreGained * 0.1);
-                ShipUpgrades.addCurrency(creditsEarned);
+                // Points and credits for the UFO kill (10% of score) go to the shooter
+                awardPoints(shooter, scoreGained);
+                if (shooter) shooter.stats.ufos++;
                 // UFOs have higher chance to drop power-ups
                 if (Math.random() < 0.5) {
                     spawnPowerUpAt(ufo.x, ufo.y);
                 }
                 ufo.destroy(audioManager);
-                achievementManager.trackUfoDestroyed();
+                trackAchievement(shooter, 'trackUfoDestroyed');
                 break;
             }
         }
@@ -3099,8 +3102,10 @@ function checkCollisions() {
 
             const hitWeakPoint = currentBoss.checkBulletHit(bullet);
             if (hitWeakPoint) {
+                const shooter = bulletOwner(bullet);
                 bullet.destroy();
                 DynamicDifficulty.trackShotHit();
+                if (shooter) shooter.stats.hits++;
 
                 // Damage the weak point
                 const bossDefeated = currentBoss.damageWeakPoint(hitWeakPoint, 10);
@@ -3114,8 +3119,7 @@ function checkCollisions() {
                     FloatingTexts.spawn(bullet.x, bullet.y - 20, 'WEAK POINT!', '#FFFF00', 24);
                     Particles.explode(bullet.x, bullet.y, '#FF00FF', 25);
                     ScreenShake.trigger(10, 0.3);
-                    updateScore(200);
-                    ShipUpgrades.addCurrency(20); // Credits for weak point
+                    awardPoints(shooter, 200, 20); // 20 credits for a weak point
                     vibrate('bossWeakPoint');
                 }
 
@@ -3125,10 +3129,13 @@ function checkCollisions() {
                     vibrate('bossDefeated');
                     FloatingTexts.spawn(viewWidth / 2, viewHeight / 3,
                         `BOSS DEFEATED! +${currentBoss.scoreValue}`, '#FFD700', 36, 3);
-                    updateScore(currentBoss.scoreValue);
-                    // Big credit bonus for defeating boss (20% of boss score)
+                    // Big credit bonus for defeating boss (20% of boss score); with more
+                    // players the bonus is split equally
                     const bossCredits = Math.ceil(currentBoss.scoreValue * 0.2);
-                    ShipUpgrades.addCurrency(bossCredits);
+                    for (const p of players) {
+                        awardPoints(p, Math.round(currentBoss.scoreValue / players.length),
+                            Math.ceil(bossCredits / players.length));
+                    }
                     FloatingTexts.spawn(viewWidth / 2, viewHeight / 3 + 50,
                         `+${bossCredits} CREDITS!`, '#FFD700', 24, 3);
                     Particles.explode(currentBoss.x, currentBoss.y, '#FF00FF', 50);
@@ -3222,6 +3229,7 @@ function handlePlayerDeath(p, forced = false) {
         showComboLost(p, p.combo.break());
 
         p.lives--;
+        p.stats.deaths++;
         updateUI();
         if (p.lives <= 0) {
             gameOver(); // plays the game-over vibration
@@ -3304,7 +3312,7 @@ function levelUp() {
     resetUfoSpawnTimer();
 
     updateUI();
-    achievementManager.checkUnlockConditions({ score: p1().score, level: level, user: currentUser });
+    for (const p of players) checkPlayerAchievements(p);
 }
 
 function gameOver() {
@@ -3673,17 +3681,37 @@ function drawAchievementNotifications() {
     }
 }
 
-function updateScore(amount) {
-    if (amount <= 0) return;
-    const p = p1();
-    p.score += amount;
+// The player who fired a bullet (single-player: player 1)
+function bulletOwner(bullet) {
+    return p1();
+}
+
+// Every scoring event goes through here: the player's score and extra-life threshold, their
+// achievements, then their upgrade credits (10% of the points unless given; only profiles
+// with their own upgrades earn credits).
+function awardPoints(p, points, credits = Math.ceil(points * 0.1)) {
+    if (!p || points <= 0) return;
+    p.score += points;
     if (p.score >= p.nextExtraLifeScore) {
         p.lives++;
         console.log(`Extra Life! Score: ${p.score}, Lives: ${p.lives}`);
         p.nextExtraLifeScore += Math.round(EXTRA_LIFE_SCORE * DynamicDifficulty.extraLifeThresholdMod);
     }
     updateUI();
-    achievementManager.checkUnlockConditions({ score: p1().score, level: level, user: currentUser });
+    checkPlayerAchievements(p);
+    if (credits > 0 && p.upgrades && p.upgrades.persistent) {
+        p.upgrades.addCurrency(credits);
+        p.stats.creditsEarned += credits;
+    }
+}
+
+// Achievements: one manager per profiled player (player 1 uses the signed-in user's
+// manager); guests have none.
+function trackAchievement(p, method) {
+    if (p && p.achievements) p.achievements[method]();
+}
+function checkPlayerAchievements(p) {
+    if (p && p.achievements) p.achievements.checkUnlockConditions({ score: p.score, level: level, user: p.profile });
 }
 
 function drawPauseMenu() {
