@@ -22,6 +22,7 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
+import { createPlayer } from './players.js';
 
 // Game States Enum
 const GameState = {
@@ -525,8 +526,11 @@ let currentBoss = null;
 let bossDefeatedThisLevel = false;
 const BOSS_LEVEL_INTERVAL = 2; // Boss every 2 levels
 
-let score = 0;
-let lives = Difficulty.MEDIUM.startingLives; // Default before selection
+// Players (js/players.js): each has its own ship, score, lives, respawn timer and extra-life
+// threshold. Single-player is exactly one player (mode 'solo'); players[0] is the signed-in
+// player and shares ShipUpgrades. A default player exists before the first game.
+let players = [createPlayer({ slot: 0, lives: Difficulty.MEDIUM.startingLives, upgrades: ShipUpgrades })];
+function p1() { return players[0]; }
 let level = 1;
 let currentGameState = GameState.PROMPT_USER;
 let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty
@@ -926,10 +930,11 @@ function finishTutorial(skipped) {
     tutorial.reset();
     tutorialPending = [];
     tutorialTarget = null;
-    score = 0;
+    const p = p1();
+    p.score = 0;
     level = 1;
-    lives = selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives();
-    nextExtraLifeScore = EXTRA_LIFE_SCORE;
+    p.lives = selectedDifficulty.startingLives + p.upgrades.getExtraStartingLives();
+    p.nextExtraLifeScore = EXTRA_LIFE_SCORE;
     bullets = [];
     asteroids = [];
     ufos = [];
@@ -1008,13 +1013,11 @@ function applyControlModeClass() {
 
 let upgradeMenuIndex = 0; // For navigating upgrade options
 let currentMenuOptions = []; // Will be populated based on state
-let respawnTimer = 0;
 let ufoSpawnTimer = UFO_SPAWN_BASE_INTERVAL;
 let finalScore = 0;
 let highScores = []; // Holds scores for the *current* user usually
 let allHighScores = []; // Holds combined scores for display
 let allAchievements = {}; // Holds map of username -> Set of achievement IDs
-let nextExtraLifeScore = EXTRA_LIFE_SCORE; // Track the next threshold
 let pauseMenuSelectionIndex = 0; // For pause menu navigation
 const pauseMenuOptions = ['Resume', 'Restart', 'Main Menu']; // Pause menu items
 let pausedGameExists = false; // Flag to track paused game
@@ -1409,8 +1412,8 @@ function activatePowerUp(type) {
             activePowerUps.magnet = type.duration;
             break;
         case 'extra_life':
-            lives++;
-            console.log(`Extra life! Lives: ${lives}`);
+            p1().lives++;
+            console.log(`Extra life! Lives: ${p1().lives}`);
             updateUI();
             if (audioManager) audioManager.play('collectGreen');
             break;
@@ -1506,8 +1509,8 @@ document.addEventListener('DOMContentLoaded', () => {
     window.__spaceAdventure = {
         get state() { return currentGameState; },
         get user() { return currentUser; },
-        get score() { return score; },
-        get lives() { return lives; },
+        get score() { return p1().score; },
+        get lives() { return p1().lives; },
         get level() { return level; },
         get menuIndex() { return menuSelectionIndex; },
         get menuOptions() { return currentMenuOptions.map(o => o.label()); },
@@ -1600,11 +1603,13 @@ function startGame({ tutorial: withTutorial = false } = {}) {
         return;
     }
     console.log(`Starting New Game (User: ${currentUser}, Difficulty: ${selectedDifficulty.name})`);
-    score = 0;
-    // Apply upgrade: extra starting lives
-    lives = selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives();
+    // One fresh player record (score 0, extra-life threshold reset); upgrade: extra starting lives
+    players = [createPlayer({
+        slot: 0, name: currentUser, profile: currentUser, upgrades: ShipUpgrades,
+        lives: selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives(),
+    })];
+    players[0].input = inputHandler;
     level = 1;
-    nextExtraLifeScore = EXTRA_LIFE_SCORE;
     bullets = [];
     asteroids = [];
     ufos = [];
@@ -1881,8 +1886,8 @@ function updateUI() {
     const creditsElement = document.getElementById('credits');
     const userElement = document.getElementById('user-display'); // Get user display element
 
-    if (scoreElement) scoreElement.textContent = `Score: ${score}`;
-    if (livesElement) livesElement.textContent = `Lives: ${lives}`;
+    if (scoreElement) scoreElement.textContent = `Score: ${p1().score}`;
+    if (livesElement) livesElement.textContent = `Lives: ${p1().lives}`;
     if (levelElement) levelElement.textContent = `Level: ${tutorial.active ? 'Training' : level}`;
     if (creditsElement) creditsElement.textContent = `Credits: ${ShipUpgrades.currency}`;
     // Update user display, show placeholder if no user
@@ -2199,11 +2204,13 @@ function updateGame(deltaTime) {
 
     // --- Game Playing Logic ---
 
-    if (respawnTimer > 0) {
-        respawnTimer -= deltaTime;
-        if (respawnTimer <= 0 && lives > 0 && currentGameState !== GameState.GAME_OVER) {
-            console.log("Respawn timer finished, attempting respawn...");
-            respawnPlayer();
+    for (const p of players) {
+        if (p.respawnTimer > 0) {
+            p.respawnTimer -= deltaTime;
+            if (p.respawnTimer <= 0 && p.lives > 0 && currentGameState !== GameState.GAME_OVER) {
+                console.log("Respawn timer finished, attempting respawn...");
+                respawnPlayer();
+            }
         }
     }
 
@@ -2211,7 +2218,7 @@ function updateGame(deltaTime) {
         return; // No updates if game is over
     }
 
-    if (ship && ship.isAlive && respawnTimer <= 0) {
+    if (ship && ship.isAlive && p1().respawnTimer <= 0) {
         ship.update(deltaTime, viewWidth, viewHeight, audioManager);
         // Wrap player position in bounded world
         wrapWorldPosition(ship);
@@ -2330,15 +2337,15 @@ function updateGame(deltaTime) {
 
         // Level up when all asteroids are cleared and boss is defeated (if present)
         const bossCleared = !currentBoss || !currentBoss.isAlive;
-        if (asteroids.length === 0 && ufos.length === 0 && bossCleared && respawnTimer <= 0 && ship && ship.isAlive) {
+        if (asteroids.length === 0 && ufos.length === 0 && bossCleared && p1().respawnTimer <= 0 && ship && ship.isAlive) {
             levelUp();
         }
 
-        const currentSnapshot = { score: score, level: level, user: currentUser };
+        const currentSnapshot = { score: p1().score, level: level, user: currentUser };
         achievementManager.checkUnlockConditions(currentSnapshot);
 
         // Evaluate player performance and adjust difficulty
-        DynamicDifficulty.evaluate(score);
+        DynamicDifficulty.evaluate(p1().score);
     }
 
     // Update visual effects systems
@@ -2447,7 +2454,7 @@ function renderGame() {
             ctx.translate(-Camera.x + ScreenShake.offsetX, -Camera.y + ScreenShake.offsetY);
 
             // Draw all entities with wrapping support for seamless scrolling
-            if (ship && ship.isAlive && respawnTimer <= 0) drawEntityWrapped(ship, ctx);
+            if (ship && ship.isAlive && p1().respawnTimer <= 0) drawEntityWrapped(ship, ctx);
             asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
             ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
@@ -2548,7 +2555,7 @@ function renderGame() {
             ctx.translate(-Camera.x, -Camera.y);
 
             // Draw all entities with wrapping support
-            if (ship && ship.isAlive && respawnTimer <= 0) drawEntityWrapped(ship, ctx);
+            if (ship && ship.isAlive && p1().respawnTimer <= 0) drawEntityWrapped(ship, ctx);
             asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
             ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
@@ -2829,7 +2836,7 @@ function updateMusic() {
         musicMood = selectMood({
             state: currentGameState,
             bossActive: !!(currentBoss && currentBoss.isAlive),
-            lives,
+            lives: p1().lives,
             tutorialActive: tutorial.active,
         });
     } catch (e) { /* keep the previous mood */ }
@@ -3234,7 +3241,8 @@ function handlePlayerDeath(forced = false) {
     }
 
     if (destroyed) {
-        console.log(`Player death handled. Lives left: ${lives - 1}`);
+        const p = p1();
+        console.log(`Player death handled. Lives left: ${p.lives - 1}`);
         audioManager.stopThrustSound();
         DynamicDifficulty.onPlayerDeath(); // Immediate difficulty adjustment on death
 
@@ -3243,14 +3251,14 @@ function handlePlayerDeath(forced = false) {
         ScreenShake.trigger(15, 0.5);
         ComboSystem.break();
 
-        lives--;
+        p.lives--;
         updateUI();
-        if (lives <= 0) {
+        if (p.lives <= 0) {
             gameOver(); // plays the game-over vibration
         } else {
             vibrate('lifeLost');
             console.log(`Starting respawn timer (${RESPAWN_DELAY}s)`);
-            respawnTimer = RESPAWN_DELAY;
+            p.respawnTimer = RESPAWN_DELAY;
             ship = null;
         }
     }
@@ -3267,7 +3275,7 @@ function respawnPlayer(isInitialSpawn = false) {
 
          ship = new PlayerShip(centerX, centerY);
          if (activePowerUps.rapid_fire > 0) ship.shootCooldown = 0.1;
-         respawnTimer = 0;
+         p1().respawnTimer = 0;
          audioManager.stopThrustSound();
 
          // Make ship invulnerable after respawn (unless initial spawn)
@@ -3324,12 +3332,12 @@ function levelUp() {
     resetUfoSpawnTimer();
 
     updateUI();
-    achievementManager.checkUnlockConditions({ score: score, level: level, user: currentUser });
+    achievementManager.checkUnlockConditions({ score: p1().score, level: level, user: currentUser });
 }
 
 function gameOver() {
     console.log("Game Over!");
-    finalScore = score;
+    finalScore = p1().score;
     currentGameState = GameState.GAME_OVER;
     gameOverInputDelay = 1;
     pausedGameExists = false;
@@ -3388,7 +3396,7 @@ function resetUfoSpawnTimer() {
 }
 
 function updateUfoSpawning(deltaTime) {
-    if (currentGameState !== GameState.PLAYING || respawnTimer > 0) return;
+    if (currentGameState !== GameState.PLAYING || p1().respawnTimer > 0) return;
 
     if (ufos.length >= UFO.MaxActiveUFOs) return;
 
@@ -3694,14 +3702,15 @@ function drawAchievementNotifications() {
 
 function updateScore(amount) {
     if (amount <= 0) return;
-    score += amount;
-    if (score >= nextExtraLifeScore) {
-        lives++;
-        console.log(`Extra Life! Score: ${score}, Lives: ${lives}`);
-        nextExtraLifeScore += Math.round(EXTRA_LIFE_SCORE * DynamicDifficulty.extraLifeThresholdMod);
+    const p = p1();
+    p.score += amount;
+    if (p.score >= p.nextExtraLifeScore) {
+        p.lives++;
+        console.log(`Extra Life! Score: ${p.score}, Lives: ${p.lives}`);
+        p.nextExtraLifeScore += Math.round(EXTRA_LIFE_SCORE * DynamicDifficulty.extraLifeThresholdMod);
     }
     updateUI();
-    achievementManager.checkUnlockConditions({ score: score, level: level, user: currentUser });
+    achievementManager.checkUnlockConditions({ score: p1().score, level: level, user: currentUser });
 }
 
 function drawPauseMenu() {
