@@ -1,7 +1,7 @@
 // Keyboard + mouse integration tests (desktop project).
 import { test, expect } from '@playwright/test';
 import {
-  MENU, MENU_LABELS, CONTROL_MODE_KEY, SETTINGS_ROWS_DESKTOP, openFresh, snap, hook, waitForState,
+  MENU, MENU_LABELS, CONTROL_MODE_KEY, SETTINGS_ROWS_DESKTOP, withFullscreenRow, openFresh, snap, hook, waitForState,
   loginWithKeyboard, frames, menuItemCenter, tapRegionCenter, tapRegionPoint, drawnTexts, difficultyText,
 } from './helpers.js';
 
@@ -485,7 +485,7 @@ test.describe('keyboard: menu layout and control mode on desktop', () => {
     await selectMenuIndex(page, MENU.SETTINGS);
     await page.keyboard.press('Enter');
     await waitForState(page, 'settings');
-    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(SETTINGS_ROWS_DESKTOP);
+    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(await withFullscreenRow(page, SETTINGS_ROWS_DESKTOP));
   });
 
   test('an invalid saved control mode falls back to joystick', async ({ page }) => {

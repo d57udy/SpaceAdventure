@@ -32,6 +32,8 @@ import {
 } from './lobby.js';
 import { buildResults, resultBanner, historyEntry } from './mpResults.js';
 import { MP_KEYS, addHistory, addToBoard, recordRivalry, isHistory, isBoard, isRivalry } from './mpRecords.js';
+import { initPwa } from './pwa.js';
+import { createPwaUi } from './pwaUi.js';
 
 // Game States Enum
 const GameState = {
@@ -686,6 +688,9 @@ const settingsRows = [
         visible: () => gamepadSeen },
     { id: 'offerTutorial', label: () => 'Offer tutorial', setting: 'offerTutorial', format: (v) => (v ? 'On' : 'Off') },
     { id: 'replayTutorial', label: () => 'Replay tutorial', select: () => replayTutorial() },
+    // Tapped/clicked through a DOM button laid over the row (fullscreen needs a real click)
+    { id: 'fullscreen', label: () => (pwa && pwa.isFullscreen() ? 'Exit full screen' : 'Full screen'),
+        select: () => pwaUi && pwaUi.toggleFromGame(), visible: () => !!pwa && pwa.shouldShowFullscreenButton() },
     { id: 'back', label: () => 'Back', select: () => returnToMenu() },
 ];
 
@@ -1917,6 +1922,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     window.addEventListener('pagehide', () => saveAllUpgrades());
 
+    // Installable app: service worker, update toast, install / iOS hint, full screen
+    pwa = initPwa({ getState: () => currentGameState, onBeforeReload: () => saveAllUpgrades() });
+    pwaUi = createPwaUi(pwa, { getState: () => currentGameState, notify: showToast });
+
     // Read-only snapshot used by the automated browser tests
     window.__spaceAdventure = {
         get state() { return currentGameState; },
@@ -1945,6 +1954,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get musicTune() { return settings.get('musicTune'); },
         get music() { return music ? music.snapshot() : null; },
         get particles() { return Particles.countByShape(); },
+        get pwa() { return pwa ? { ...pwa.getPwaState(), ui: pwaUi ? pwaUi.state : null } : null; },
         get joystick() { return inputHandler.getJoystick(); },
         get lastInputSource() { return inputHandler.lastInputSource; },
         get inputContext() { return inputHandler.context; },
@@ -2256,6 +2266,7 @@ function setupUserPromptForm() {
 // Show or hide DOM overlays that depend on the game state
 function syncDomToState() {
     document.body.classList.toggle('state-playing', currentGameState === GameState.PLAYING);
+    if (pwaUi) pwaUi.sync();
     const form = document.getElementById('user-prompt');
     if (form) {
         const show = currentGameState === GameState.PROMPT_USER;
@@ -2303,7 +2314,9 @@ function resizeCanvas() {
     // Logical (CSS) size: a square of 90% of the smaller window side. Backing store: that
     // times devicePixelRatio (capped), so lines and text are sharp on retina tablets.
     const dpr = window.devicePixelRatio || 1;
-    const size = computeCanvasSize(window.innerWidth, window.innerHeight, dpr, renderScaleCap);
+    const safe = safeAreaInsets(); // notch / display cutout: keep the canvas inside the safe area
+    const size = computeCanvasSize(window.innerWidth - safe.left - safe.right,
+        window.innerHeight - safe.top - safe.bottom, dpr, renderScaleCap);
     if (canvas.width > 0 && size.css < 50) return; // Ignore transient tiny/zero sizes (would zero the world)
     const cssChanged = size.css !== viewWidth || size.css !== viewHeight || !canvasSized;
     const backingChanged = canvas.width !== size.backing || canvas.height !== size.backing;
@@ -2364,6 +2377,15 @@ function resizeCanvas() {
 
     console.log(`Canvas resized to: ${viewWidth}x${viewHeight} CSS px, backing ${canvas.width}x${canvas.height} (scale ${renderScale.toFixed(3)})`);
     console.log(`World size: ${WORLD_WIDTH}x${WORLD_HEIGHT}`);
+}
+
+let pwa = null; // js/pwa.js controller (set at startup)
+let pwaUi = null; // js/pwaUi.js DOM (app bar, toast, iOS hint, Full screen buttons)
+// Safe-area insets in CSS px, from the --safe-* env() variables in style.css
+function safeAreaInsets() {
+    const cs = getComputedStyle(document.documentElement);
+    const read = (name) => Math.max(0, parseFloat(cs.getPropertyValue(name)) || 0);
+    return { top: read('--safe-top'), right: read('--safe-right'), bottom: read('--safe-bottom'), left: read('--safe-left') };
 }
 
 // Re-run resizeCanvas when devicePixelRatio changes without a resize event (browser zoom,
@@ -4331,6 +4353,7 @@ function drawSettingsScreen() {
             ctx.fillText(row.id === 'back' ? '< Back to Menu >' : row.label(), viewWidth / 2, y);
         }
         addRowTapRegion(x, top, w, h, row, index, (i) => { settingsIndex = i; });
+        if (row.id === 'fullscreen' && pwaUi) pwaUi.placeSettingsButton(x, top, w, h);
     });
 
     ctx.textAlign = 'center';

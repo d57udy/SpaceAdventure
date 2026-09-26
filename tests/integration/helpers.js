@@ -27,6 +27,16 @@ export const touchSettingsRows = (withVibration) => (withVibration
   ? ['controls', 'colours', 'sound', 'music', 'musicVolume', 'sfxVolume', 'vibration', ...TUTORIAL_ROWS, 'back']
   : SETTINGS_ROWS_TOUCH);
 
+/**
+ * Expected Settings rows plus 'Full screen' (before Back) when this browser has the
+ * Fullscreen API (Item 3: the row is hidden on iPhone and in an installed app).
+ */
+export async function withFullscreenRow(page, rows) {
+  const supported = await page.evaluate(() => !!(document.fullscreenEnabled || document.webkitFullscreenEnabled));
+  const i = rows.indexOf('back');
+  return supported ? [...rows.slice(0, i), 'fullscreen', ...rows.slice(i)] : rows;
+}
+
 export const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
 export const PALETTE_KEY = 'spaceAdventure_palette';
 export const MUTED_KEY = 'spaceAdventure_muted';
@@ -97,10 +107,13 @@ export async function waitForState(page, state, timeout = 5000) {
  *                pressing Start goes straight to Level 1 as before the tutorial existed;
  *                true -> leave it at its default (On): a new player's first Start asks.
  *   gamepads:    [{ id, mapping }] -> install fake controllers (see installGamepads).
+ *   url:         page to open, relative to the project's baseURL (default '/'; the PWA
+ *                tests use './?sw=1', which also works under the /SpaceAdventure/ sub-path).
  * Returns the array that page errors are pushed into.
  */
 export async function openFresh(page, {
   controlMode = null, storage = {}, recordText = false, vibrate = false, tutorial = false, gamepads = null,
+  url = '/',
 } = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
@@ -138,7 +151,7 @@ export async function openFresh(page, {
     });
   }
   if (gamepads) await installGamepads(page, gamepads);
-  await page.goto('/');
+  await page.goto(url);
   await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: 10000 });
   return errors;
 }

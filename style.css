@@ -1,6 +1,17 @@
+/* Safe areas (notch, rounded corners, Android display cutouts). resizeCanvas() in
+   js/main.js reads these with getComputedStyle and sizes the canvas inside them. */
+:root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+}
+
 body {
     margin: 0;
-    padding: 0;
+    /* Centre the game inside the safe area */
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+    box-sizing: border-box;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -334,4 +345,137 @@ body.tutorial-buttons.tutorial-step-shoot #touch-fire-btn {
 
 .joystick-base.tutorial-highlight {
     opacity: 1;
+}
+
+/* --- Installable app: app bar, iOS hint, update toast, Full screen buttons --- */
+/* Real DOM buttons with click handlers: browsers only allow fullscreen and the
+   install prompt inside a user gesture, which canvas taps and the game's
+   touch buttons (touchstart is cancelled) do not provide. */
+.app-btn[hidden] {
+    display: none !important;
+}
+
+.app-bar {
+    position: fixed;
+    top: calc(8px + var(--safe-top));
+    right: calc(8px + var(--safe-right));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    z-index: 30;
+}
+
+.app-btn {
+    font: 14px Arial, sans-serif;
+    color: white;
+    background-color: rgba(40, 40, 40, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 6px;
+    padding: 8px 12px;
+    min-height: 36px;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.app-btn:hover,
+.app-btn:focus-visible {
+    border-color: #FFD700;
+}
+
+.app-notices {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + var(--safe-bottom));
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: max-content;
+    max-width: calc(100vw - 24px);
+    z-index: 30;
+}
+
+.ios-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    max-width: 420px;
+    padding: 10px 12px;
+    background-color: rgba(20, 20, 30, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+.ios-hint[hidden] {
+    display: none;
+}
+
+.ios-hint-text {
+    margin: 0;
+}
+
+.ios-hint-note {
+    color: #BBBBBB;
+    font-size: 12px;
+}
+
+.ios-hint-close {
+    flex: none;
+    min-height: 32px;
+    padding: 4px 10px;
+}
+
+.update-toast {
+    background-color: rgba(34, 136, 68, 0.95);
+    border-color: #7f7;
+    font-size: 16px;
+    padding: 10px 16px;
+}
+
+/* Only outside play: never distract (or let an update interrupt) a running game */
+body.state-playing .app-bar,
+body.state-playing .app-notices {
+    display: none;
+}
+
+/* In-game Full screen toggle, first in the top-right cluster next to mute and pause */
+.game-fs-btn {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    background-color: rgba(255, 255, 255, 0.18);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    pointer-events: auto;
+}
+
+.game-fs-btn svg {
+    width: 50%;
+    height: 50%;
+    pointer-events: none;
+}
+
+/* Transparent button over the Settings screen's "Full screen" row (the canvas draws the row) */
+.settings-fs-btn {
+    position: absolute;
+    z-index: 15;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    min-height: 0;
+}
+
+@media (max-width: 480px), (max-height: 480px) {
+    .game-fs-btn { width: 42px; height: 42px; }
+    .app-btn { font-size: 12px; padding: 6px 8px; min-height: 30px; }
 }
