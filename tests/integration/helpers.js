@@ -117,6 +117,24 @@ export async function openFresh(page, {
 } = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
+  // Silence the speakers (not the game): route every live AudioContext through a zero gain.
+  // --mute-audio covers Chromium; this also covers WebKit. OfflineAudioContext renders are untouched.
+  await page.addInitScript(() => {
+    const Base = window.BaseAudioContext || window.AudioContext || window.webkitAudioContext;
+    const desc = Base && Object.getOwnPropertyDescriptor(Base.prototype, 'destination');
+    if (!desc || !desc.get) return;
+    const silent = new WeakMap();
+    Object.defineProperty(Base.prototype, 'destination', {
+      configurable: true,
+      get() {
+        const real = desc.get.call(this);
+        if (window.OfflineAudioContext && this instanceof window.OfflineAudioContext) return real;
+        let gain = silent.get(this);
+        if (!gain) { gain = this.createGain(); gain.gain.value = 0; gain.connect(real); silent.set(this, gain); }
+        return gain;
+      },
+    });
+  });
   const seed = { ...(tutorial ? {} : { [OFFER_TUTORIAL_KEY]: 'false' }), ...storage };
   if (controlMode) seed[CONTROL_MODE_KEY] = controlMode;
   // Clear storage once per test (not on reloads the test itself performs)

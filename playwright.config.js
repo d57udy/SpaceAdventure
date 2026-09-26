@@ -30,9 +30,14 @@ export default defineConfig({
   expect: { timeout: 5000 },
   retries: process.env.CI ? 1 : 0,
   fullyParallel: true,
+  // Keep the machine usable: at most 2 browsers at a time unless PW_WORKERS says otherwise.
+  // (Several full parallel runs at once overloaded the developer's Mac.)
+  workers: Number(process.env.PW_WORKERS) || 2,
   reporter: [['list']],
   use: {
     headless: true,
+    // Never play game sounds through the speakers during tests
+    launchOptions: { args: ['--mute-audio'] },
     baseURL: `http://localhost:${PORT}`,
     trace: 'retain-on-failure',
   },
