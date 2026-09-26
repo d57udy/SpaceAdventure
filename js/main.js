@@ -1746,6 +1746,9 @@ function resetUserData() {
         ShipUpgrades.reset();
         alert("User data reset.");
     }
+    // The modal dialogs swallow the keyup of the Enter/Space that opened them; forget held
+    // keys so the next press of that key registers (it looked like a repeat before).
+    inputHandler.releaseAll();
 }
 
 function changeUser() {

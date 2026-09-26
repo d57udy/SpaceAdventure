@@ -603,7 +603,14 @@ export async function skipRoundIntro(page) {
     if (src === 'kbLeft') await page.keyboard.press('Space');
     else if (src === 'kbRight') await page.keyboard.press('Enter');
     else if (src === 'touch:a' || src === 'touch:b') {
-      await tapAt(page, await centerOf(page, src === 'touch:a' ? '#touch-fire-btn' : '#touch-fire-btn-b'));
+      const fire = src === 'touch:a' ? '#touch-fire-btn' : '#touch-fire-btn-b';
+      // A controller was used last: the touch controls come back with the next touch
+      if (!(await page.locator(fire).isVisible())) {
+        const c = await page.locator('#gameCanvas').boundingBox();
+        await tapAt(page, { x: c.x + c.width / 2, y: c.y + c.height - 30 });
+        await expect(page.locator(fire)).toBeVisible();
+      }
+      await tapAt(page, await centerOf(page, fire));
     } else if (/^pad:\d+$/.test(src)) {
       await padTap(page, PAD.A, { pad: Number(src.slice(4)) });
     }

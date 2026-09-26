@@ -168,8 +168,12 @@ test.describe('co-op (shared keyboard)', () => {
       await waitForShip(page, 0);
       await loseLife(page, 0, 's');
     }
-    await waitForShip(page, 1);
-    await loseLife(page, 1, 'ArrowDown');
+    // (P2 has one life left and may already have been hit by a rock or UFO meanwhile)
+    await expect.poll(async () => {
+      const p2 = await player(page, 1);
+      return p2.out || !!(p2.ship && p2.ship.isAlive);
+    }, { timeout: 8000 }).toBe(true);
+    if (!(await hook(page, 'players.1.out'))) await loseLife(page, 1, 'ArrowDown');
     await expect.poll(() => hook(page, 'players.1.out')).toBe(true);
     await frames(page, 10);
     expect(await hook(page, 'state')).toBe('playing');
