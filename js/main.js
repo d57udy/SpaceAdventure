@@ -11,7 +11,7 @@ import { Achievements } from './achievements.js';
 import { PowerUp, PowerUpType } from './powerup.js';
 import { Boss } from './boss.js';
 import { Entity } from './entity.js';
-import { applyJoystickSteering, angleDiff } from './steering.js';
+import { applyJoystickSteering, angleDiff, stabilizeHeading } from './steering.js';
 import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
 import { Particles } from './particles.js';
 import { createSettings } from './settings.js';
@@ -688,20 +688,12 @@ function withMusic(fn) {
     try { return fn(music); } catch (e) { return undefined; } // audio problems must not escape
 }
 
-// Finger tremor on a short drag swings the aim by several degrees; ignore direction
-// changes smaller than a threshold (larger when the drag is short and less precise).
+// Stick steadying (steering.js stabilizeHeading); the heading is kept per caller.
 let stickHeading = null;
 function stabilizeStick(stick) {
-    if (!stick.active) {
-        stickHeading = null;
-        return stick;
-    }
-    const threshold = stick.magnitude < 0.45 ? 0.1 : 0.04; // radians
-    if (stickHeading === null ||
-        Math.abs(Math.atan2(Math.sin(stick.angle - stickHeading), Math.cos(stick.angle - stickHeading))) > threshold) {
-        stickHeading = stick.angle;
-    }
-    return { ...stick, angle: stickHeading };
+    const r = stabilizeHeading(stick, stickHeading);
+    stickHeading = r.heading;
+    return r.stick;
 }
 
 function findControlMode(id) {

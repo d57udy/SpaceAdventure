@@ -28,3 +28,20 @@ export function applyJoystickSteering(ship, stick, deltaTime, turnTime, thrustSc
     }
     return false;
 }
+
+// Finger tremor on a short drag swings the aim by several degrees; ignore direction
+// changes smaller than a threshold (larger when the drag is short and less precise).
+export const STICK_HEADING_THRESHOLD_SHORT = 0.1; // radians, drag shorter than JOYSTICK_THRUST_START
+export const STICK_HEADING_THRESHOLD_LONG = 0.04; // radians
+
+// Pure: the caller keeps `heading` per player (e.g. player.stickHeading) and stores the
+// returned heading for the next frame. Returns { stick, heading }: the steadied stick and
+// the heading to keep (null when the stick is inactive).
+export function stabilizeHeading(stick, heading = null) {
+    if (!stick || !stick.active) return { stick, heading: null };
+    const threshold = stick.magnitude < JOYSTICK_THRUST_START
+        ? STICK_HEADING_THRESHOLD_SHORT : STICK_HEADING_THRESHOLD_LONG;
+    const next = heading === null || !Number.isFinite(heading) || Math.abs(angleDiff(heading, stick.angle)) > threshold
+        ? stick.angle : heading;
+    return { stick: { ...stick, angle: next }, heading: next };
+}

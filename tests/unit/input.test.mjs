@@ -38,8 +38,16 @@ function setup(canvas = null, options = undefined) {
     return { ...env, input };
 }
 
-function keyEvent(key, target = null) {
-    return { key, target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+// Physical key code for a typed key on a US layout (what browsers send as event.code)
+function codeFor(key) {
+    if (key === ' ') return 'Space';
+    if (/^[a-zA-Z]$/.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^[0-9]$/.test(key)) return `Digit${key}`;
+    return key;
+}
+
+function keyEvent(key, target = null, code = codeFor(key), extra = {}) {
+    return { key, code, target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
 }
 
 function makeButton(action) {
@@ -521,7 +529,8 @@ test('the joystick pointer does not register any button/continuous action', () =
     input.joystickRadius = 60;
     pressZone(doc, 1);
     doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 160, clientY: 200 }));
-    for (const action of Object.keys(input.keyToAction)) {
+    for (const action of ['thrust', 'rotateLeft', 'rotateRight', 'fire', 'hyperspace', 'pause', 'enter',
+        'escape', 'toggleMute', 'menuUp', 'menuDown', 'menuLeft', 'menuRight', 'menuSelect', 'backspace']) {
         assert.equal(input.isPressed(action), false, action);
         assert.equal(input.consumeAction(action), false, action);
     }
@@ -793,4 +802,556 @@ test('setContext() ignores unknown contexts (falls back to menu)', () => {
     input.setContext('game');
     input.setContext('bogus');
     assert.equal(input.context, 'menu');
+});
+
+// --- Seats: physical keys, per-key holds, seat routing (plan §8, §13.1) -----
+
+const { PALM_IDLE_MS, PALM_MOVE_PX, SOURCE_EVENT_LIMIT, codeOf } = await import('../../js/input.js');
+
+const down = (win, key, code) => win.dispatch('keydown', keyEvent(key, null, code));
+const up = (win, key, code) => win.dispatch('keyup', keyEvent(key, null, code));
+
+// Seat mode with the given sources joined in order (seat 0, 1, ...)
+function seatSetup(sources = ['kbLeft', 'kbRight'], options = undefined) {
+    const env = setup(null, options);
+    env.input.setMerged(false);
+    for (const s of sources) env.input.seats.join(s);
+    return env;
+}
+
+function zoneEl(zone = 'a') {
+    const zoneWrap = { dataset: { zone } };
+    const el = {};
+    el.closest = (sel) => (sel === '.joystick-zone' ? el : sel === '[data-zone]' ? zoneWrap : null);
+    return el;
+}
+
+function zoneButton(action, zone) {
+    const btn = makeButton(action);
+    const zoneWrap = { dataset: { zone } };
+    btn.closest = (sel) => (sel.includes('.touch-btn') ? btn : sel === '[data-zone]' ? zoneWrap : null);
+    return btn;
+}
+
+test('keys match by physical position (event.code): AZERTY Z/Q steer like W/A', () => {
+    const { win, input } = setup();
+    down(win, 'z', 'KeyW');
+    assert.equal(input.isPressed('thrust'), true);
+    down(win, 'q', 'KeyA');
+    assert.equal(input.isPressed('rotateLeft'), true);
+    // typing still uses the typed character
+    assert.equal(input.consumeLastCharKey(), 'Z');
+    assert.equal(input.consumeLastCharKey(), 'Q');
+    up(win, 'z', 'KeyW');
+    up(win, 'q', 'KeyA');
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+    assert.equal(input.isPressed('rotateLeft'), false);
+    // QWERTZ: the key labelled Y sits where Z is; typing gives Y, no game action
+    down(win, 'y', 'KeyZ');
+    assert.equal(input.consumeLastCharKey(), 'Y');
+    input.endFrame();
+    for (const a of ['thrust', 'rotateLeft', 'rotateRight', 'fire']) assert.equal(input.isPressed(a), false);
+});
+
+test('merged mode: both key sets, F and numpad keys drive seat 0', () => {
+    const { win, input } = setup();
+    for (const [code, action] of [['KeyW', 'thrust'], ['ArrowUp', 'thrust'], ['Numpad8', 'thrust'],
+        ['KeyF', 'fire'], ['Space', 'fire'], ['Numpad4', 'rotateLeft'], ['Numpad6', 'rotateRight']]) {
+        down(win, '', code);
+        assert.equal(input.isPressed(action), true, code);
+        assert.equal(input.isPressed(action, 0), true, code);
+        assert.equal(input.isPressed(action, 1), false, `${code} not seat 1`);
+        up(win, '', code);
+        input.endFrame();
+        assert.equal(input.isPressed(action), false, `${code} released`);
+    }
+    for (const code of ['KeyS', 'ArrowDown', 'KeyH', 'Numpad5']) {
+        down(win, '', code);
+        assert.equal(input.consumeAction('hyperspace'), true, code);
+        up(win, '', code);
+    }
+});
+
+test('modifier combinations (Ctrl, Cmd, Alt) are left to the browser', () => {
+    const { win, input } = setup();
+    for (const mod of ['ctrlKey', 'metaKey', 'altKey']) {
+        const ev = keyEvent('w', null, 'KeyW', { [mod]: true });
+        win.dispatch('keydown', ev);
+        assert.equal(ev.defaultPrevented, false, mod);
+        assert.equal(input.isPressed('thrust'), false, mod);
+        assert.equal(input.consumeLastCharKey(), null, mod);
+        up(win, 'w', 'KeyW');
+    }
+});
+
+test('regression: holding ← and tapping A keeps turning left', () => {
+    const { win, input } = setup();
+    down(win, 'ArrowLeft', 'ArrowLeft');
+    down(win, 'a', 'KeyA');
+    up(win, 'a', 'KeyA');
+    input.endFrame();
+    assert.equal(input.isPressed('rotateLeft'), true, '← is still held');
+    up(win, 'ArrowLeft', 'ArrowLeft');
+    input.endFrame();
+    assert.equal(input.isPressed('rotateLeft'), false);
+});
+
+test('regression: holding S does not block ↓ hyperspace (merged and for P2)', () => {
+    {
+        const { win, input } = setup();
+        down(win, 's', 'KeyS');
+        assert.equal(input.consumeAction('hyperspace'), true);
+        down(win, 'ArrowDown', 'ArrowDown');
+        assert.equal(input.consumeAction('hyperspace'), true, 'a second key triggers again');
+        down(win, 's', 'KeyS'); // auto-repeat of the held S
+        assert.equal(input.consumeAction('hyperspace'), false);
+    }
+    {
+        const { win, input } = seatSetup();
+        down(win, 's', 'KeyS');
+        down(win, 'ArrowDown', 'ArrowDown');
+        assert.equal(input.consumeAction('hyperspace', 0), true, 'P1');
+        assert.equal(input.consumeAction('hyperspace', 1), true, 'P2');
+        assert.equal(input.consumeAction('hyperspace', 0), false);
+        assert.equal(input.consumeAction('hyperspace', 1), false);
+    }
+});
+
+test('event.repeat never retriggers a one-shot', () => {
+    const { win, input } = setup();
+    win.dispatch('keydown', keyEvent('p', null, 'KeyP', { repeat: true }));
+    assert.equal(input.consumeAction('pause'), false);
+});
+
+test('a key held through releaseAll() holds again on auto-repeat, without one-shots', () => {
+    const { win, input } = setup();
+    down(win, 'ArrowUp', 'ArrowUp');
+    assert.equal(input.consumeAction('menuUp'), true);
+    input.releaseAll(); // e.g. Start pressed while holding ↑
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+    win.dispatch('keydown', keyEvent('ArrowUp', null, 'ArrowUp', { repeat: true }));
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), true, 'thrust resumes');
+    assert.equal(input.consumeAction('menuUp'), false, 'no menu step from auto-repeat');
+    win.dispatch('keydown', keyEvent('s', null, 'KeyS', { repeat: true }));
+    assert.equal(input.consumeAction('hyperspace'), false, 'no hyperspace from auto-repeat');
+    up(win, 'ArrowUp', 'ArrowUp');
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+});
+
+test('seat mode: W drives seat 0 only, ↑ seat 1 only; H is not bound', () => {
+    const { win, input } = seatSetup();
+    down(win, 'w', 'KeyW');
+    assert.equal(input.isPressed('thrust', 0), true);
+    assert.equal(input.isPressed('thrust', 1), false);
+    up(win, 'w', 'KeyW');
+    input.endFrame();
+    down(win, 'ArrowUp', 'ArrowUp');
+    assert.equal(input.isPressed('thrust', 0), false);
+    assert.equal(input.isPressed('thrust', 1), true);
+    assert.equal(input.isPressed('thrust'), false, 'no seat = seat 0');
+    down(win, 'h', 'KeyH');
+    assert.equal(input.consumeAction('hyperspace', 0), false, 'H only in single-player');
+    assert.equal(input.consumeLastCharKey(), 'W');
+    assert.equal(input.consumeLastCharKey(), 'H', 'but it still types');
+});
+
+test('A + → at the same time turn P1 left and P2 right', () => {
+    const { win, input } = seatSetup();
+    down(win, 'a', 'KeyA');
+    down(win, 'ArrowRight', 'ArrowRight');
+    input.endFrame();
+    assert.equal(input.isPressed('rotateLeft', 0), true);
+    assert.equal(input.isPressed('rotateRight', 0), false);
+    assert.equal(input.isPressed('rotateRight', 1), true);
+    assert.equal(input.isPressed('rotateLeft', 1), false);
+});
+
+test('seat one-shots do not leak to another seat', () => {
+    const { win, input } = seatSetup();
+    down(win, 'ArrowDown', 'ArrowDown');
+    assert.equal(input.consumeAction('hyperspace', 0), false);
+    assert.equal(input.consumeAction('hyperspace'), false, 'omitted seat means seat 0');
+    assert.equal(input.consumeAction('hyperspace', 2), false);
+    assert.equal(input.consumeAction('hyperspace', 1), true);
+});
+
+test('shared actions: anyone can pause; who pressed is recorded', () => {
+    const { win, input } = seatSetup();
+    // Enter is P2 fire and also menu select / enter (shared, recorded as seat 1)
+    down(win, 'Enter', 'Enter');
+    assert.equal(input.isPressed('fire', 1), true);
+    assert.equal(input.pressedBy('menuSelect'), 1);
+    assert.equal(input.consumeAction('menuSelect', 0), false, 'not pressed by seat 0');
+    assert.equal(input.consumeAction('menuSelect', 1), true);
+    assert.equal(input.consumeAction('enter'), true, 'no seat: anyone');
+    // Space is P1 fire and menu select
+    down(win, ' ', 'Space');
+    assert.equal(input.pressedBy('menuSelect'), 0);
+    // P is not in either key set: nobody in particular
+    down(win, 'p', 'KeyP');
+    assert.equal(input.pressedBy('pause'), null);
+    assert.equal(input.consumeAction('pause'), true);
+    // merged mode records seat 0
+    const m = setup();
+    down(m.win, 'p', 'KeyP');
+    assert.equal(m.input.pressedBy('pause'), 0);
+});
+
+test('quick taps last one frame, per seat', () => {
+    const { win, input } = seatSetup();
+    down(win, 'Enter', 'Enter');
+    up(win, 'Enter', 'Enter');
+    assert.equal(input.isPressed('fire', 1), true);
+    assert.equal(input.isPressed('fire', 0), false);
+    input.endFrame();
+    assert.equal(input.isPressed('fire', 1), false);
+});
+
+test('unjoined inputs only produce lobby (source) events', () => {
+    const { win, input } = seatSetup(['kbLeft']);
+    down(win, 'ArrowUp', 'ArrowUp');
+    down(win, 'Enter', 'Enter');
+    for (let seat = 0; seat < 4; seat++) {
+        assert.equal(input.isPressed('thrust', seat), false, `seat ${seat}`);
+        assert.equal(input.isPressed('fire', seat), false, `seat ${seat}`);
+    }
+    down(win, 'ArrowDown', 'ArrowDown');
+    for (let seat = 0; seat < 4; seat++) assert.equal(input.consumeAction('hyperspace', seat), false);
+    assert.deepEqual(input.consumeSourceEvents(), [
+        { source: 'kbRight', action: 'thrust', seat: null },
+        { source: 'kbRight', action: 'fire', seat: null },
+        { source: 'kbRight', action: 'hyperspace', seat: null },
+    ]);
+    assert.deepEqual(input.consumeSourceEvents(), []);
+    // joined sources report their seat
+    down(win, 'w', 'KeyW');
+    assert.deepEqual(input.consumeSourceEvents(), [{ source: 'kbLeft', action: 'thrust', seat: 0 }]);
+    // P2 joins; the next Enter press drives seat 1
+    up(win, 'Enter', 'Enter');
+    assert.equal(input.seats.join('kbRight'), 1);
+    down(win, 'Enter', 'Enter');
+    assert.equal(input.isPressed('fire', 1), true);
+});
+
+test('source events are cleared by clearPending() and capped', () => {
+    const { win, input } = seatSetup([]);
+    down(win, 'w', 'KeyW');
+    input.clearPending();
+    assert.deepEqual(input.consumeSourceEvents(), []);
+    for (let i = 0; i < SOURCE_EVENT_LIMIT + 10; i++) {
+        down(win, 'w', 'KeyW');
+        up(win, 'w', 'KeyW');
+    }
+    assert.equal(input.consumeSourceEvents().length, SOURCE_EVENT_LIMIT);
+});
+
+test('setMerged() switches routing and releases held input', () => {
+    const { win, input } = setup();
+    down(win, 'ArrowUp', 'ArrowUp');
+    input.setMerged(false);
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+    input.seats.join('kbRight');
+    up(win, 'ArrowUp', 'ArrowUp');
+    down(win, 'ArrowUp', 'ArrowUp');
+    assert.equal(input.isPressed('thrust', 0), true, 'kbRight joined first: seat 0');
+    input.setMerged(true);
+    down(win, 'w', 'KeyW');
+    assert.equal(input.isPressed('thrust', 0), true);
+});
+
+test('releaseSeat() releases one seat and leaves the other', () => {
+    const { win, doc, input } = seatSetup(['kbLeft', 'kbRight', 'touch:a']);
+    const fire = zoneButton('fire', 'a');
+    doc.buttons.push(fire);
+    down(win, 'w', 'KeyW');
+    down(win, 'ArrowUp', 'ArrowUp');
+    down(win, 'ArrowDown', 'ArrowDown');
+    doc.dispatch('pointerdown', pointerEvent(fire, 3));
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 4, { clientX: 10, clientY: 10 }));
+    assert.equal(input.isPressed('fire', 2), true);
+    assert.equal(input.getJoystick(2).active, true);
+
+    input.releaseSeat(1);
+    input.endFrame();
+    assert.equal(input.isPressed('thrust', 1), false);
+    assert.equal(input.consumeAction('hyperspace', 1), false);
+    assert.equal(input.isPressed('thrust', 0), true, 'P1 still thrusting');
+    down(win, 'ArrowUp', 'ArrowUp'); // auto-repeat of the still-down key does not re-press
+    assert.equal(input.isPressed('thrust', 1), false);
+
+    input.releaseSeat(2);
+    assert.equal(input.isPressed('fire', 2), false);
+    assert.equal(fire.classList.contains('active'), false);
+    assert.equal(input.getJoystick(2).active, false);
+    assert.equal(input.isPressed('thrust', 0), true);
+});
+
+// --- Seats: touch zones ------------------------------------------------------
+
+test('zone B touch drives seat 1 (stick and buttons); zone A seat 0', () => {
+    const { doc, input } = seatSetup(['touch:a', 'touch:b']);
+    input.joystickRadius = 60;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 1, { clientX: 100, clientY: 100 }));
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 100, clientY: 40 }));
+    assert.equal(input.getJoystick(0).active, false);
+    const j = input.getJoystick(1);
+    assert.equal(j.active, true);
+    assert.ok(near(j.angle, -Math.PI / 2));
+    assert.equal(j.magnitude, 1);
+
+    const fireB = zoneButton('fire', 'b');
+    const fireA = zoneButton('fire', 'a');
+    doc.buttons.push(fireA, fireB);
+    doc.dispatch('pointerdown', pointerEvent(fireB, 2));
+    assert.equal(input.isPressed('fire', 1), true);
+    assert.equal(input.isPressed('fire', 0), false);
+    assert.equal(fireB.classList.contains('active'), true);
+    assert.equal(fireA.classList.contains('active'), false, 'only zone B lights up');
+    doc.dispatch('pointerdown', pointerEvent(zoneButton('hyperspace', 'b'), 3));
+    assert.equal(input.consumeAction('hyperspace', 0), false);
+    assert.equal(input.consumeAction('hyperspace', 1), true);
+    doc.dispatch('pointerdown', pointerEvent(zoneButton('pause', 'b'), 4));
+    assert.equal(input.pressedBy('pause'), 1);
+});
+
+test('merged mode: elements without data-zone are zone a and drive seat 0', () => {
+    const { doc, input } = setup();
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 1, { clientX: 0, clientY: 0 }));
+    assert.equal(input.getJoystick().active, true);
+    assert.equal(input.getJoystick(0).active, true);
+    assert.equal(input.joystick.pointerId, 1);
+    assert.equal(input.zoneOf({ closest: () => null }), 'a');
+    assert.equal(input.zoneOf(null), 'a');
+});
+
+test('an unjoined touch zone only produces lobby events', () => {
+    const { doc, input } = seatSetup(['touch:a']);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 1, { clientX: 0, clientY: 0 }));
+    const fireB = zoneButton('fire', 'b');
+    doc.buttons.push(fireB);
+    doc.dispatch('pointerdown', pointerEvent(fireB, 2));
+    for (let seat = 0; seat < 4; seat++) {
+        assert.equal(input.getJoystick(seat).active, false);
+        assert.equal(input.isPressed('fire', seat), false);
+    }
+    assert.equal(fireB.classList.contains('active'), false);
+    assert.deepEqual(input.consumeSourceEvents(), [
+        { source: 'touch:b', action: 'stick', seat: null },
+        { source: 'touch:b', action: 'fire', seat: null },
+    ]);
+});
+
+function clockSetup(sources) {
+    const clock = { t: 1000 };
+    const env = seatSetup(sources, { now: () => clock.t });
+    env.input.joystickRadius = 60;
+    return { ...env, clock };
+}
+
+test('palm rule: a finger resting 500 ms loses the stick to a new finger in its zone', () => {
+    const { doc, input, clock } = clockSetup(['touch:a', 'touch:b']);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 1, { clientX: 100, clientY: 100 }));
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 100 + PALM_MOVE_PX, clientY: 100 })); // within tolerance
+    clock.t += PALM_IDLE_MS - 1;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 2, { clientX: 300, clientY: 300 }));
+    assert.equal(input.seatState[0].stick.pointerId, 1, 'too early: the owner keeps it');
+    clock.t += 1;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 3, { clientX: 300, clientY: 300 }));
+    assert.equal(input.seatState[0].stick.pointerId, 3, 'resting palm taken over');
+    assert.equal(input.getJoystick(0).magnitude, 0, 'new origin');
+    // the palm lifting or moving no longer affects the stick
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 900, clientY: 900 }));
+    doc.dispatch('pointerup', pointerEvent(null, 1));
+    assert.equal(input.getJoystick(0).active, true);
+    assert.equal(input.getJoystick(0).magnitude, 0);
+    doc.dispatch('pointermove', pointerEvent(null, 3, { clientX: 330, clientY: 300 }));
+    assert.ok(near(input.getJoystick(0).magnitude, 0.5));
+    // the other zone's stick is independent
+    assert.equal(input.getJoystick(1).active, false);
+});
+
+test('palm rule: a moving owner keeps the stick', () => {
+    const { doc, input, clock } = clockSetup(['touch:a']);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 1, { clientX: 100, clientY: 100 }));
+    for (let i = 1; i <= 5; i++) {
+        clock.t += 300;
+        doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 100 + i * (PALM_MOVE_PX + 1), clientY: 100 }));
+    }
+    clock.t += PALM_IDLE_MS - 1;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 2, { clientX: 300, clientY: 300 }));
+    assert.equal(input.seatState[0].stick.pointerId, 1);
+});
+
+test('a stick finger sliding into the other half keeps its seat', () => {
+    const { doc, input } = clockSetup(['touch:a', 'touch:b']);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 1, { clientX: 100, clientY: 100 }));
+    doc.elementAtPoint = zoneEl('b');
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 700, clientY: 100 }));
+    assert.equal(input.getJoystick(0).active, true);
+    assert.ok(near(input.getJoystick(0).angle, 0));
+    assert.equal(input.getJoystick(1).active, false);
+    // zone B can still start its own stick
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 2, { clientX: 700, clientY: 300 }));
+    assert.equal(input.getJoystick(1).active, true);
+    doc.dispatch('pointerup', pointerEvent(null, 1));
+    assert.equal(input.getJoystick(0).active, false);
+    assert.equal(input.getJoystick(1).active, true);
+});
+
+test('sliding onto the other player\'s fire button does not press it', () => {
+    const { doc, input } = seatSetup(['touch:a', 'touch:b']);
+    const leftA = zoneButton('rotateLeft', 'a');
+    const fireA = zoneButton('fire', 'a');
+    const fireB = zoneButton('fire', 'b');
+    doc.buttons.push(leftA, fireA, fireB);
+    doc.dispatch('pointerdown', pointerEvent(leftA, 5));
+    doc.elementAtPoint = fireB;
+    doc.dispatch('pointermove', pointerEvent(null, 5, { clientX: 1, clientY: 1 }));
+    input.endFrame();
+    assert.equal(input.isPressed('fire', 1), false);
+    assert.equal(input.isPressed('fire', 0), false);
+    assert.equal(input.isPressed('rotateLeft', 0), true, 'keeps holding its own button');
+    assert.equal(fireB.classList.contains('active'), false);
+    // its own zone's fire button works
+    doc.elementAtPoint = fireA;
+    doc.dispatch('pointermove', pointerEvent(null, 5, { clientX: 2, clientY: 2 }));
+    input.endFrame();
+    assert.equal(input.isPressed('fire', 0), true);
+    assert.equal(input.isPressed('rotateLeft', 0), false);
+    assert.equal(fireA.classList.contains('active'), true);
+    assert.equal(fireB.classList.contains('active'), false);
+});
+
+test('a finger and a key holding the same action release independently', () => {
+    const { win, doc, input } = setup();
+    const fire = makeButton('fire');
+    doc.buttons.push(fire);
+    doc.dispatch('pointerdown', pointerEvent(fire, 1));
+    down(win, ' ', 'Space');
+    up(win, ' ', 'Space');
+    input.endFrame();
+    assert.equal(input.isPressed('fire'), true, 'finger still holds fire');
+    doc.dispatch('pointerup', pointerEvent(fire, 1));
+    input.endFrame();
+    assert.equal(input.isPressed('fire'), false);
+});
+
+test('releaseJoysticks() releases every seat; releaseJoystick() is an alias', () => {
+    const { doc, input } = seatSetup(['touch:a', 'touch:b']);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 1, { clientX: 0, clientY: 0 }));
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 2, { clientX: 0, clientY: 0 }));
+    input.releaseJoysticks();
+    assert.equal(input.getJoystick(0).active, false);
+    assert.equal(input.getJoystick(1).active, false);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 3, { clientX: 0, clientY: 0 }));
+    input.releaseJoystick();
+    assert.equal(input.getJoystick(1).active, false);
+    assert.deepEqual(input.getJoystick(7), { active: false, angle: 0, magnitude: 0 }, 'unknown seat');
+});
+
+test('zone b stick visuals use the -b element ids', () => {
+    const { doc } = seatSetup(['touch:a', 'touch:b']);
+    const els = {};
+    for (const id of ['joystick-base', 'joystick-knob', 'joystick-base-b', 'joystick-knob-b']) {
+        const classes = new Set();
+        els[id] = { style: {}, classList: { toggle(c, on) { on ? classes.add(c) : classes.delete(c); }, contains: (c) => classes.has(c) } };
+    }
+    doc.getElementById = (id) => els[id] || null;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 1, { clientX: 40, clientY: 50 }));
+    assert.equal(els['joystick-base-b'].classList.contains('active'), true);
+    assert.equal(els['joystick-base-b'].style.left, '40px');
+    assert.equal(els['joystick-base'].classList.contains('active'), false);
+});
+
+// --- Seats: controllers ------------------------------------------------------
+
+test('fake controller on seat 1 fires for seat 1 only', () => {
+    const a = new FakePad(0);
+    const b = new FakePad(1, 'DualSense Wireless Controller');
+    const { input } = setupPads([a, b]);
+    input.setMerged(false);
+    input.seats.join('kbLeft');
+    assert.equal(input.seats.join('pad:1'), 1);
+    input.setContext('game');
+    b.press(GP.A);
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire', 1), true);
+    assert.equal(input.isPressed('fire', 0), false);
+    b.release(GP.A).press(GP.B);
+    input.endFrame();
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire', 1), false);
+    assert.equal(input.consumeAction('hyperspace', 0), false);
+    assert.equal(input.consumeAction('hyperspace', 1), true);
+    b.release(GP.B).press(GP.MENU);
+    input.pollGamepads();
+    assert.equal(input.pressedBy('pause'), 1, 'who paused');
+    // the unjoined pad only produces lobby events
+    input.consumeSourceEvents();
+    input.endFrame();
+    a.press(GP.A);
+    input.pollGamepads();
+    for (let seat = 0; seat < 4; seat++) assert.equal(input.isPressed('fire', seat), false, `seat ${seat}`);
+    assert.deepEqual(input.consumeSourceEvents(), [{ source: 'pad:0', action: 'fire', seat: null }]);
+});
+
+test('controller sticks drive their own seat; rotated for a facing seat, touch sticks not', () => {
+    const a = new FakePad(0);
+    const b = new FakePad(1);
+    const { input, doc } = setupPads([a, b]);
+    input.setMerged(false);
+    input.seats.join('pad:0');
+    input.seats.join('pad:1');
+    input.seats.join('touch:b'); // seat 2
+    input.setContext('game');
+    input.setSeatOrientation(1, 180);
+    input.setSeatOrientation(2, 180);
+    a.stick(0.7, 0);
+    b.stick(0.7, 0);
+    input.pollGamepads();
+    const j0 = input.getJoystick(0);
+    const j1 = input.getJoystick(1);
+    assert.equal(j0.source, 'gamepad');
+    assert.ok(near(j0.angle, 0), `seat 0 ${j0.angle}`);
+    assert.ok(near(Math.abs(j1.angle), Math.PI), `seat 1 rotated ${j1.angle}`);
+    assert.ok(near(j1.magnitude, j0.magnitude));
+    // touch: a drag to the right on the glass stays "right" for the facing player
+    input.joystickRadius = 60;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('b'), 9, { clientX: 100, clientY: 100 }));
+    doc.dispatch('pointermove', pointerEvent(null, 9, { clientX: 130, clientY: 100 }));
+    assert.ok(near(input.getJoystick(2).angle, 0));
+    // sticks are only reported while playing
+    input.setContext('menu');
+    assert.equal(input.getJoystick(1).active, false);
+});
+
+test('merged mode: the union of every controller drives seat 0 (stick rotated by seat 0 orientation)', () => {
+    const a = new FakePad(0);
+    const b = new FakePad(1);
+    const { input } = setupPads([a, b]);
+    input.setContext('game');
+    a.press(GP.RT);
+    b.stick(0, 0.9);
+    input.pollGamepads();
+    assert.equal(input.isPressed('fire'), true);
+    assert.equal(input.isPressed('fire', 1), false);
+    assert.ok(near(input.getJoystick().angle, Math.PI / 2));
+    input.setSeatOrientation(0, 180);
+    input.pollGamepads();
+    assert.ok(near(input.getJoystick().angle, -Math.PI / 2));
+});
+
+test('codeOf() falls back to the typed key when event.code is empty', () => {
+    assert.equal(codeOf({ code: 'KeyQ', key: 'a' }), 'KeyQ');
+    assert.equal(codeOf({ code: '', key: 'w' }), 'KeyW');
+    assert.equal(codeOf({ key: ' ' }), 'Space');
+    assert.equal(codeOf({ key: '5' }), 'Digit5');
+    assert.equal(codeOf({ key: 'ArrowUp' }), 'ArrowUp');
+    assert.equal(codeOf({ key: '' }), '');
+    assert.equal(codeOf({}), '');
 });

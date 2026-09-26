@@ -6,6 +6,9 @@ import {
     JOYSTICK_DEADZONE,
     JOYSTICK_THRUST_START,
     JOYSTICK_MAX_THRUST_ANGLE,
+    stabilizeHeading,
+    STICK_HEADING_THRESHOLD_SHORT,
+    STICK_HEADING_THRESHOLD_LONG,
 } from '../../js/steering.js';
 
 const EPS = 1e-9;
@@ -242,4 +245,81 @@ test('return value: true only when it thrusted', () => {
     assert.equal(applyJoystickSteering(makeShip(0), stick(0, 0.3), 0.016, 0.016), false);
     assert.equal(applyJoystickSteering(makeShip(0), stick(Math.PI, 1), 0.016, 0.001), false);
     assert.equal(applyJoystickSteering(makeShip(0), stick(0, 1, false), 0.016, 0.016), false);
+});
+
+// --- stabilizeHeading (stick steadying, heading kept per player) --------------
+
+test('stabilizeHeading: first active frame takes the stick angle', () => {
+    const r = stabilizeHeading(stick(1.2, 0.8), null);
+    assert.equal(r.heading, 1.2);
+    assert.equal(r.stick.angle, 1.2);
+    assert.equal(r.stick.magnitude, 0.8);
+    assert.equal(r.stick.active, true);
+});
+
+test('stabilizeHeading: small wobble keeps the heading, larger changes follow', () => {
+    // long drag: threshold 0.04
+    let r = stabilizeHeading(stick(1.0 + STICK_HEADING_THRESHOLD_LONG * 0.9, 0.8), 1.0);
+    assert.equal(r.heading, 1.0);
+    assert.equal(r.stick.angle, 1.0);
+    r = stabilizeHeading(stick(1.0 + STICK_HEADING_THRESHOLD_LONG * 1.5, 0.8), 1.0);
+    close(r.heading, 1.0 + STICK_HEADING_THRESHOLD_LONG * 1.5);
+    // short drag (below the thrust start): larger threshold 0.1
+    r = stabilizeHeading(stick(1.0 + STICK_HEADING_THRESHOLD_SHORT * 0.9, JOYSTICK_THRUST_START - 0.01), 1.0);
+    assert.equal(r.heading, 1.0);
+    r = stabilizeHeading(stick(1.0 + STICK_HEADING_THRESHOLD_SHORT * 1.1, JOYSTICK_THRUST_START - 0.01), 1.0);
+    close(r.heading, 1.0 + STICK_HEADING_THRESHOLD_SHORT * 1.1);
+});
+
+test('stabilizeHeading: wobble across ±PI is measured the short way round', () => {
+    const r = stabilizeHeading(stick(-Math.PI + 0.01, 0.9), Math.PI - 0.01);
+    assert.equal(r.heading, Math.PI - 0.01);
+});
+
+test('stabilizeHeading: an inactive stick resets the heading and passes through', () => {
+    const idle = stick(0.5, 0, false);
+    const r = stabilizeHeading(idle, 1.0);
+    assert.equal(r.heading, null);
+    assert.equal(r.stick, idle);
+    assert.deepEqual(stabilizeHeading(null, 1.0), { stick: null, heading: null });
+});
+
+test('stabilizeHeading: per-player storage keeps two sticks independent', () => {
+    const players = [{ stickHeading: null }, { stickHeading: null }];
+    const step = (p, s) => {
+        const r = stabilizeHeading(s, p.stickHeading);
+        p.stickHeading = r.heading;
+        return r.stick;
+    };
+    step(players[0], stick(0, 0.9));
+    step(players[1], stick(Math.PI / 2, 0.9));
+    // P1 wobbles slightly: keeps 0. P2 wobbles slightly: keeps PI/2
+    assert.equal(step(players[0], stick(0.02, 0.9)).angle, 0);
+    assert.equal(step(players[1], stick(Math.PI / 2 - 0.02, 0.9)).angle, Math.PI / 2);
+    // P1 lifts the finger: only P1 resets
+    step(players[0], stick(0, 0, false));
+    assert.equal(players[0].stickHeading, null);
+    assert.equal(players[1].stickHeading, Math.PI / 2);
+});
+
+test('stabilizeHeading matches the previous main.js stabilizeStick on a random sequence', () => {
+    // Reference: the original module-global implementation
+    let ref = null;
+    const legacy = (s) => {
+        if (!s.active) { ref = null; return s; }
+        const threshold = s.magnitude < 0.45 ? 0.1 : 0.04;
+        if (ref === null || Math.abs(Math.atan2(Math.sin(s.angle - ref), Math.cos(s.angle - ref))) > threshold) ref = s.angle;
+        return { ...s, angle: ref };
+    };
+    let seed = 12345;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    let heading = null;
+    let angle = 0;
+    for (let i = 0; i < 2000; i++) {
+        angle += (rand() - 0.5) * 0.2;
+        const s = stick(angle, rand(), rand() > 0.05);
+        const r = stabilizeHeading(s, heading);
+        heading = r.heading;
+        assert.deepEqual(r.stick, legacy(s), `step ${i}`);
+    }
 });
