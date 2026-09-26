@@ -32,11 +32,12 @@ export function degToRad(degrees) {
  * Generates a random number within a range.
  * @param {number} min
  * @param {number} max
+ * @param {(() => number)|null} [rng] - optional seeded generator (js/rng.js); Math.random when omitted
  * @returns {number}
  */
-export function randomRange(min, max) {
-    return Math.random() * (max - min) + min;
-} 
+export function randomRange(min, max, rng = null) {
+    return (rng || Math.random)() * (max - min) + min;
+}
 
 /**
  * Returns the shortest signed delta along one axis of a wrapping world.

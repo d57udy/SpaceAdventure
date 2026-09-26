@@ -20,7 +20,7 @@ const PORT = Number(process.env.PW_PORT) || 8082; // PW_PORT lets parallel workt
 // test-only /__admin/override endpoint used by the update-flow test.
 const SUBPATH_PORT = Number(process.env.PW_SUBPATH_PORT) || 8083;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js'];
 const PWA_SPECS = ['pwa.spec.js'];
 const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'app-ui.spec.js'];
 

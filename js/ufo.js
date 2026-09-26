@@ -11,14 +11,16 @@ const UFOSize = {
 // const UFO_ACCURACY = 0.8;
 
 export class UFO extends Entity {
-    constructor(canvasWidth, canvasHeight, playerX = null, playerY = null) {
+    // rng: optional seeded generator (js/rng.js) for the spawn angle, heading and first shot
+    // delay (Time Attack); Math.random when omitted. Aiming and later shots stay random.
+    constructor(canvasWidth, canvasHeight, playerX = null, playerY = null, rng = null) {
         const size = UFOSize.STANDARD;
 
         // If player position provided, spawn relative to player (infinite world mode)
         let x, y;
         if (playerX !== null && playerY !== null) {
             // Spawn at edge of visibility around player
-            const angle = randomRange(0, Math.PI * 2);
+            const angle = randomRange(0, Math.PI * 2, rng);
             const distance = 400; // Just outside typical view
             x = playerX + Math.cos(angle) * distance;
             y = playerY + Math.sin(angle) * distance;
@@ -35,11 +37,11 @@ export class UFO extends Entity {
         this.scoreValue = size.score;
 
         // Move towards player area (random direction with bias toward center)
-        const moveAngle = randomRange(0, Math.PI * 2);
+        const moveAngle = randomRange(0, Math.PI * 2, rng);
         this.velX = Math.cos(moveAngle) * size.speed;
         this.velY = Math.sin(moveAngle) * size.speed;
 
-        this.fireTimer = size.fireRate * randomRange(0.5, 1.5); // Start with variable delay
+        this.fireTimer = size.fireRate * randomRange(0.5, 1.5, rng); // Start with variable delay
 
         console.log(`UFO spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
     }
