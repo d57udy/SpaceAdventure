@@ -167,6 +167,13 @@ export class InputHandler {
         if (this.sourceEvents.length > SOURCE_EVENT_LIMIT) this.sourceEvents.shift();
     }
 
+    // A press from an input the handler doesn't track itself (the lobby's touch join pads:
+    // tap = fire, long-press = hyperspace). Lobby event only; it drives no seat action.
+    pushSourceEvent(source, action) {
+        this.lastInputSource = source && source.startsWith('touch:') ? 'touch' : this.lastInputSource;
+        this._pushSourceEvent(source, action, this._seatOf(source));
+    }
+
     // Press events per source since the last call: [{ source, action, seat }], seat null when
     // the source has not joined. The lobby uses these to join and ready up.
     consumeSourceEvents() {

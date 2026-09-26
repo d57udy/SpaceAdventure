@@ -1364,3 +1364,15 @@ test('codeOf() falls back to the typed key when event.code is empty', () => {
     assert.equal(codeOf({ key: '' }), '');
     assert.equal(codeOf({}), '');
 });
+
+test('pushSourceEvent (touch join pads): a lobby event with the source seat, no seat action', () => {
+    const { input } = seatSetup([]);
+    input.pushSourceEvent('touch:a', 'fire');
+    assert.deepEqual(input.consumeSourceEvents(), [{ source: 'touch:a', action: 'fire', seat: null }]);
+    assert.equal(input.lastInputSource, 'touch');
+    assert.equal(input.seats.join('touch:b'), 0);
+    input.pushSourceEvent('touch:b', 'hyperspace');
+    assert.deepEqual(input.consumeSourceEvents(), [{ source: 'touch:b', action: 'hyperspace', seat: 0 }]);
+    assert.equal(input.consumeAction('hyperspace', 0), false);
+    assert.equal(input.isPressed('fire', 0), false);
+});

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const { MODES, validateMode, scaleForPlayers, pickSpawnPoint, updateRevive, nextTurnIndex, worldSpawnGrid,
-    ringSpawnGrid, REVIVE, getMode } = await import('../../js/modes.js');
+    ringSpawnGrid, REVIVE, getMode, reviverFor } = await import('../../js/modes.js');
 const { createPlayer } = await import('../../js/players.js');
 
 const two = () => [createPlayer({ id: 'a', slot: 0 }), createPlayer({ id: 'b', slot: 1 })];
@@ -194,4 +194,22 @@ test('revive rules', () => {
     assert.equal(s.progress, 0);
     assert.equal(REVIVE.radius, 70);
     assert.equal(MODES.coop.revive, REVIVE);
+});
+
+test('reviver: nearest living teammate within 70 px, across the world edge, never the owner', () => {
+    const mk = (id, x, y, extra = {}) => ({ ...createPlayer({ id }), ship: { x, y, isAlive: true }, ...extra });
+    const beacon = { x: 5, y: 500, ownerId: 'b' };
+    const W = 1000, H = 1000;
+    const a = mk('a', 990, 500);                       // 15 px away across the edge
+    const b = mk('b', 5, 500, { out: true, ship: null }); // the owner
+    const c = mk('c', 60, 500);                        // 55 px away
+    assert.equal(reviverFor(beacon, [a, b, c], W, H), a);
+    assert.equal(reviverFor(beacon, [c], W, H), c);
+    assert.equal(reviverFor(beacon, [mk('d', 80, 500)], W, H), null); // 75 px: out of range
+    assert.equal(reviverFor(beacon, [mk('e', 10, 500, { out: true })], W, H), null);
+    assert.equal(reviverFor(beacon, [mk('f', 10, 500, { respawnTimer: 1 })], W, H), null);
+    assert.equal(reviverFor(beacon, [{ ...mk('g', 10, 500), ship: { x: 10, y: 500, isAlive: false } }], W, H), null);
+    assert.equal(reviverFor({ ...beacon, ownerId: 'a' }, [a], W, H), null);
+    assert.equal(reviverFor(beacon, [mk('h', 100, 500)], W, H, 120).id, 'h');
+    assert.equal(REVIVE.radius, 70);
 });

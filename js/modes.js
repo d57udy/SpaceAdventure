@@ -437,3 +437,20 @@ export function updateRevive(state, dt, inRange, reviverLives) {
         blocked: !!inRange && !canRevive
     };
 }
+
+/**
+ * Teammate who can work on a revive beacon: the nearest (wrap-aware) player other than the
+ * beacon's owner who is not out, has a living ship and is within `radius`. Null if nobody.
+ * @param {{x:number, y:number, ownerId?:string}} beacon
+ * @returns {object|null} the player
+ */
+export function reviverFor(beacon, players, W, H, radius = REVIVE.radius) {
+    let best = null, bestD = Infinity;
+    for (const p of players || []) {
+        if (!p || p.out || p.id === beacon.ownerId || !p.ship || p.ship.isAlive === false) continue;
+        if (p.respawnTimer > 0) continue;
+        const d = Math.hypot(wrapDelta(p.ship.x - beacon.x, W), wrapDelta(p.ship.y - beacon.y, H));
+        if (d <= radius && d < bestD) { best = p; bestD = d; }
+    }
+    return best;
+}
