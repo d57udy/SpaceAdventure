@@ -1,3 +1,5 @@
+import { MP_KEYS, parseOrEmpty, isBoard, isRivalry, filterBoard, filterRivalry, ghostKeysForUser } from './mpRecords.js';
+
 const HIGH_SCORES_BASE_KEY = 'asteroids_highScores';
 const ACHIEVEMENTS_BASE_KEY = 'asteroids_achievements';
 const UPGRADES_BASE_KEY = 'asteroids_upgrades';
@@ -297,6 +299,64 @@ export class PersistenceManager {
         }
     }
 
+    // --- Generic JSON values (multiplayer records use spaceAdventure_mp_* keys) ---
+    // loadJson returns `empty` when the key is missing, corrupt or fails `validate`.
+    loadJson(key, validate = () => true, empty = null) {
+        if (!key || !this.isLocalStorageAvailable()) return empty;
+        try {
+            return parseOrEmpty(localStorage.getItem(key), validate, empty);
+        } catch (error) {
+            console.error(`Error loading ${key}:`, error);
+            return empty;
+        }
+    }
+
+    saveJson(key, value) {
+        if (!key || !this.isLocalStorageAvailable()) return false;
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+            return true;
+        } catch (error) {
+            console.error(`Error saving ${key}:`, error);
+            return false;
+        }
+    }
+
+    removeKey(key) {
+        if (!key || !this.isLocalStorageAvailable()) return;
+        try { localStorage.removeItem(key); } catch (error) { console.error(`Error removing ${key}:`, error); }
+    }
+
+    // Every key in local storage (empty when it can't be listed)
+    listKeys() {
+        if (!this.isLocalStorageAvailable()) return [];
+        try {
+            const out = [];
+            if (typeof localStorage.length === 'number' && typeof localStorage.key === 'function') {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (typeof k === 'string') out.push(k);
+                }
+            }
+            return out;
+        } catch (error) {
+            return [];
+        }
+    }
+
+    // Reset Data: drop a user's multiplayer board entries, rivalries and ghosts
+    // (history is a log of rounds and is kept).
+    resetMultiplayerRecords(username) {
+        if (!username) return;
+        for (const key of [MP_KEYS.boardCoop, MP_KEYS.boardHarvest]) {
+            const board = this.loadJson(key, isBoard, null);
+            if (board) this.saveJson(key, filterBoard(board, username));
+        }
+        const rivalry = this.loadJson(MP_KEYS.rivalry, isRivalry, null);
+        if (rivalry) this.saveJson(MP_KEYS.rivalry, filterRivalry(rivalry, username));
+        for (const key of ghostKeysForUser(this.listKeys(), username)) this.removeKey(key);
+    }
+
     // --- Reset ---
     resetUserData(username) {
         if (!username || !this.isLocalStorageAvailable()) return;
@@ -310,6 +370,7 @@ export class PersistenceManager {
             if (tuKey) localStorage.removeItem(tuKey); // the tutorial is offered again
             if (acKey) localStorage.removeItem(acKey);
             if (upKey) localStorage.removeItem(upKey);
+            this.resetMultiplayerRecords(username);
             console.log(`Data reset for user: ${username}`);
             // After resetting, if it was the current user, clear the current user setting
             const sameUser = (name) => typeof name === 'string' && name.toUpperCase() === username.toUpperCase();

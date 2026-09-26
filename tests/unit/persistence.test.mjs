@@ -257,3 +257,74 @@ test('resetUserData removes the tutorial state so the tutorial is offered again'
     assert.equal(pm.loadTutorialState('bob'), null);
     assert.ok(pm.loadTutorialState('alice').done);
 });
+
+// Storage with key()/length, like the browser's (for listKeys and ghost removal)
+class ListingStorage extends FakeStorage {
+    get length() { return this.map.size; }
+    key(i) { return [...this.map.keys()][i] ?? null; }
+}
+
+test('loadJson / saveJson round-trip; missing, corrupt or invalid data gives the fallback', () => {
+    const pm = new PersistenceManager();
+    assert.equal(pm.saveJson('spaceAdventure_mp_history_v1', [{ mode: 'turns' }]), true);
+    assert.deepEqual(pm.loadJson('spaceAdventure_mp_history_v1', Array.isArray, []), [{ mode: 'turns' }]);
+    assert.deepEqual(pm.loadJson('missing', Array.isArray, []), []);
+    storage.setItem('bad', '{oops');
+    assert.equal(pm.loadJson('bad', () => true, null), null);
+    storage.setItem('wrong', '{"a":1}');
+    assert.deepEqual(pm.loadJson('wrong', Array.isArray, []), []);
+    pm.removeKey('spaceAdventure_mp_history_v1');
+    assert.equal(storage.getItem('spaceAdventure_mp_history_v1'), null);
+});
+
+test('saveJson returns false when the write throws', () => {
+    const pm = new PersistenceManager();
+    storage.setItem = () => { throw new Error('quota'); };
+    assert.equal(pm.saveJson('k', { a: 1 }), false);
+});
+
+test('listKeys uses key()/length and is empty when storage cannot list', () => {
+    const s = new ListingStorage();
+    installStorage(s);
+    s.setItem('a', '1');
+    s.setItem('b', '2');
+    assert.deepEqual(new PersistenceManager().listKeys(), ['a', 'b']);
+    installStorage(new FakeStorage());
+    assert.deepEqual(new PersistenceManager().listKeys(), []);
+});
+
+test('resetUserData filters the user out of multiplayer boards, rivalries and ghosts; history stays', () => {
+    const s = new ListingStorage();
+    installStorage(s);
+    const pm = new PersistenceManager();
+    const coop = [
+        { score: 900, players: [{ name: 'BOB', profile: 'BOB' }, { name: 'ANN', profile: 'ANN' }] },
+        { score: 500, players: [{ name: 'ANN', profile: 'ANN' }, { name: 'Guest 2', profile: null }] },
+    ];
+    const harvest = [{ score: 70, name: 'bob', profile: 'bob' }, { score: 60, name: 'ANN', profile: 'ANN' }];
+    const rivalry = { 'ANN|BOB': { harvest: { wins: { BOB: 1 }, draws: 0, played: 1 } }, 'ANN|CAT': { duel: { wins: {}, draws: 1, played: 1 } } };
+    const history = [{ mode: 'turns', players: [{ name: 'BOB', profile: 'BOB' }] }];
+    s.setItem('spaceAdventure_mp_board_coop_v1', JSON.stringify(coop));
+    s.setItem('spaceAdventure_mp_board_harvest_v1', JSON.stringify(harvest));
+    s.setItem('spaceAdventure_mp_rivalry_v1', JSON.stringify(rivalry));
+    s.setItem('spaceAdventure_mp_history_v1', JSON.stringify(history));
+    s.setItem('spaceAdventure_ghost_v1_BOB_1_medium', '{}');
+    s.setItem('spaceAdventure_ghost_v1_BOBBY_1_medium', '{}');
+    s.setItem('spaceAdventure_ghost_v1_ANN_1_medium', '{}');
+    pm.resetUserData('Bob');
+    assert.deepEqual(JSON.parse(s.getItem('spaceAdventure_mp_board_coop_v1')).map(e => e.score), [500]);
+    assert.deepEqual(JSON.parse(s.getItem('spaceAdventure_mp_board_harvest_v1')).map(e => e.name), ['ANN']);
+    assert.deepEqual(Object.keys(JSON.parse(s.getItem('spaceAdventure_mp_rivalry_v1'))), ['ANN|CAT']);
+    assert.deepEqual(JSON.parse(s.getItem('spaceAdventure_mp_history_v1')), history);
+    assert.equal(s.getItem('spaceAdventure_ghost_v1_BOB_1_medium'), null);
+    assert.equal(s.getItem('spaceAdventure_ghost_v1_BOBBY_1_medium'), '{}');
+    assert.equal(s.getItem('spaceAdventure_ghost_v1_ANN_1_medium'), '{}');
+});
+
+test('resetUserData leaves missing or corrupt multiplayer records alone', () => {
+    const pm = new PersistenceManager();
+    storage.setItem('spaceAdventure_mp_rivalry_v1', 'not json');
+    pm.resetUserData('BOB');
+    assert.equal(storage.getItem('spaceAdventure_mp_rivalry_v1'), 'not json');
+    assert.equal(storage.getItem('spaceAdventure_mp_board_coop_v1'), null);
+});
