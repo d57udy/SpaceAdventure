@@ -141,7 +141,6 @@ let inputHandler;
 let audioManager;
 let persistenceManager;
 let achievementManager;
-let ship;
 let asteroids = [];
 let bullets = [];
 let ufos = [];
@@ -580,11 +579,10 @@ function withMusic(fn) {
     try { return fn(music); } catch (e) { return undefined; } // audio problems must not escape
 }
 
-// Stick steadying (steering.js stabilizeHeading); the heading is kept per caller.
-let stickHeading = null;
-function stabilizeStick(stick) {
-    const r = stabilizeHeading(stick, stickHeading);
-    stickHeading = r.heading;
+// Stick steadying (steering.js stabilizeHeading); the heading is kept per player (p.stickHeading).
+function stabilizeStick(p, stick) {
+    const r = stabilizeHeading(stick, p.stickHeading);
+    p.stickHeading = r.heading;
     return r.stick;
 }
 
@@ -881,9 +879,9 @@ function processTutorialRequests(requests = null) {
                 break;
             case 'respawnPlayer':
                 tutorialRespawns++;
-                ship = null;
-                respawnPlayer();
-                if (ship) ship.makeInvulnerable(r.invulnerableSeconds || 3);
+                p1().ship = null;
+                respawnPlayer(p1());
+                if (p1().ship) p1().ship.makeInvulnerable(r.invulnerableSeconds || 3);
                 break;
             case 'finish': finishTutorial(!!r.skipped); break;
             default: break; // 'step': the overlay and DOM classes follow tutorial.stepId
@@ -893,6 +891,7 @@ function processTutorialRequests(requests = null) {
 // Targets appear in front of the ship: a still green, a slowly drifting red.
 function spawnTutorialTarget(req) {
     if (tutorialTarget && tutorialTarget.isAlive) tutorialTarget.destroy();
+    const ship = p1().ship;
     const angle = ship ? ship.rotation : -Math.PI / 2;
     const ox = ship ? ship.x : WORLD_WIDTH / 2;
     const oy = ship ? ship.y : WORLD_HEIGHT / 2;
@@ -905,6 +904,7 @@ function spawnTutorialTarget(req) {
     tutorialTarget = target;
 }
 function tutorialTargetDistance() {
+    const ship = p1().ship;
     if (!tutorialTarget || !tutorialTarget.isAlive || !ship) return undefined;
     const { dx, dy } = Entity.wrappedDelta(ship.x, ship.y, tutorialTarget.x, tutorialTarget.y);
     return Math.hypot(dx, dy);
@@ -946,8 +946,8 @@ function finishTutorial(skipped) {
     currentBoss = null;
     bossDefeatedThisLevel = false;
     achievementManager.resetSessionStats();
-    ship = null;
-    respawnPlayer(true);
+    p.ship = null;
+    respawnPlayer(p, true);
     createLevelAsteroids();
     resetUfoSpawnTimer();
     levelUpNotificationTimer = LEVEL_UP_NOTIFICATION_DURATION;
@@ -1249,6 +1249,7 @@ function drawRadar() {
     const scale = Math.min(scaleX, scaleY);
 
     // Function to convert world position to radar position (relative to ship)
+    const ship = p1().ship;
     function worldToRadar(entityX, entityY) {
         if (!ship) return null;
 
@@ -1397,7 +1398,7 @@ function activatePowerUp(type) {
     switch (type.id) {
         case 'rapid_fire':
             activePowerUps.rapid_fire = type.duration;
-            if (ship) ship.shootCooldown = 0.1; // Faster shooting
+            if (p1().ship) p1().ship.shootCooldown = 0.1; // Faster shooting
             break;
         case 'triple_shot':
             activePowerUps.triple_shot = type.duration;
@@ -1564,7 +1565,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 scaleCap: renderScaleCap, downgrades: renderPerf.downgrades, avgFrameMs: renderPerf.lastAvgMs,
             };
         },
-        get ship() { return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY, isAlive: ship.isAlive, isThrusting: ship.isThrusting } : null; },
+        get ship() { const ship = p1().ship; return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY, isAlive: ship.isAlive, isThrusting: ship.isThrusting } : null; },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
         get tapRegions() { return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })); },
         isPressed(action) { return inputHandler.isPressed(action); },
@@ -1632,8 +1633,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
     // Initialize camera at center of the world
     Camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, viewWidth, viewHeight);
 
-    ship = null; // Always build a fresh ship (Restart would otherwise keep the old one)
-    respawnPlayer(true); // Call respawn before creating asteroids
+    respawnPlayer(players[0], true); // Fresh player, fresh ship; before creating asteroids
     tutorial.reset();
     tutorialPending = [];
     tutorialTarget = null;
@@ -1815,13 +1815,14 @@ function resizeCanvas() {
             (oldWorldWidth !== WORLD_WIDTH || oldWorldHeight !== WORLD_HEIGHT)) {
             const sx = WORLD_WIDTH / oldWorldWidth;
             const sy = WORLD_HEIGHT / oldWorldHeight;
-            const entities = [ship, currentBoss, ...asteroids, ...bullets, ...ufos, ...powerUps];
+            const entities = [...players.map(p => p.ship), currentBoss, ...asteroids, ...bullets, ...ufos, ...powerUps];
             entities.forEach(entity => {
                 if (!entity) return;
                 entity.x *= sx;
                 entity.y *= sy;
                 wrapWorldPosition(entity);
             });
+            const ship = p1().ship;
             if (ship) Camera.reset(ship.x, ship.y, viewWidth, viewHeight);
         }
     }
@@ -1934,6 +1935,64 @@ function syncStateTransition() {
     syncDomToState();
 }
 
+// One player's ship controls for this frame: rotate, thrust (keys or stick), fire, hyperspace.
+// p.input is the player's input (the shared InputHandler in single-player).
+function handleShipInput(p, deltaTime) {
+    const input = p.input || inputHandler;
+    const ship = p.ship;
+    if (!currentUser || !ship || !ship.isAlive) {
+        input.consumeAction('hyperspace'); // Don't queue a jump while dead
+        return;
+    }
+    const turnTime = deltaTime * p.upgrades.getTurnSpeedMult();
+    const rotationBefore = ship.rotation;
+    if (input.isPressed('rotateLeft')) ship.rotate(-1, turnTime);
+    if (input.isPressed('rotateRight')) ship.rotate(1, turnTime);
+    const speedBoost = activePowerUps.speed_boost > 0 ? SPEED_BOOST_MULT : 1;
+    const thrustScale = p.upgrades.getThrustMult() * speedBoost;
+    const stickThrust = applyJoystickSteering(ship, stabilizeStick(p, input.getJoystick()), deltaTime, turnTime, thrustScale);
+    if (input.isPressed('thrust')) ship.thrust(deltaTime * thrustScale);
+    else if (!stickThrust) ship.isThrusting = false;
+
+    if (tutorial.active) {
+        const turned = angleDiff(rotationBefore, ship.rotation);
+        if (turned !== 0) queueTutorial(tutorial.notify('rotated', { delta: turned }));
+        if (ship.isThrusting) queueTutorial(tutorial.notify('thrusted', { dt: deltaTime }));
+        const fireHeld = input.isPressed('fire');
+        if (fireHeld && !tutorialFireHeld) queueTutorial(tutorial.notify('confirm'));
+        tutorialFireHeld = fireHeld;
+    }
+
+    if (input.isPressed('fire')) {
+        const bulletCountBefore = bullets.length;
+        ship.fire(bullets, audioManager);
+        // Track shots fired for DDA
+        if (bullets.length > bulletCountBefore) {
+            DynamicDifficulty.trackShotFired();
+        }
+
+        // Triple shot: add 2 more bullets at angles if power-up active and we fired
+        if (activePowerUps.triple_shot > 0 && bullets.length > bulletCountBefore) {
+            const spreadAngle = 0.25; // radians (~15 degrees)
+            const bulletSpeed = Bullet.PLAYER_SPEED;
+            const noseX = ship.x + Math.cos(ship.rotation) * ship.radius;
+            const noseY = ship.y + Math.sin(ship.rotation) * ship.radius;
+            for (const angle of [ship.rotation - spreadAngle, ship.rotation + spreadAngle]) {
+                bullets.push(new Bullet(noseX, noseY, Math.cos(angle) * bulletSpeed, Math.sin(angle) * bulletSpeed, true));
+            }
+        }
+    }
+
+    if (input.consumeAction('hyperspace')) {
+        const jumped = ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager);
+        if (jumped && !ship.isAlive) {
+            handlePlayerDeath(p, true); // May set p.ship = null (respawn pending); vibrates
+            return;
+        }
+        if (jumped) vibrate('hyperspace');
+    }
+}
+
 function handleInput(deltaTime) {
     syncStateTransition(); // Catches changes made outside the loop (e.g. auto-pause)
     pollControllers(); // may pause (controller disconnected mid-game)
@@ -1983,80 +2042,16 @@ function handleInput(deltaTime) {
                 skipTutorial();
                 break;
             }
-            if (!currentUser || !ship || !ship.isAlive) {
-                inputHandler.consumeAction('hyperspace'); // Don't queue a jump while dead
-                audioManager.stopThrustSound();
-                break;
+            for (const p of players) {
+                handleShipInput(p, deltaTime);
+                if (currentGameState !== GameState.PLAYING) break; // the last life was lost
             }
-            const turnTime = deltaTime * ShipUpgrades.getTurnSpeedMult();
-            const rotationBefore = ship.rotation;
-            if (inputHandler.isPressed('rotateLeft')) ship.rotate(-1, turnTime);
-            if (inputHandler.isPressed('rotateRight')) ship.rotate(1, turnTime);
-            const speedBoost = activePowerUps.speed_boost > 0 ? SPEED_BOOST_MULT : 1;
-            const thrustScale = ShipUpgrades.getThrustMult() * speedBoost;
-            const stickThrust = applyJoystickSteering(ship, stabilizeStick(inputHandler.getJoystick()), deltaTime, turnTime, thrustScale);
-            if (inputHandler.isPressed('thrust')) ship.thrust(deltaTime * thrustScale);
-            else if (!stickThrust) ship.isThrusting = false;
-
-            if (tutorial.active) {
-                const turned = angleDiff(rotationBefore, ship.rotation);
-                if (turned !== 0) queueTutorial(tutorial.notify('rotated', { delta: turned }));
-                if (ship.isThrusting) queueTutorial(tutorial.notify('thrusted', { dt: deltaTime }));
-                const fireHeld = inputHandler.isPressed('fire');
-                if (fireHeld && !tutorialFireHeld) queueTutorial(tutorial.notify('confirm'));
-                tutorialFireHeld = fireHeld;
-            }
-
-            // Log fire button state and then attempt fire
-            if (inputHandler.isPressed('fire')) {
-                const bulletCountBefore = bullets.length;
-                ship.fire(bullets, audioManager);
-                // Track shots fired for DDA
-                if (bullets.length > bulletCountBefore) {
-                    DynamicDifficulty.trackShotFired();
-                }
-
-                // Triple shot: add 2 more bullets at angles if power-up active and we fired
-                if (activePowerUps.triple_shot > 0 && bullets.length > bulletCountBefore) {
-                    const spreadAngle = 0.25; // radians (~15 degrees)
-                    const bulletSpeed = Bullet.PLAYER_SPEED;
-                    const noseX = ship.x + Math.cos(ship.rotation) * ship.radius;
-                    const noseY = ship.y + Math.sin(ship.rotation) * ship.radius;
-
-                    // Left bullet
-                    const leftAngle = ship.rotation - spreadAngle;
-                    bullets.push(new Bullet(
-                        noseX, noseY,
-                        Math.cos(leftAngle) * bulletSpeed,
-                        Math.sin(leftAngle) * bulletSpeed,
-                        true
-                    ));
-
-                    // Right bullet
-                    const rightAngle = ship.rotation + spreadAngle;
-                    bullets.push(new Bullet(
-                        noseX, noseY,
-                        Math.cos(rightAngle) * bulletSpeed,
-                        Math.sin(rightAngle) * bulletSpeed,
-                        true
-                    ));
-                }
-            }
-
-            if (inputHandler.consumeAction('hyperspace')) {
-                const jumped = ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager);
-                if (jumped && !ship.isAlive) {
-                    handlePlayerDeath(true); // May set ship = null (respawn pending); vibrates
-                    audioManager.stopThrustSound();
-                    break;
-                }
-                if (jumped) vibrate('hyperspace');
-            }
-            if (ship.isThrusting && !audioManager.isMuted) audioManager.startThrustSound();
+            // One thrust loop, on while any ship thrusts
+            const thrusting = players.some(p => p.ship && p.ship.isAlive && p.ship.isThrusting);
+            if (thrusting && currentGameState === GameState.PLAYING && !audioManager.isMuted) audioManager.startThrustSound();
             else audioManager.stopThrustSound();
             break;
         }
-
         case GameState.PAUSED: {
             const pauseOptions = getPauseMenuOptions();
             if (pauseMenuSelectionIndex >= pauseOptions.length) pauseMenuSelectionIndex = 0;
@@ -2189,6 +2184,20 @@ function handleInput(deltaTime) {
     }
 }
 
+// Move one player's ship (not while dead or waiting to respawn) and wrap it in the world.
+function updateShip(p, deltaTime) {
+    const ship = p.ship;
+    if (!ship || !ship.isAlive || p.respawnTimer > 0) return;
+    ship.update(deltaTime, viewWidth, viewHeight, audioManager);
+    wrapWorldPosition(ship);
+}
+
+// The camera follows player 1's living ship.
+function updateCamera() {
+    const p = p1();
+    if (p.ship && p.ship.isAlive && p.respawnTimer <= 0) Camera.update(p.ship.x, p.ship.y, viewWidth, viewHeight);
+}
+
 function updateGame(deltaTime) {
     updateToasts(deltaTime);
     handleInput(deltaTime);
@@ -2209,7 +2218,7 @@ function updateGame(deltaTime) {
             p.respawnTimer -= deltaTime;
             if (p.respawnTimer <= 0 && p.lives > 0 && currentGameState !== GameState.GAME_OVER) {
                 console.log("Respawn timer finished, attempting respawn...");
-                respawnPlayer();
+                respawnPlayer(p);
             }
         }
     }
@@ -2218,13 +2227,8 @@ function updateGame(deltaTime) {
         return; // No updates if game is over
     }
 
-    if (ship && ship.isAlive && p1().respawnTimer <= 0) {
-        ship.update(deltaTime, viewWidth, viewHeight, audioManager);
-        // Wrap player position in bounded world
-        wrapWorldPosition(ship);
-        // Update camera to follow player
-        Camera.update(ship.x, ship.y, viewWidth, viewHeight);
-    }
+    for (const p of players) updateShip(p, deltaTime);
+    updateCamera();
 
     // Update asteroids and wrap their positions
     asteroids.forEach(asteroid => {
@@ -2252,7 +2256,7 @@ function updateGame(deltaTime) {
     };
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
-             ufo.update(deltaTime, viewWidth, viewHeight, ship, bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
+             ufo.update(deltaTime, viewWidth, viewHeight, p1().ship, bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
              wrapWorldPosition(ufo);
              if (ufo.isOnScreen) {
                  visibleUfoExists = true;
@@ -2279,8 +2283,8 @@ function updateGame(deltaTime) {
 
             // Handle power-up expiry effects
             if (wasActive && activePowerUps[key] <= 0) {
-                if (key === 'rapid_fire' && ship) {
-                    ship.shootCooldown = 0.25; // Reset to normal cooldown
+                if (key === 'rapid_fire' && p1().ship) {
+                    p1().ship.shootCooldown = 0.25; // Reset to normal cooldown
                     console.log('Rapid fire expired');
                 }
             }
@@ -2299,6 +2303,7 @@ function updateGame(deltaTime) {
     }
 
     // Magnet effect - attract green asteroids toward ship
+    const ship = p1().ship;
     if (activePowerUps.magnet > 0 && ship && ship.isAlive) {
         asteroids.forEach(asteroid => {
             if (asteroid.isAlive && asteroid.type === 'green') {
@@ -2337,7 +2342,7 @@ function updateGame(deltaTime) {
 
         // Level up when all asteroids are cleared and boss is defeated (if present)
         const bossCleared = !currentBoss || !currentBoss.isAlive;
-        if (asteroids.length === 0 && ufos.length === 0 && bossCleared && p1().respawnTimer <= 0 && ship && ship.isAlive) {
+        if (asteroids.length === 0 && ufos.length === 0 && bossCleared && players.some(p => p.respawnTimer <= 0 && p.ship && p.ship.isAlive)) {
             levelUp();
         }
 
@@ -2356,7 +2361,7 @@ function updateGame(deltaTime) {
 
     // Update boss if present
     if (currentBoss && currentBoss.isAlive) {
-        currentBoss.update(deltaTime, viewWidth, viewHeight, ship, bullets, audioManager);
+        currentBoss.update(deltaTime, viewWidth, viewHeight, p1().ship, bullets, audioManager);
         // Only wrap position during fighting phase (not during entry animation)
         if (currentBoss.phase === Boss.PHASES.FIGHTING) {
             wrapWorldPosition(currentBoss);
@@ -2364,6 +2369,29 @@ function updateGame(deltaTime) {
     }
 
     updateUI();
+}
+
+// Every living ship that is not waiting to respawn (camera transform already applied)
+function drawShips() {
+    for (const p of players) {
+        if (p.ship && p.ship.isAlive && p.respawnTimer <= 0) drawEntityWrapped(p.ship, ctx);
+    }
+}
+
+// Shield ring around each shielded ship (screen space)
+function drawShields() {
+    for (const p of players) {
+        const ship = p.ship;
+        if (!(ship && ship.isAlive && activePowerUps.shield > 0)) continue;
+        const screenPos = Camera.worldToScreen(ship.x, ship.y);
+        ctx.strokeStyle = '#00FFFF';
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 100) * 0.3;
+        ctx.beginPath();
+        ctx.arc(screenPos.x, screenPos.y, ship.radius + 10, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
 }
 
 function renderGame() {
@@ -2454,7 +2482,7 @@ function renderGame() {
             ctx.translate(-Camera.x + ScreenShake.offsetX, -Camera.y + ScreenShake.offsetY);
 
             // Draw all entities with wrapping support for seamless scrolling
-            if (ship && ship.isAlive && p1().respawnTimer <= 0) drawEntityWrapped(ship, ctx);
+            drawShips();
             asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
             ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
@@ -2470,17 +2498,8 @@ function renderGame() {
 
             ctx.restore();
 
-            // Draw shield effect around ship if active (in screen space)
-            if (ship && ship.isAlive && activePowerUps.shield > 0) {
-                const screenPos = Camera.worldToScreen(ship.x, ship.y);
-                ctx.strokeStyle = '#00FFFF';
-                ctx.lineWidth = 2;
-                ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 100) * 0.3;
-                ctx.beginPath();
-                ctx.arc(screenPos.x, screenPos.y, ship.radius + 10, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.globalAlpha = 1;
-            }
+            // Draw shield effect around ships if active (in screen space)
+            drawShields();
 
             // Draw level up notification (screen-space, not world-space)
             drawLevelUpNotification();
@@ -2555,7 +2574,7 @@ function renderGame() {
             ctx.translate(-Camera.x, -Camera.y);
 
             // Draw all entities with wrapping support
-            if (ship && ship.isAlive && p1().respawnTimer <= 0) drawEntityWrapped(ship, ctx);
+            drawShips();
             asteroids.forEach(asteroid => drawEntityWrapped(asteroid, ctx));
             bullets.forEach(bullet => drawEntityWrapped(bullet, ctx));
             ufos.forEach(ufo => drawEntityWrapped(ufo, ctx));
@@ -2757,6 +2776,7 @@ function drawTutorialOverlay() {
 }
 
 function drawTutorialTargetArrow(bannerBottom) {
+    const ship = p1().ship;
     if (!tutorialTarget || !tutorialTarget.isAlive || !ship) return;
     const { dx, dy } = Entity.wrappedDelta(ship.x, ship.y, tutorialTarget.x, tutorialTarget.y);
     const cx = viewWidth / 2;
@@ -2854,6 +2874,7 @@ function createLevelAsteroids(isBossLevel = false) {
     if (isBossLevel) {
         numAsteroids = Math.floor(numAsteroids * 0.4); // 40% of normal asteroids during boss fight
     }
+    const ship = p1().ship;
     const playerX = ship ? ship.x : WORLD_WIDTH / 2;
     const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
 
@@ -2902,7 +2923,10 @@ function createLevelAsteroids(isBossLevel = false) {
     DynamicDifficulty.trackGreenSpawned(greenCount);
 }
 
-function checkCollisions() {
+// One ship against power-ups, asteroids, UFOs and enemy bullets.
+// Returns true when the ship was destroyed (the rest of the frame's checks wait, as before).
+function checkShipCollisions(p) {
+    const ship = p.ship;
     // Check ship collecting power-ups (always check, even when invulnerable)
     if (ship && ship.isAlive) {
         for (const powerUp of powerUps) {
@@ -2916,7 +2940,7 @@ function checkCollisions() {
     }
 
     if (ship && ship.isAlive && !ship.isInvulnerable) {
-        const collectRadius = ship.radius * ShipUpgrades.getCollectionRadiusMult();
+        const collectRadius = ship.radius * p.upgrades.getCollectionRadiusMult();
         for (const asteroid of asteroids) {
             if (!asteroid.isAlive) continue;
             // Collection Radius upgrade enlarges the pickup range for green asteroids only
@@ -2994,10 +3018,10 @@ function checkCollisions() {
                         break; // split() appended to the array we're iterating
                     } else {
                         console.log("Collision: Ship <-> Red Asteroid (Damage!)");
-                        handlePlayerDeath();
+                        handlePlayerDeath(p);
                         Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                         asteroid.split(asteroids, audioManager);
-                        return;
+                        return true;
                     }
                 }
             }
@@ -3013,9 +3037,9 @@ function checkCollisions() {
                     ufo.destroy(audioManager);
                 } else {
                     console.log("Collision: Ship <-> UFO");
-                    handlePlayerDeath();
+                    handlePlayerDeath(p);
                     ufo.destroy(audioManager);
-                    return;
+                    return true;
                 }
             }
         }
@@ -3030,13 +3054,22 @@ function checkCollisions() {
                     bullet.destroy();
                 } else {
                     console.log("Collision: Ship <-> UFO Bullet");
-                    handlePlayerDeath();
+                    handlePlayerDeath(p);
                     bullet.destroy();
-                    return;
+                    return true;
                 }
             }
         }
     }
+    return false;
+}
+
+function checkCollisions() {
+    let shipDestroyed = false;
+    for (const p of players) {
+        if (checkShipCollisions(p)) shipDestroyed = true;
+    }
+    if (shipDestroyed) return;
 
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
@@ -3184,13 +3217,14 @@ function checkCollisions() {
         }
     }
 
-    // Check boss bullets hitting player
-    if (currentBoss && currentBoss.isAlive && ship && ship.isAlive && !ship.isInvulnerable) {
-        // Boss bullets are added to the main bullets array in boss.update
-        // They're already checked in the earlier ship-bullet collision section
-    }
+    // Boss bullets are added to the main bullets array in boss.update, so the ship-bullet
+    // checks above already cover them. Last: ships crashing into the boss body.
+    for (const p of players) checkShipBossCollision(p);
+}
 
-    // Check if player collides with boss body
+// One ship against the boss body (elliptical saucer shape)
+function checkShipBossCollision(p) {
+    const ship = p.ship;
     if (currentBoss && currentBoss.isAlive && currentBoss.phase === Boss.PHASES.FIGHTING &&
         ship && ship.isAlive && !ship.isInvulnerable) {
         // Use elliptical collision for the saucer shape
@@ -3215,13 +3249,14 @@ function checkCollisions() {
                 ship.isInvulnerable = true;
                 ship.invulnerabilityTimer = 1;
             } else {
-                handlePlayerDeath();
+                handlePlayerDeath(p);
             }
         }
     }
 }
 
-function handlePlayerDeath(forced = false) {
+function handlePlayerDeath(p, forced = false) {
+    const ship = p.ship;
     let destroyed = forced;
     const shipX = ship ? ship.x : WORLD_WIDTH / 2;
     const shipY = ship ? ship.y : WORLD_HEIGHT / 2;
@@ -3241,7 +3276,6 @@ function handlePlayerDeath(forced = false) {
     }
 
     if (destroyed) {
-        const p = p1();
         console.log(`Player death handled. Lives left: ${p.lives - 1}`);
         audioManager.stopThrustSound();
         DynamicDifficulty.onPlayerDeath(); // Immediate difficulty adjustment on death
@@ -3259,23 +3293,24 @@ function handlePlayerDeath(forced = false) {
             vibrate('lifeLost');
             console.log(`Starting respawn timer (${RESPAWN_DELAY}s)`);
             p.respawnTimer = RESPAWN_DELAY;
-            ship = null;
+            p.ship = null;
         }
     }
 }
 
-function respawnPlayer(isInitialSpawn = false) {
-    console.log(`respawnPlayer called. isInitialSpawn=${isInitialSpawn}, currentGameState=${currentGameState}, shipExists=${!!ship}, shipAlive=${ship?.isAlive}`);
-    if (currentGameState !== GameState.GAME_OVER && (!ship || !ship.isAlive)) {
+function respawnPlayer(p, isInitialSpawn = false) {
+    console.log(`respawnPlayer called. isInitialSpawn=${isInitialSpawn}, currentGameState=${currentGameState}, shipExists=${!!p.ship}, shipAlive=${p.ship?.isAlive}`);
+    if (currentGameState !== GameState.GAME_OVER && (!p.ship || !p.ship.isAlive)) {
          console.log("Respawning Player - Conditions Met");
 
          // Spawn at center of the world
          const centerX = WORLD_WIDTH / 2;
          const centerY = WORLD_HEIGHT / 2;
 
-         ship = new PlayerShip(centerX, centerY);
+         const ship = new PlayerShip(centerX, centerY);
+         p.ship = ship;
          if (activePowerUps.rapid_fire > 0) ship.shootCooldown = 0.1;
-         p1().respawnTimer = 0;
+         p.respawnTimer = 0;
          audioManager.stopThrustSound();
 
          // Make ship invulnerable after respawn (unless initial spawn)
@@ -3310,6 +3345,7 @@ function levelUp() {
     // Check if this is a boss level
     if (level > 1 && level % BOSS_LEVEL_INTERVAL === 0) {
         // Spawn boss at top of visible area (in world coordinates)
+        const ship = p1().ship;
         const bossX = ship ? ship.x : WORLD_WIDTH / 2;
         // Target Y is 150px below top of visible screen in world coords
         const targetY = ship ? ship.y - viewHeight / 2 + 150 : WORLD_HEIGHT / 4;
@@ -3341,8 +3377,8 @@ function gameOver() {
     currentGameState = GameState.GAME_OVER;
     gameOverInputDelay = 1;
     pausedGameExists = false;
-    if(ship) {
-        ship.isThrusting = false;
+    for (const p of players) {
+        if (p.ship) p.ship.isThrusting = false;
     }
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
@@ -3404,6 +3440,7 @@ function updateUfoSpawning(deltaTime) {
     if (ufoSpawnTimer <= 0) {
         console.log("Attempting to spawn UFO");
         // Spawn UFO at a visible position near the edge of the current screen
+        const ship = p1().ship;
         const playerX = ship ? ship.x : WORLD_WIDTH / 2;
         const playerY = ship ? ship.y : WORLD_HEIGHT / 2;
 
