@@ -22,6 +22,7 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
+import { createCamera } from './camera.js';
 import { createPlayer, tickPowerUps, teamScore, isLiving, livingPlayers, nearestLivingShip } from './players.js';
 
 // Game States Enum
@@ -83,57 +84,14 @@ const UFO_SPAWN_BASE_INTERVAL = 15; // Average seconds between UFO spawns (Added
 const EXTRA_LIFE_SCORE = 10000;
 const LEVEL_UP_SCORE = 500; // Score needed per level (level 2 at 500, level 3 at 1000, etc.)
 
-// Camera system - always centered on player, handles wrapping in rendering
-const Camera = {
-    x: 0,
-    y: 0,
-    // Parallax offset tracks continuous movement for smooth starfield
-    parallaxX: 0,
-    parallaxY: 0,
-    lastShipX: null,
-    lastShipY: null,
-
-    update(shipX, shipY, canvasWidth, canvasHeight) {
-        // Track continuous movement for parallax (before wrapping correction)
-        if (this.lastShipX !== null) {
-            let deltaX = shipX - this.lastShipX;
-            let deltaY = shipY - this.lastShipY;
-
-            // Correct for world wrapping to get actual movement
-            if (deltaX > WORLD_WIDTH / 2) deltaX -= WORLD_WIDTH;
-            else if (deltaX < -WORLD_WIDTH / 2) deltaX += WORLD_WIDTH;
-            if (deltaY > WORLD_HEIGHT / 2) deltaY -= WORLD_HEIGHT;
-            else if (deltaY < -WORLD_HEIGHT / 2) deltaY += WORLD_HEIGHT;
-
-            // Accumulate for smooth parallax
-            this.parallaxX += deltaX;
-            this.parallaxY += deltaY;
-        }
-
-        this.lastShipX = shipX;
-        this.lastShipY = shipY;
-
-        // Simply center camera on ship - always
-        this.x = shipX - canvasWidth / 2;
-        this.y = shipY - canvasHeight / 2;
-    },
-
-    reset(shipX, shipY, canvasWidth, canvasHeight) {
-        this.x = shipX - canvasWidth / 2;
-        this.y = shipY - canvasHeight / 2;
-        this.parallaxX = 0;
-        this.parallaxY = 0;
-        this.lastShipX = shipX;
-        this.lastShipY = shipY;
-    },
-
-    worldToScreen(worldX, worldY) {
-        return {
-            x: worldX - this.x,
-            y: worldY - this.y
-        };
-    }
-};
+// Shared camera (js/camera.js). It follows the living ships: with one ship it snaps to it
+// every frame exactly like the old single-player camera (instant follow, zoom 1, parallax from
+// the ship's wrapped movement); with more ships it frames their midpoint.
+// camera.x/y is the world point at the top-left of the view, camera.cx/cy the centre.
+const camera = createCamera();
+function cameraView() {
+    return { width: viewWidth, height: viewHeight, worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT };
+}
 
 // Game State Variables
 let canvas, ctx;
@@ -371,7 +329,7 @@ const DynamicDifficulty = {
 // appear near that player's ship in the player's colour.
 function comboTextAnchor(p, fallbackY) {
     if (players.length > 1 && p.ship) {
-        const pos = Camera.worldToScreen(p.ship.x, p.ship.y);
+        const pos = shipScreenPos(p.ship);
         return { x: pos.x, y: pos.y - 40 };
     }
     return { x: viewWidth / 2, y: fallbackY };
@@ -1025,10 +983,6 @@ function drawEntityWrapped(entity, ctx) {
     const originalX = entity.x;
     const originalY = entity.y;
 
-    // Get camera position in world coordinates (normalized)
-    const camCenterX = Camera.x + viewWidth / 2;
-    const camCenterY = Camera.y + viewHeight / 2;
-
     // Check all 9 possible wrapped positions (3x3 grid)
     // This ensures entity appears correctly when near world edges
     for (let dx = -1; dx <= 1; dx++) {
@@ -1037,12 +991,13 @@ function drawEntityWrapped(entity, ctx) {
             const wrappedY = originalY + dy * WORLD_HEIGHT;
 
             // Check if this wrapped position is visible on screen
-            const screenX = wrappedX - Camera.x;
-            const screenY = wrappedY - Camera.y;
+            // (in world units; the view spans viewWidth / zoom of them)
+            const screenX = wrappedX - camera.x;
+            const screenY = wrappedY - camera.y;
             const margin = entity.radius ? entity.radius * 2 : 50;
 
-            if (screenX > -margin && screenX < viewWidth + margin &&
-                screenY > -margin && screenY < viewHeight + margin) {
+            if (screenX > -margin && screenX < viewWidth / camera.zoom + margin &&
+                screenY > -margin && screenY < viewHeight / camera.zoom + margin) {
                 // Temporarily move entity to wrapped position and draw
                 entity.x = wrappedX;
                 entity.y = wrappedY;
@@ -1142,8 +1097,8 @@ function drawStarfield() {
             const star = stars[i];
             if (star.level !== level) continue;
             // Apply parallax based on layer using continuous parallax tracking
-            const parallaxX = star.x - Camera.parallaxX * star.layer;
-            const parallaxY = star.y - Camera.parallaxY * star.layer;
+            const parallaxX = star.x - camera.parallaxX * star.layer;
+            const parallaxY = star.y - camera.parallaxY * star.layer;
 
             // Wrap stars to keep them visible (seamless tiling)
             const screenX = ((parallaxX % viewWidth) + viewWidth) % viewWidth;
@@ -1205,13 +1160,15 @@ function drawRadar() {
     const scale = Math.min(scaleX, scaleY);
 
     // Function to convert world position to radar position (relative to ship)
-    const ship = p1().ship;
+    // Centred on the camera (the ship in single-player); empty while no ship is in play
+    const hasShip = players.some(p => p.ship);
+    const centre = cameraCentre();
     function worldToRadar(entityX, entityY) {
-        if (!ship) return null;
+        if (!hasShip) return null;
 
-        // Calculate relative position to ship
-        let relX = entityX - ship.x;
-        let relY = entityY - ship.y;
+        // Calculate relative position to the camera centre
+        let relX = entityX - centre.x;
+        let relY = entityY - centre.y;
 
         // Handle world wrapping - find shortest distance
         if (relX > WORLD_WIDTH / 2) relX -= WORLD_WIDTH;
@@ -1281,14 +1238,21 @@ function drawRadar() {
         ctx.strokeRect(pos.x - 3.5, pos.y - 3.5, 7, 7);
     });
 
-    // Draw player at center (white triangle)
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.moveTo(radarCenterX, radarCenterY - 5);
-    ctx.lineTo(radarCenterX - 4, radarCenterY + 4);
-    ctx.lineTo(radarCenterX + 4, radarCenterY + 4);
-    ctx.closePath();
-    ctx.fill();
+    // Single-player: the player at the centre (white triangle). More players: each living
+    // ship in its player's colour.
+    const markers = players.length === 1
+        ? [{ pos: { x: radarCenterX, y: radarCenterY }, colour: '#FFFFFF' }]
+        : livingPlayers(players).map(p => ({ pos: worldToRadar(p.ship.x, p.ship.y), colour: p.colour }));
+    markers.forEach(({ pos, colour }) => {
+        if (!pos) return;
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y - 5);
+        ctx.lineTo(pos.x - 4, pos.y + 4);
+        ctx.lineTo(pos.x + 4, pos.y + 4);
+        ctx.closePath();
+        ctx.fill();
+    });
 
     ctx.restore();
 }
@@ -1533,6 +1497,8 @@ document.addEventListener('DOMContentLoaded', () => {
             };
         },
         get ship() { const ship = p1().ship; return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY, isAlive: ship.isAlive, isThrusting: ship.isThrusting } : null; },
+        // Shared camera: centre (x, y), top-left of the view (left, top) and zoom
+        get camera() { return { x: camera.cx, y: camera.cy, left: camera.x, top: camera.y, zoom: camera.zoom }; },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
         get tapRegions() { return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })); },
         isPressed(action) { return inputHandler.isPressed(action); },
@@ -1598,7 +1564,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
     generateStars();
 
     // Initialize camera at center of the world
-    Camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, viewWidth, viewHeight);
+    camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, cameraView());
 
     respawnPlayer(players[0], true); // Fresh player, fresh ship; before creating asteroids
     tutorial.reset();
@@ -1789,8 +1755,9 @@ function resizeCanvas() {
                 entity.y *= sy;
                 wrapWorldPosition(entity);
             });
-            const ship = p1().ship;
-            if (ship) Camera.reset(ship.x, ship.y, viewWidth, viewHeight);
+            // Re-centre on a ship (the next frame re-frames several ships)
+            const ship = players.map(p => p.ship).find(Boolean);
+            if (ship) camera.reset(ship.x, ship.y, cameraView());
         }
     }
 
@@ -2161,10 +2128,14 @@ function updateShip(p, deltaTime) {
     wrapWorldPosition(ship);
 }
 
-// The camera follows player 1's living ship.
-function updateCamera() {
-    const p = p1();
-    if (p.ship && p.ship.isAlive && p.respawnTimer <= 0) Camera.update(p.ship.x, p.ship.y, viewWidth, viewHeight);
+// Ships the camera follows: living ships that are not waiting to respawn
+function cameraTargets() {
+    return players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0).map(p => p.ship);
+}
+
+// The camera follows the living ships (holds its position while there are none)
+function updateCamera(deltaTime) {
+    camera.update(cameraTargets(), deltaTime, cameraView());
 }
 
 function updateGame(deltaTime) {
@@ -2197,7 +2168,7 @@ function updateGame(deltaTime) {
     }
 
     for (const p of players) updateShip(p, deltaTime);
-    updateCamera();
+    updateCamera(deltaTime);
 
     // Update asteroids and wrap their positions
     asteroids.forEach(asteroid => {
@@ -2225,7 +2196,8 @@ function updateGame(deltaTime) {
     };
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
-             ufo.update(deltaTime, viewWidth, viewHeight, nearestLivingShip(ufo.x, ufo.y, players, WORLD_WIDTH, WORLD_HEIGHT), bullets, audioManager, effectiveDifficulty, asteroids, Camera.x, Camera.y);
+             ufo.update(deltaTime, viewWidth, viewHeight, nearestLivingShip(ufo.x, ufo.y, players, WORLD_WIDTH, WORLD_HEIGHT), bullets, audioManager, effectiveDifficulty, asteroids,
+                 camera.cx - viewWidth / 2, camera.cy - viewHeight / 2);
              wrapWorldPosition(ufo);
              if (ufo.isOnScreen) {
                  visibleUfoExists = true;
@@ -2330,6 +2302,26 @@ function drawComboIndicator(p) {
     ctx.globalAlpha = 1;
 }
 
+// World-to-canvas transform for game objects: shake offset, zoom, then the camera position.
+// At zoom 1 this is the old translate(-camera.x + shake, -camera.y + shake).
+function applyCameraTransform(shakeX, shakeY) {
+    if (camera.zoom === 1) {
+        ctx.translate(-camera.x + shakeX, -camera.y + shakeY);
+    } else {
+        ctx.translate(shakeX, shakeY);
+        ctx.scale(camera.zoom, camera.zoom);
+        ctx.translate(-camera.x, -camera.y);
+    }
+}
+
+// Canvas position of a ship, the short way round the world from the camera centre
+function shipScreenPos(ship) {
+    return {
+        x: viewWidth / 2 + wrapDelta(ship.x - camera.cx, WORLD_WIDTH) * camera.zoom,
+        y: viewHeight / 2 + wrapDelta(ship.y - camera.cy, WORLD_HEIGHT) * camera.zoom,
+    };
+}
+
 // Every living ship that is not waiting to respawn (camera transform already applied)
 function drawShips() {
     for (const p of players) {
@@ -2342,7 +2334,7 @@ function drawShields() {
     for (const p of players) {
         const ship = p.ship;
         if (!(ship && ship.isAlive && p.powerUps.shield > 0)) continue;
-        const screenPos = Camera.worldToScreen(ship.x, ship.y);
+        const screenPos = shipScreenPos(ship);
         ctx.strokeStyle = '#00FFFF';
         ctx.lineWidth = 2;
         ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 100) * 0.3;
@@ -2438,7 +2430,7 @@ function renderGame() {
 
             // Apply camera transformation for game objects (with screen shake)
             ctx.save();
-            ctx.translate(-Camera.x + ScreenShake.offsetX, -Camera.y + ScreenShake.offsetY);
+            applyCameraTransform(ScreenShake.offsetX, ScreenShake.offsetY);
 
             // Draw all entities with wrapping support for seamless scrolling
             drawShips();
@@ -2508,7 +2500,7 @@ function renderGame() {
             ctx.globalAlpha = 0.5;
             // Apply camera transformation for game objects
             ctx.save();
-            ctx.translate(-Camera.x, -Camera.y);
+            applyCameraTransform(0, 0);
 
             // Draw all entities with wrapping support
             drawShips();
@@ -2924,7 +2916,7 @@ function checkShipCollisions(p) {
                     asteroid.destroy();
 
                     // Visual effects
-                    const screenPos = Camera.worldToScreen(asteroid.x, asteroid.y);
+                    const screenPos = camera.worldToScreen(asteroid.x, asteroid.y);
                     Particles.collect(asteroid.x, asteroid.y, palette.collect);
 
                     // Floating score text
@@ -3264,8 +3256,8 @@ function respawnPlayer(p, isInitialSpawn = false) {
              console.log("Ship made invulnerable for 3 seconds");
          }
 
-         // Reset camera to player position
-         Camera.reset(centerX, centerY, viewWidth, viewHeight);
+         // Reset camera to player position (single-player; a shared camera keeps framing everyone)
+         if (players.length === 1) camera.reset(centerX, centerY, cameraView());
     } else {
         console.log("Respawning Player - Conditions NOT Met");
     }
@@ -3694,7 +3686,7 @@ function bulletOwner(bullet) {
 
 // World point at the centre of the view
 function cameraCentre() {
-    return { x: Camera.x + viewWidth / 2, y: Camera.y + viewHeight / 2 };
+    return { x: camera.cx, y: camera.cy };
 }
 
 // What the boss hovers around and attacks. Single-player passes the ship itself, exactly as
