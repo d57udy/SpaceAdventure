@@ -21,6 +21,7 @@ import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
+import { UpgradeState } from './upgrades.js';
 
 // Game States Enum
 const GameState = {
@@ -515,122 +516,9 @@ const ScreenShake = {
     }
 };
 
-// Persistent Ship Upgrades System
-const ShipUpgrades = {
-    // Upgrade definitions with max levels and effects
-    upgrades: {
-        collectionRadius: {
-            name: 'Collection Radius',
-            maxLevel: 5,
-            cost: [500, 1000, 2000, 4000, 8000],
-            description: '+10% collection range per level'
-        },
-        thrustPower: {
-            name: 'Thrust Power',
-            maxLevel: 5,
-            cost: [500, 1000, 2000, 4000, 8000],
-            description: '+15% thrust speed per level'
-        },
-        startingLives: {
-            name: 'Starting Lives',
-            maxLevel: 3,
-            cost: [2000, 5000, 10000],
-            description: '+1 starting life per level'
-        },
-        turnSpeed: {
-            name: 'Turn Speed',
-            maxLevel: 5,
-            cost: [300, 600, 1200, 2400, 4800],
-            description: '+10% turn speed per level'
-        },
-        powerUpDuration: {
-            name: 'Power-Up Duration',
-            maxLevel: 5,
-            cost: [400, 800, 1600, 3200, 6400],
-            description: '+20% power-up duration per level'
-        }
-    },
-
-    // Current upgrade levels (loaded from persistence)
-    levels: {
-        collectionRadius: 0,
-        thrustPower: 0,
-        startingLives: 0,
-        turnSpeed: 0,
-        powerUpDuration: 0
-    },
-
-    // Currency for buying upgrades
-    currency: 0,
-
-    load(persistenceManager, user) {
-        if (!persistenceManager || !user) return;
-        const data = persistenceManager.loadUpgrades(user);
-        // Start from defaults so a previous user's credits/levels never carry over
-        this.reset();
-        if (data) {
-            this.levels = { ...this.levels, ...(data.levels || {}) };
-            this.currency = data.currency || 0;
-        }
-    },
-
-    save(persistenceManager, user) {
-        if (!persistenceManager || !user) return;
-        persistenceManager.saveUpgrades(user, {
-            levels: this.levels,
-            currency: this.currency
-        });
-    },
-
-    addCurrency(amount) {
-        this.currency += amount;
-    },
-
-    canAfford(upgradeKey) {
-        const upgrade = this.upgrades[upgradeKey];
-        const currentLevel = this.levels[upgradeKey];
-        if (currentLevel >= upgrade.maxLevel) return false;
-        return this.currency >= upgrade.cost[currentLevel];
-    },
-
-    purchase(upgradeKey, persistenceManager, user) {
-        if (!this.canAfford(upgradeKey)) return false;
-        const upgrade = this.upgrades[upgradeKey];
-        const currentLevel = this.levels[upgradeKey];
-        this.currency -= upgrade.cost[currentLevel];
-        this.levels[upgradeKey]++;
-        this.save(persistenceManager, user);
-        return true;
-    },
-
-    // Get multipliers for game systems
-    getCollectionRadiusMult() {
-        return 1 + (this.levels.collectionRadius * 0.1);
-    },
-    getThrustMult() {
-        return 1 + (this.levels.thrustPower * 0.15);
-    },
-    getExtraStartingLives() {
-        return this.levels.startingLives;
-    },
-    getTurnSpeedMult() {
-        return 1 + (this.levels.turnSpeed * 0.1);
-    },
-    getPowerUpDurationMult() {
-        return 1 + (this.levels.powerUpDuration * 0.2);
-    },
-
-    reset() {
-        this.levels = {
-            collectionRadius: 0,
-            thrustPower: 0,
-            startingLives: 0,
-            turnSpeed: 0,
-            powerUpDuration: 0
-        };
-        this.currency = 0;
-    }
-};
+// Persistent ship upgrades of the signed-in profile (js/upgrades.js). Player 1 shares this
+// object (players[0].upgrades), so the Upgrades screen and saves keep working.
+const ShipUpgrades = new UpgradeState();
 
 // Boss battle state
 let currentBoss = null;
