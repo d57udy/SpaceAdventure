@@ -366,65 +366,27 @@ const DynamicDifficulty = {
     }
 };
 
-// Combo System - chain collections for multipliers
-const ComboSystem = {
-    count: 0,           // Current combo count
-    multiplier: 1,      // Current score multiplier (1x, 2x, 3x, etc.)
-    timer: 0,           // Time remaining before combo resets
-    maxTime: 3,         // Seconds before combo expires
-    streakMilestones: [5, 10, 15, 25, 50, 100], // Streak bonus thresholds
-    lastMilestone: 0,   // Last milestone reached
-
-    addCollection() {
-        this.count++;
-        this.timer = this.maxTime;
-
-        // Update multiplier based on combo count
-        if (this.count >= 20) this.multiplier = 4;
-        else if (this.count >= 10) this.multiplier = 3;
-        else if (this.count >= 5) this.multiplier = 2;
-        else this.multiplier = 1;
-
-        // Check for streak milestones
-        for (const milestone of this.streakMilestones) {
-            if (this.count === milestone && milestone > this.lastMilestone) {
-                this.lastMilestone = milestone;
-                const bonus = milestone * 100;
-                FloatingTexts.spawn(viewWidth / 2, viewHeight / 3,
-                    `${milestone} STREAK! +${bonus}`, '#FFD700', 36);
-                return { streakBonus: bonus, milestone };
-            }
-        }
-        return { streakBonus: 0, milestone: 0 };
-    },
-
-    break() {
-        if (this.count >= 5) {
-            FloatingTexts.spawn(viewWidth / 2, viewHeight / 2,
-                'Combo Lost!', '#FF4444', 24);
-        }
-        this.count = 0;
-        this.multiplier = 1;
-        this.timer = 0;
-        this.lastMilestone = 0;
-    },
-
-    update(deltaTime) {
-        if (this.timer > 0) {
-            this.timer -= deltaTime;
-            if (this.timer <= 0) {
-                this.break();
-            }
-        }
-    },
-
-    reset() {
-        this.count = 0;
-        this.multiplier = 1;
-        this.timer = 0;
-        this.lastMilestone = 0;
+// Combo: per player (p.combo, a Combo from js/players.js). It reports milestones and breaks;
+// these show the texts. Single-player keeps the centred texts; with more players they
+// appear near that player's ship in the player's colour.
+function comboTextAnchor(p, fallbackY) {
+    if (players.length > 1 && p.ship) {
+        const pos = Camera.worldToScreen(p.ship.x, p.ship.y);
+        return { x: pos.x, y: pos.y - 40 };
     }
-};
+    return { x: viewWidth / 2, y: fallbackY };
+}
+function showComboMilestone(p, result) {
+    if (!result.streakBonus) return;
+    const at = comboTextAnchor(p, viewHeight / 3);
+    FloatingTexts.spawn(at.x, at.y, `${result.milestone} STREAK! +${result.streakBonus}`,
+        players.length > 1 ? p.colour : '#FFD700', 36);
+}
+function showComboLost(p, result) {
+    if (!result || !result.lost) return;
+    const at = comboTextAnchor(p, viewHeight / 2);
+    FloatingTexts.spawn(at.x, at.y, 'Combo Lost!', players.length > 1 ? p.colour : '#FF4444', 24);
+}
 
 // Floating Text System - for score popups, combo notifications
 const FloatingTexts = {
@@ -934,7 +896,7 @@ function finishTutorial(skipped) {
     ufos = [];
     resetPowerUps();
     DynamicDifficulty.reset();
-    ComboSystem.reset();
+    p.combo.reset();
     FloatingTexts.clear();
     ScreenShake.reset();
     currentBoss = null;
@@ -1622,8 +1584,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
     resetPowerUps();
     DynamicDifficulty.reset();
 
-    // Reset visual effect systems
-    ComboSystem.reset();
+    // Reset visual effect systems (each new player starts with an empty combo)
     FloatingTexts.clear();
     Particles.clear();
     ScreenShake.reset();
@@ -2323,7 +2284,7 @@ function updateGame(deltaTime) {
     }
 
     // Update visual effects systems
-    ComboSystem.update(deltaTime);
+    for (const p of players) showComboLost(p, p.combo.update(deltaTime));
     FloatingTexts.update(deltaTime);
     Particles.update(deltaTime);
     ScreenShake.update(deltaTime);
@@ -2338,6 +2299,33 @@ function updateGame(deltaTime) {
     }
 
     updateUI();
+}
+
+// Combo count, multiplier and timer bar for one player (screen space, top centre)
+function drawComboIndicator(p) {
+    const combo = p.combo;
+    if (combo.count < 2) return;
+    ctx.textAlign = 'center';
+    const comboAlpha = Math.min(1, combo.timer / combo.maxTime + 0.3);
+    ctx.globalAlpha = comboAlpha;
+
+    // Combo count and multiplier
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 24px Arial';
+    ctx.fillText(`${combo.count}x COMBO`, viewWidth / 2, 80);
+
+    // Multiplier indicator
+    if (combo.multiplier > 1) {
+        ctx.fillStyle = '#FF6600';
+        ctx.font = 'bold 18px Arial';
+        ctx.fillText(`${combo.multiplier}x SCORE`, viewWidth / 2, 105);
+    }
+
+    // Timer bar
+    const timerWidth = 100 * (combo.timer / combo.maxTime);
+    ctx.fillStyle = '#FFD700';
+    ctx.fillRect(viewWidth / 2 - 50, 115, timerWidth, 4);
+    ctx.globalAlpha = 1;
 }
 
 // Every living ship that is not waiting to respawn (camera transform already applied)
@@ -2491,30 +2479,8 @@ function renderGame() {
                 ctx.fillText(`Difficulty: ${DynamicDifficulty.getAdjustmentText()}`, 130, viewHeight - 10);
             }
 
-            // Draw combo indicator
-            if (ComboSystem.count >= 2) {
-                ctx.textAlign = 'center';
-                const comboAlpha = Math.min(1, ComboSystem.timer / ComboSystem.maxTime + 0.3);
-                ctx.globalAlpha = comboAlpha;
-
-                // Combo count and multiplier
-                ctx.fillStyle = '#FFD700';
-                ctx.font = 'bold 24px Arial';
-                ctx.fillText(`${ComboSystem.count}x COMBO`, viewWidth / 2, 80);
-
-                // Multiplier indicator
-                if (ComboSystem.multiplier > 1) {
-                    ctx.fillStyle = '#FF6600';
-                    ctx.font = 'bold 18px Arial';
-                    ctx.fillText(`${ComboSystem.multiplier}x SCORE`, viewWidth / 2, 105);
-                }
-
-                // Timer bar
-                const timerWidth = 100 * (ComboSystem.timer / ComboSystem.maxTime);
-                ctx.fillStyle = '#FFD700';
-                ctx.fillRect(viewWidth / 2 - 50, 115, timerWidth, 4);
-                ctx.globalAlpha = 1;
-            }
+            // Draw combo indicator (player 1's in single-player)
+            drawComboIndicator(p1());
 
             // Draw floating texts (screen-space)
             FloatingTexts.draw(ctx);
@@ -2941,8 +2907,9 @@ function checkShipCollisions(p) {
                     }
 
                     // Apply combo multiplier
-                    const comboResult = ComboSystem.addCollection();
-                    scoreGained *= ComboSystem.multiplier;
+                    const comboResult = p.combo.addCollection();
+                    showComboMilestone(p, comboResult);
+                    scoreGained *= p.combo.multiplier;
 
                     // Add streak bonus if any
                     if (comboResult.streakBonus > 0) {
@@ -2963,8 +2930,8 @@ function checkShipCollisions(p) {
 
                     // Floating score text
                     let scoreText = `+${scoreGained}`;
-                    if (ComboSystem.multiplier > 1) {
-                        scoreText += ` (${ComboSystem.multiplier}x)`;
+                    if (p.combo.multiplier > 1) {
+                        scoreText += ` (${p.combo.multiplier}x)`;
                     }
                     FloatingTexts.spawn(screenPos.x, screenPos.y, scoreText, palette.collect, 18);
 
@@ -2974,7 +2941,7 @@ function checkShipCollisions(p) {
                     }
                     vibrate('collect');
                     achievementManager.trackAsteroidCollected();
-                    DynamicDifficulty.trackGreenCollected(ComboSystem.count);
+                    DynamicDifficulty.trackGreenCollected(p.combo.count);
                 } else {
                     // RED asteroid: Lose a life (unless shield is active)!
                     if (p.powerUps.shield > 0) {
@@ -3252,7 +3219,7 @@ function handlePlayerDeath(p, forced = false) {
         // Visual effects
         Particles.explode(shipX, shipY, '#FFFFFF', 30);
         ScreenShake.trigger(15, 0.5);
-        ComboSystem.break();
+        showComboLost(p, p.combo.break());
 
         p.lives--;
         updateUI();
