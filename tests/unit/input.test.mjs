@@ -53,7 +53,7 @@ function makeButton(action) {
         hasPointerCapture: () => false,
         releasePointerCapture() {},
     };
-    btn.closest = () => btn;
+    btn.closest = (sel) => (sel.includes('.touch-btn') ? btn : null);
     return btn;
 }
 
@@ -361,4 +361,237 @@ test('consumeLastCharKey() keeps typed order and repeated letters', () => {
     let c;
     while ((c = input.consumeLastCharKey())) typed.push(c);
     assert.equal(typed.join(''), 'ZYXWAA');
+});
+
+
+// --- Drag-to-steer joystick -------------------------------------------------
+
+function makeZone() {
+    const zone = {};
+    zone.closest = (sel) => (sel === '.joystick-zone' ? zone : null);
+    return zone;
+}
+
+const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
+
+function pressZone(doc, pointerId = 1, x = 100, y = 200) {
+    const zone = makeZone();
+    const ev = pointerEvent(zone, pointerId, { clientX: x, clientY: y });
+    doc.dispatch('pointerdown', ev);
+    return { zone, ev };
+}
+
+test('joystick is inactive by default', () => {
+    const { input } = setup();
+    assert.deepEqual(input.getJoystick(), { active: false, angle: 0, magnitude: 0 });
+});
+
+test('pointerdown in the joystick zone activates the stick at magnitude 0 and prevents default', () => {
+    const { doc, input } = setup();
+    const { ev } = pressZone(doc, 1, 100, 200);
+    assert.equal(ev.defaultPrevented, true);
+    const j = input.getJoystick();
+    assert.equal(j.active, true);
+    assert.equal(j.magnitude, 0);
+    assert.equal(input.joystick.originX, 100);
+    assert.equal(input.joystick.originY, 200);
+});
+
+test('dragging sets angle and magnitude (clamped to 1)', () => {
+    const { doc, input } = setup();
+    input.joystickRadius = 60;
+    pressZone(doc, 1, 100, 200);
+
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 130, clientY: 200 }));
+    let j = input.getJoystick();
+    assert.ok(near(j.angle, 0), `angle ${j.angle}`);
+    assert.ok(near(j.magnitude, 0.5), `magnitude ${j.magnitude}`);
+
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 100, clientY: 400 }));
+    j = input.getJoystick();
+    assert.ok(near(j.angle, Math.PI / 2), `angle ${j.angle}`);
+    assert.equal(j.magnitude, 1);
+
+    // left and up use canvas conventions (y down)
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 70, clientY: 200 }));
+    assert.ok(near(Math.abs(input.getJoystick().angle), Math.PI));
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 100, clientY: 170 }));
+    assert.ok(near(input.getJoystick().angle, -Math.PI / 2));
+});
+
+test('a second pointer pressing the zone while the stick is held is ignored', () => {
+    const { doc, input } = setup();
+    input.joystickRadius = 60;
+    pressZone(doc, 1, 100, 200);
+    const { ev } = pressZone(doc, 2, 500, 500);
+    assert.equal(ev.defaultPrevented, true);
+    assert.equal(input.joystick.pointerId, 1);
+    assert.equal(input.joystick.originX, 100);
+    assert.equal(input.joystick.originY, 200);
+
+    // moves from the second pointer do not affect the stick
+    doc.dispatch('pointermove', pointerEvent(null, 2, { clientX: 900, clientY: 900 }));
+    assert.equal(input.getJoystick().magnitude, 0);
+
+    // releasing the second pointer does not release the stick
+    doc.dispatch('pointerup', pointerEvent(null, 2));
+    assert.equal(input.getJoystick().active, true);
+    doc.dispatch('pointercancel', pointerEvent(null, 2));
+    assert.equal(input.getJoystick().active, true);
+
+    // owner still drives it
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 130, clientY: 200 }));
+    assert.ok(near(input.getJoystick().magnitude, 0.5));
+});
+
+test('pointerup of the owning pointer releases the stick', () => {
+    const { doc, input } = setup();
+    pressZone(doc, 4);
+    doc.dispatch('pointerup', pointerEvent(null, 4));
+    assert.deepEqual(input.getJoystick(), { active: false, angle: 0, magnitude: 0 });
+    assert.equal(input.joystick.pointerId, null);
+});
+
+test('pointercancel of the owning pointer releases the stick', () => {
+    const { doc, input } = setup();
+    pressZone(doc, 4);
+    doc.dispatch('pointercancel', pointerEvent(null, 4));
+    assert.equal(input.getJoystick().active, false);
+});
+
+test('after release a new pointer can take the stick with a new origin', () => {
+    const { doc, input } = setup();
+    pressZone(doc, 1, 100, 200);
+    doc.dispatch('pointerup', pointerEvent(null, 1));
+    pressZone(doc, 2, 300, 50);
+    assert.equal(input.joystick.pointerId, 2);
+    assert.equal(input.joystick.originX, 300);
+    assert.equal(input.joystick.originY, 50);
+    assert.equal(input.getJoystick().magnitude, 0);
+});
+
+test('releaseAll() and window blur release the joystick', () => {
+    const { win, doc, input } = setup();
+    pressZone(doc, 1);
+    input.releaseAll();
+    assert.equal(input.getJoystick().active, false);
+
+    pressZone(doc, 2);
+    assert.equal(input.getJoystick().active, true);
+    win.dispatch('blur', {});
+    assert.equal(input.getJoystick().active, false);
+});
+
+test('the joystick pointer does not register any button/continuous action', () => {
+    const { doc, input } = setup();
+    input.joystickRadius = 60;
+    pressZone(doc, 1);
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 160, clientY: 200 }));
+    for (const action of Object.keys(input.keyToAction)) {
+        assert.equal(input.isPressed(action), false, action);
+        assert.equal(input.consumeAction(action), false, action);
+    }
+    assert.equal(input.pointerActions.size, 0);
+    assert.equal(input.consumeTap(), null);
+});
+
+test('a joystick pointerdown on the canvas-like zone does not create a tap', () => {
+    const canvas = makeCanvas();
+    const { doc, input } = setup(canvas);
+    pressZone(doc, 1, 300, 200);
+    assert.equal(input.consumeTap(), null);
+});
+
+test('touch buttons work independently while the joystick is held (multi-touch)', () => {
+    const { doc, input } = setup();
+    input.joystickRadius = 60;
+    const fire = makeButton('fire');
+    doc.buttons.push(fire);
+    pressZone(doc, 1, 100, 200);
+    doc.dispatch('pointerdown', pointerEvent(fire, 2));
+    assert.equal(input.isPressed('fire'), true);
+    assert.equal(fire.classList.contains('active'), true);
+
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 130, clientY: 200 }));
+    assert.ok(near(input.getJoystick().magnitude, 0.5));
+    assert.equal(input.isPressed('fire'), true);
+
+    // releasing the button keeps the stick; releasing the stick keeps nothing else
+    doc.dispatch('pointerup', pointerEvent(fire, 2));
+    input.endFrame();
+    assert.equal(input.isPressed('fire'), false);
+    assert.equal(input.getJoystick().active, true);
+
+    doc.dispatch('pointerdown', pointerEvent(fire, 3));
+    doc.dispatch('pointerup', pointerEvent(null, 1));
+    assert.equal(input.getJoystick().active, false);
+    assert.equal(input.isPressed('fire'), true);
+});
+
+test('pointerdown on a zone does not treat it as a touch button even if it also matches one', () => {
+    const { doc, input } = setup();
+    const zone = { dataset: { action: 'fire' } };
+    zone.closest = (sel) => (sel === '.joystick-zone' || sel.includes('.touch-btn') ? zone : null);
+    doc.dispatch('pointerdown', pointerEvent(zone, 1, { clientX: 0, clientY: 0 }));
+    assert.equal(input.getJoystick().active, true);
+    assert.equal(input.isPressed('fire'), false);
+});
+
+test('updateJoystickVisual is safe when document.getElementById is missing', () => {
+    const { doc, input } = setup();
+    assert.equal(doc.getElementById, undefined);
+    assert.doesNotThrow(() => {
+        pressZone(doc, 1);
+        doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 150, clientY: 200 }));
+        doc.dispatch('pointerup', pointerEvent(null, 1));
+        input.updateJoystickVisual(true);
+        input.updateJoystickVisual(false);
+        input.releaseAll();
+    });
+});
+
+test('updateJoystickVisual is safe when getElementById returns null', () => {
+    const { doc, input } = setup();
+    doc.getElementById = () => null;
+    assert.doesNotThrow(() => {
+        pressZone(doc, 1);
+        doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 150, clientY: 200 }));
+        doc.dispatch('pointerup', pointerEvent(null, 1));
+        input.releaseAll();
+    });
+    // only one of the two elements present
+    const base = { classList: { toggle() {} }, style: {} };
+    doc.getElementById = (id) => (id === 'joystick-base' ? base : null);
+    assert.doesNotThrow(() => input.updateJoystickVisual(true));
+    assert.deepEqual(base.style, {});
+});
+
+test('updateJoystickVisual positions base and knob when the elements exist', () => {
+    const { doc, input } = setup();
+    input.joystickRadius = 60;
+    const makeEl = () => {
+        const classes = new Set();
+        return {
+            style: {},
+            classList: { toggle(c, on) { on ? classes.add(c) : classes.delete(c); }, contains: (c) => classes.has(c) },
+        };
+    };
+    const base = makeEl();
+    const knob = makeEl();
+    doc.getElementById = (id) => ({ 'joystick-base': base, 'joystick-knob': knob })[id] || null;
+
+    pressZone(doc, 1, 100, 200);
+    assert.equal(base.classList.contains('active'), true);
+    assert.equal(base.style.left, '100px');
+    assert.equal(base.style.top, '200px');
+
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 400, clientY: 200 }));
+    // knob clamped to the radius
+    assert.match(knob.style.transform, /calc\(-50% \+ 60px\)/);
+
+    doc.dispatch('pointerup', pointerEvent(null, 1));
+    assert.equal(base.classList.contains('active'), false);
+    assert.equal(base.style.left, '');
+    assert.equal(base.style.top, '');
+    assert.equal(knob.style.transform, '');
 });

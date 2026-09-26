@@ -1,7 +1,8 @@
 // Keyboard + mouse integration tests (desktop project).
 import { test, expect } from '@playwright/test';
 import {
-  MENU, openFresh, snap, hook, waitForState, loginWithKeyboard, menuItemCenter, tapRegionCenter,
+  MENU, MENU_LABELS, CONTROL_MODE_KEY, CONTROL_LABELS, openFresh, snap, hook, waitForState,
+  loginWithKeyboard, menuItemCenter, tapRegionCenter, drawnTexts,
 } from './helpers.js';
 
 async function startGame(page) {
@@ -34,8 +35,9 @@ test.describe('keyboard: username prompt', () => {
     const s = await snap(page);
     expect(s.user).toBe('PILOT7');
     expect(s.menuIndex).toBe(0);
-    expect(s.menuOptions.slice(0, 7)).toEqual(['Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Reset Data', 'Change User']);
-    expect(s.menuOptions.slice(7)).toEqual(['Easy', 'Medium', 'Hard']);
+    expect(s.menuOptions).toEqual(MENU_LABELS);
+    expect(s.menuOptions.indexOf('Controls')).toBe(MENU.CONTROLS);
+    expect(s.menuOptions.indexOf('Controls')).toBe(s.menuOptions.indexOf('Help') + 1);
     await expect(page.locator('#user-prompt')).toBeHidden();
     expect(errors).toEqual([]);
   });
@@ -406,6 +408,128 @@ test.describe('keyboard: gameplay', () => {
       return Math.hypot(s.ship.x - s0.x, s.ship.y - s0.y) > 20 ? 'moved' : 'still';
     }).not.toBe('still');
   });
+});
+
+test.describe('keyboard: Controls menu item', () => {
+  test('Controls item is listed after Help and every item has a tap region', async ({ page }) => {
+    await openFresh(page, { recordText: true });
+    await loginWithKeyboard(page, 'CTRL');
+    const s = await snap(page);
+    expect(s.menuOptions[MENU.CONTROLS]).toBe('Controls');
+    expect(s.tapRegions.length).toBe(s.menuOptions.length);
+    // Regions are stacked top to bottom without overlapping (menu line height shrinks to fit)
+    for (let i = 1; i < s.tapRegions.length; i++) {
+      expect(s.tapRegions[i].y).toBeGreaterThanOrEqual(s.tapRegions[i - 1].y + s.tapRegions[i - 1].h - 0.5);
+    }
+    const last = s.tapRegions[s.tapRegions.length - 1];
+    const h = await page.evaluate(() => document.getElementById('gameCanvas').height);
+    expect(last.y + last.h).toBeLessThanOrEqual(h);
+    expect(await drawnTexts(page)).toContain(CONTROL_LABELS.joystick);
+  });
+
+  test('default control mode is joystick with empty storage', async ({ page }) => {
+    await openFresh(page);
+    await loginWithKeyboard(page, 'CTRL');
+    expect(await hook(page, 'controlMode')).toBe('joystick');
+    await expect(page.locator('body')).toHaveClass(/controls-joystick/);
+    await expect(page.locator('body')).not.toHaveClass(/controls-buttons/);
+    expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBeNull();
+  });
+
+  test('Enter on Controls toggles joystick -> buttons -> joystick and updates the label', async ({ page }) => {
+    await openFresh(page, { recordText: true });
+    await loginWithKeyboard(page, 'CTRL');
+    await selectMenuIndex(page, MENU.CONTROLS);
+    expect(await drawnTexts(page)).toContain(CONTROL_LABELS.joystick);
+
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
+    await expect(page.locator('body')).toHaveClass(/controls-buttons/);
+    await expect(page.locator('body')).not.toHaveClass(/controls-joystick/);
+    await expect.poll(() => drawnTexts(page)).toContain(CONTROL_LABELS.buttons);
+    expect(await drawnTexts(page)).not.toContain(CONTROL_LABELS.joystick);
+    expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBe('buttons');
+    // Selecting it keeps us on the menu with the item still highlighted
+    expect(await hook(page, 'state')).toBe('menu');
+    expect(await hook(page, 'menuIndex')).toBe(MENU.CONTROLS);
+
+    await page.keyboard.press('Space'); // Space is also menuSelect
+    await expect.poll(() => hook(page, 'controlMode')).toBe('joystick');
+    await expect(page.locator('body')).toHaveClass(/controls-joystick/);
+    await expect.poll(() => drawnTexts(page)).toContain(CONTROL_LABELS.joystick);
+    expect(await page.evaluate((k) => localStorage.getItem(k), CONTROL_MODE_KEY)).toBe('joystick');
+  });
+
+  test('mouse click on Controls toggles it', async ({ page }) => {
+    await openFresh(page);
+    await loginWithKeyboard(page, 'CTRL');
+    const p = await menuItemCenter(page, 'Controls');
+    await page.mouse.click(p.x, p.y);
+    await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
+    expect(await hook(page, 'state')).toBe('menu');
+  });
+
+  test('control mode persists across reloads', async ({ page }) => {
+    await openFresh(page, { recordText: true });
+    await loginWithKeyboard(page, 'CTRL');
+    await selectMenuIndex(page, MENU.CONTROLS);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hook(page, 'controlMode')).toBe('buttons');
+    await page.reload();
+    await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.state === 'menu');
+    expect(await hook(page, 'controlMode')).toBe('buttons');
+    await expect(page.locator('body')).toHaveClass(/controls-buttons/);
+    await expect.poll(() => drawnTexts(page)).toContain(CONTROL_LABELS.buttons);
+    // And back again, which also persists
+    await selectMenuIndex(page, MENU.CONTROLS);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hook(page, 'controlMode')).toBe('joystick');
+    await page.reload();
+    await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.state === 'menu');
+    expect(await hook(page, 'controlMode')).toBe('joystick');
+    await expect(page.locator('body')).toHaveClass(/controls-joystick/);
+  });
+
+  test('an invalid saved control mode falls back to joystick', async ({ page }) => {
+    await openFresh(page, { controlMode: 'bogus' });
+    await waitForState(page, 'prompt_user');
+    expect(await hook(page, 'controlMode')).toBe('joystick');
+    await expect(page.locator('body')).toHaveClass(/controls-joystick/);
+  });
+
+  for (const mode of ['joystick', 'buttons']) {
+    test(`keyboard gameplay works in ${mode} mode (no touch controls on desktop)`, async ({ page }) => {
+      await openFresh(page, { controlMode: mode });
+      await loginWithKeyboard(page, 'KEYS');
+      expect(await hook(page, 'controlMode')).toBe(mode);
+      await startGame(page);
+      await expect(page.locator('.touch-controls')).toBeHidden();
+      await expect(page.locator('#joystick-zone')).toBeHidden();
+      expect(await hook(page, 'joystick.active')).toBe(false);
+
+      // Mouse drag over the left half of the play area is not a joystick on desktop
+      const box = await page.locator('#gameCanvas').boundingBox();
+      await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.6);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.25 + 50, box.y + box.height * 0.6, { steps: 4 });
+      expect(await hook(page, 'joystick.active')).toBe(false);
+      await page.mouse.up();
+
+      const r0 = await hook(page, 'ship.rotation');
+      await page.keyboard.down('ArrowLeft');
+      await expect.poll(() => hook(page, 'ship.rotation')).toBeLessThan(r0 - 0.2);
+      await page.keyboard.up('ArrowLeft');
+      await page.keyboard.down('ArrowUp');
+      await expect.poll(() => hook(page, 'ship.isThrusting')).toBe(true);
+      await page.keyboard.up('ArrowUp');
+      await expect.poll(() => hook(page, 'ship.isThrusting')).toBe(false);
+      await page.keyboard.down('Space');
+      await expect.poll(() => hook(page, 'counts.playerBullets')).toBeGreaterThanOrEqual(1);
+      await page.keyboard.up('Space');
+      await page.keyboard.press('p');
+      await waitForState(page, 'paused');
+    });
+  }
 });
 
 test.describe('keyboard: game over', () => {

@@ -10,6 +10,10 @@ export class InputHandler {
         this.pendingTaps = []; // Taps/clicks on the canvas in canvas pixel coordinates
         this.charQueue = []; // Typed characters in order (username entry)
         this.latched = new Set(); // Continuous actions pressed this frame (so quick taps still count)
+        // Drag-to-steer virtual joystick: a finger pressed in the .joystick-zone becomes the
+        // stick's centre; dragging away from it gives a direction and a strength (0..1).
+        this.joystickRadius = 60; // CSS pixels of drag for full strength
+        this.joystick = { pointerId: null, originX: 0, originY: 0, x: 0, y: 0 };
 
         // Define key mappings (Action Name -> Keys)
         this.keyToAction = {
@@ -134,6 +138,17 @@ export class InputHandler {
     }
 
     handlePointerDown(event) {
+        const zone = event.target.closest ? event.target.closest('.joystick-zone') : null;
+        if (zone) {
+            event.preventDefault();
+            if (this.joystick.pointerId === null) {
+                this.joystick.pointerId = event.pointerId;
+                this.joystick.originX = this.joystick.x = event.clientX;
+                this.joystick.originY = this.joystick.y = event.clientY;
+                this.updateJoystickVisual(true);
+            }
+            return;
+        }
         const button = event.target.closest ? event.target.closest('.touch-btn[data-action]') : null;
         if (button) {
             event.preventDefault();
@@ -157,6 +172,12 @@ export class InputHandler {
     }
 
     handlePointerMove(event) {
+        if (event.pointerId === this.joystick.pointerId) {
+            this.joystick.x = event.clientX;
+            this.joystick.y = event.clientY;
+            this.updateJoystickVisual(true);
+            return;
+        }
         const current = this.pointerActions.get(event.pointerId);
         if (current === undefined || !this.isContinuous(current)) return;
         const button = this.buttonAt(event.clientX, event.clientY);
@@ -169,7 +190,53 @@ export class InputHandler {
     }
 
     handlePointerUp(event) {
+        if (event.pointerId === this.joystick.pointerId) {
+            this.releaseJoystick();
+            return;
+        }
         this.releasePointer(event.pointerId);
+    }
+
+    releaseJoystick() {
+        this.joystick.pointerId = null;
+        this.updateJoystickVisual(false);
+    }
+
+    // Current stick state: angle in radians (0 = right, y down like the canvas) and
+    // magnitude 0..1 (clamped at joystickRadius).
+    getJoystick() {
+        const j = this.joystick;
+        if (j.pointerId === null) return { active: false, angle: 0, magnitude: 0 };
+        const dx = j.x - j.originX;
+        const dy = j.y - j.originY;
+        const dist = Math.hypot(dx, dy);
+        return {
+            active: true,
+            angle: Math.atan2(dy, dx),
+            magnitude: Math.min(1, dist / this.joystickRadius),
+        };
+    }
+
+    // Move the on-screen stick base/knob (optional DOM elements) to follow the finger
+    updateJoystickVisual(active) {
+        if (typeof document === 'undefined' || !document.getElementById) return;
+        const base = document.getElementById('joystick-base');
+        const knob = document.getElementById('joystick-knob');
+        if (!base || !knob) return;
+        base.classList.toggle('active', active);
+        if (!active) {
+            // Back to the resting hint position defined in CSS
+            base.style.left = '';
+            base.style.top = '';
+            knob.style.transform = '';
+            return;
+        }
+        const j = this.joystick;
+        const { angle, magnitude } = this.getJoystick();
+        const r = magnitude * this.joystickRadius;
+        base.style.left = `${j.originX}px`;
+        base.style.top = `${j.originY}px`;
+        knob.style.transform = `translate(calc(-50% + ${Math.cos(angle) * r}px), calc(-50% + ${Math.sin(angle) * r}px))`;
     }
 
     // Release everything (window blur, tab hidden, state changes)
@@ -179,6 +246,7 @@ export class InputHandler {
         for (const action of this.pointerActions.values()) this.setButtonActive(action, false);
         this.pointerActions.clear();
         this.latched.clear();
+        this.releaseJoystick();
     }
 
     // Drop queued one-shot actions and taps (called on game state transitions so a key

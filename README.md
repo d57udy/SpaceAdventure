@@ -48,19 +48,31 @@ Navigate your spaceship through an infinite asteroid field with two types of ast
 
 ### Touch (tablets and phones)
 
-On a touch screen the game shows on-screen buttons while you play. No keyboard is needed.
+On a touch screen the game shows on-screen controls while you play. No keyboard is needed. There are two touch schemes; switch between them with **Controls** in the main menu (your choice is remembered on that device).
+
+**Drag to Steer (default)**
+
+| Action | Touch |
+|--------|-------|
+| Steer | Put a finger anywhere on the left half of the screen and drag toward where you want to fly. The ship turns to face that direction |
+| Thrust | Drag further from where your finger started. The further, the stronger |
+| Fire | Red button, bottom right (hold for continuous fire) |
+| Hyperspace (risky!) | Star button, next to Fire |
+| Pause / Mute | Buttons in the top right corner |
+
+**Buttons**
 
 | Action | Touch |
 |--------|-------|
 | Rotate Left/Right | Arrow buttons, bottom left (slide your finger between them) |
 | Thrust Forward | Up arrow button, bottom right |
-| Fire | Red button, bottom right (hold for continuous fire) |
-| Hyperspace (risky!) | Star button, next to Fire |
-| Pause / Mute | Buttons in the top right corner |
-| Menus | Tap a menu item. Tap anywhere to leave Help, High Scores, Achievements and Game Over |
-| Username | Tap the box to open the on-screen keyboard, then tap OK |
+| Fire, Hyperspace, Pause, Mute | Same as above |
 
-Multi-touch works, so you can rotate, thrust and fire at the same time. Menus can also be clicked with a mouse. For a full-screen experience on iPad, use Safari's "Add to Home Screen".
+In both schemes:
+- Multi-touch works, so you can steer and fire at the same time.
+- Tap a menu item to select it. Tap anywhere to leave Help, High Scores, Achievements and Game Over.
+- Tap the username box to open the on-screen keyboard, then tap OK.
+- Menus can also be clicked with a mouse. For a full-screen experience on iPad, use Safari's "Add to Home Screen".
 
 ## Running Locally
 

@@ -11,6 +11,7 @@ import { Achievements } from './achievements.js';
 import { PowerUp, PowerUpType } from './powerup.js';
 import { Boss } from './boss.js';
 import { Entity } from './entity.js';
+import { applyJoystickSteering } from './steering.js';
 
 // Game States Enum
 const GameState = {
@@ -695,7 +696,53 @@ let level = 1;
 let currentGameState = GameState.PROMPT_USER;
 let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty
 let menuSelectionIndex = 0; // For menu navigation (0: Start, 1: High Scores, 2: Achievements, 3: Help, 4: Reset Data, 5: Easy, 6: Medium, 7: Hard)
-const menuOptionBaseTexts = ['Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Reset Data', 'Change User'];
+const menuOptionBaseTexts = ['Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Controls', 'Reset Data', 'Change User'];
+
+// Touch control schemes. Keyboard always works regardless of the choice.
+const ControlMode = {
+    JOYSTICK: { id: 'joystick', name: 'Drag to Steer' },
+    BUTTONS: { id: 'buttons', name: 'Buttons' },
+};
+const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
+let controlMode = ControlMode.JOYSTICK; // Default
+
+// Finger tremor on a short drag swings the aim by several degrees; ignore direction
+// changes smaller than a threshold (larger when the drag is short and less precise).
+let stickHeading = null;
+function stabilizeStick(stick) {
+    if (!stick.active) {
+        stickHeading = null;
+        return stick;
+    }
+    const threshold = stick.magnitude < 0.45 ? 0.1 : 0.04; // radians
+    if (stickHeading === null ||
+        Math.abs(Math.atan2(Math.sin(stick.angle - stickHeading), Math.cos(stick.angle - stickHeading))) > threshold) {
+        stickHeading = stick.angle;
+    }
+    return { ...stick, angle: stickHeading };
+}
+
+function loadControlMode() {
+    try {
+        const saved = localStorage.getItem(CONTROL_MODE_KEY);
+        const found = Object.values(ControlMode).find(m => m.id === saved);
+        if (found) controlMode = found;
+    } catch (e) { /* storage unavailable: keep default */ }
+    applyControlModeClass();
+}
+
+function setControlMode(mode) {
+    controlMode = mode;
+    try { localStorage.setItem(CONTROL_MODE_KEY, mode.id); } catch (e) { /* ignore */ }
+    applyControlModeClass();
+}
+
+function applyControlModeClass() {
+    Object.values(ControlMode).forEach(m => {
+        document.body.classList.toggle(`controls-${m.id}`, m === controlMode);
+    });
+}
+
 let upgradeMenuIndex = 0; // For navigating upgrade options
 let currentMenuOptions = []; // Will be populated based on state
 let respawnTimer = 0;
@@ -868,7 +915,7 @@ function drawStarfield() {
 
 // Draw radar mini-map
 function drawRadar() {
-    const radarSize = 120;
+    const radarSize = Math.round(Math.max(70, Math.min(120, canvas.width * 0.2))); // Smaller on phones
     const radarX = canvas.width - radarSize - 15;
     const radarY = canvas.height - radarSize - 15;
     const radarCenterX = radarX + radarSize / 2;
@@ -1111,6 +1158,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize Managers
     inputHandler = new InputHandler(canvas);
     setupTouchSupport();
+    loadControlMode();
     setupUserPromptForm();
     audioManager = new AudioManager();
     persistenceManager = new PersistenceManager();
@@ -1161,6 +1209,8 @@ document.addEventListener('DOMContentLoaded', () => {
         get upgradeIndex() { return upgradeMenuIndex; },
         get isMuted() { return audioManager.isMuted; },
         get isTouchDevice() { return isTouchDevice; },
+        get controlMode() { return controlMode.id; },
+        get joystick() { return inputHandler.getJoystick(); },
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
         get ship() { return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY, isAlive: ship.isAlive, isThrusting: ship.isThrusting } : null; },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
@@ -1347,6 +1397,8 @@ function pauseGame() {
 function resizeCanvas() {
     // Make canvas fill most of the smaller dimension
     const size = Math.min(window.innerWidth, window.innerHeight) * 0.9;
+    // A rotation can leave a held stick off-screen; make the player put the finger down again
+    if (inputHandler) inputHandler.releaseJoystick();
     const oldWorldWidth = WORLD_WIDTH;
     const oldWorldHeight = WORLD_HEIGHT;
     canvas.width = Math.floor(size);
@@ -1495,6 +1547,12 @@ function handleInput(deltaTime) {
                         case 'Help':
                             currentGameState = GameState.HELP;
                             break;
+                        case 'Controls': {
+                            // Cycle through the touch control schemes
+                            const modes = Object.values(ControlMode);
+                            setControlMode(modes[(modes.indexOf(controlMode) + 1) % modes.length]);
+                            break;
+                        }
                         case 'Reset Data':
                             if (currentUser && confirm(`Are you sure you want to reset all data for user '${currentUser}'?`)) {
                                 console.log(`Resetting data for user: ${currentUser}`);
@@ -1537,8 +1595,10 @@ function handleInput(deltaTime) {
             if (inputHandler.isPressed('rotateLeft')) ship.rotate(-1, turnTime);
             if (inputHandler.isPressed('rotateRight')) ship.rotate(1, turnTime);
             const speedBoost = activePowerUps.speed_boost > 0 ? SPEED_BOOST_MULT : 1;
-            if (inputHandler.isPressed('thrust')) ship.thrust(deltaTime * ShipUpgrades.getThrustMult() * speedBoost);
-            else ship.isThrusting = false;
+            const thrustScale = ShipUpgrades.getThrustMult() * speedBoost;
+            const stickThrust = applyJoystickSteering(ship, stabilizeStick(inputHandler.getJoystick()), deltaTime, turnTime, thrustScale);
+            if (inputHandler.isPressed('thrust')) ship.thrust(deltaTime * thrustScale);
+            else if (!stickThrust) ship.isThrusting = false;
 
             // Log fire button state and then attempt fire
             if (inputHandler.isPressed('fire')) {
@@ -1899,14 +1959,15 @@ function renderGame() {
             ctx.fillStyle = 'white';
 
             ctx.font = '20px Arial';
-            const menuStartY = canvas.height * 0.45;
-            const menuLineHeight = 30;
-
             // Regenerate options based on paused state for render
             currentMenuOptions = [...menuOptionBaseTexts];
             if (pausedGameExists) currentMenuOptions[0] = 'Resume';
             else currentMenuOptions[0] = 'Start';
             currentMenuOptions.push(...Object.values(Difficulty)); // Add difficulties
+
+            // Fit all items between the description and the player/credits footer
+            const menuStartY = canvas.height * 0.38;
+            const menuLineHeight = Math.min(30, (canvas.height - 75 - menuStartY) / currentMenuOptions.length);
 
             // Adjust index bounds safely before rendering
              if (menuSelectionIndex >= currentMenuOptions.length) {
@@ -1917,7 +1978,9 @@ function renderGame() {
                 const isSelected = index === menuSelectionIndex;
                 ctx.fillStyle = isSelected ? 'yellow' : 'white';
                 let text = '';
-                if (typeof option === 'string') {
+                if (option === 'Controls') {
+                    text = `Controls: ${controlMode.name}`;
+                } else if (typeof option === 'string') {
                     text = option;
                 } else { // Difficulty object
                     text = option.name;
@@ -2952,7 +3015,14 @@ function drawHelpScreen() {
     const controlsX = rulesX;
     const keysX = canvas.width / 2;
 
-    const controls = isTouchDevice ? [
+    const controls = isTouchDevice && controlMode === ControlMode.JOYSTICK ? [
+        { action: 'Steer', keys: 'Drag on the left half of the screen' },
+        { action: 'Thrust Forward', keys: 'Drag further out' },
+        { action: 'Fire', keys: 'Red button' },
+        { action: 'Hyperspace (Risky!)', keys: 'Star button' },
+        { action: 'Pause Game', keys: 'Pause button (top right)' },
+        { action: 'Control scheme', keys: 'Menu > Controls' },
+    ] : isTouchDevice ? [
         { action: 'Rotate Left/Right', keys: 'Arrow buttons (bottom left)' },
         { action: 'Thrust Forward', keys: 'Up arrow button' },
         { action: 'Fire', keys: 'Red button' },

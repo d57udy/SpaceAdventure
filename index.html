@@ -35,6 +35,10 @@
 
     <!-- Touch Controls (shown on touch devices while playing) -->
     <div class="touch-controls" aria-hidden="true">
+        <!-- Drag-to-steer area (left half); the stick appears where the finger lands -->
+        <div class="joystick-zone" id="joystick-zone">
+            <div class="joystick-base" id="joystick-base"><div class="joystick-knob" id="joystick-knob"></div></div>
+        </div>
         <div class="touch-left">
             <button id="touch-left-btn" class="touch-btn rotate-left" data-action="rotateLeft" aria-label="Rotate left"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></button>
             <button id="touch-right-btn" class="touch-btn rotate-right" data-action="rotateRight" aria-label="Rotate right"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg></button>

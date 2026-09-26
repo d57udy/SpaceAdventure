@@ -4,9 +4,17 @@
 import { expect } from '@playwright/test';
 
 export const MENU = {
-  START: 0, UPGRADES: 1, HIGH_SCORES: 2, ACHIEVEMENTS: 3, HELP: 4,
-  RESET: 5, CHANGE_USER: 6, EASY: 7, MEDIUM: 8, HARD: 9,
+  START: 0, UPGRADES: 1, HIGH_SCORES: 2, ACHIEVEMENTS: 3, HELP: 4, CONTROLS: 5,
+  RESET: 6, CHANGE_USER: 7, EASY: 8, MEDIUM: 9, HARD: 10,
 };
+
+export const MENU_LABELS = [
+  'Start', 'Upgrades', 'High Scores', 'Achievements', 'Help', 'Controls', 'Reset Data', 'Change User',
+  'Easy', 'Medium', 'Hard',
+];
+
+export const CONTROL_MODE_KEY = 'spaceAdventure_controlMode';
+export const CONTROL_LABELS = { joystick: 'Controls: Drag to Steer', buttons: 'Controls: Buttons' };
 
 /** Snapshot of the whole hook (plain object). */
 export function snap(page) {
@@ -17,7 +25,7 @@ export function snap(page) {
       menuIndex: g.menuIndex, menuOptions: g.menuOptions, difficulty: g.difficulty,
       pauseIndex: g.pauseIndex, upgradeIndex: g.upgradeIndex, isMuted: g.isMuted,
       isTouchDevice: g.isTouchDevice, world: g.world, ship: g.ship, counts: g.counts,
-      tapRegions: g.tapRegions,
+      tapRegions: g.tapRegions, controlMode: g.controlMode, joystick: g.joystick,
     };
   });
 }
@@ -52,23 +60,49 @@ export async function waitForState(page, state, timeout = 5000) {
 
 /**
  * Open the game with empty localStorage and collect page errors.
+ * Options:
+ *   controlMode: 'joystick' | 'buttons' -> pre-seed the saved touch control scheme (as if the
+ *                player had picked it in the menu earlier); omitted = no saved choice.
+ *   recordText:  true -> record the strings drawn with fillText on the canvas (see drawnTexts).
  * Returns the array that page errors are pushed into.
  */
-export async function openFresh(page) {
+export async function openFresh(page, { controlMode = null, recordText = false } = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
   // Clear storage once per test (not on reloads the test itself performs)
-  await page.addInitScript(() => {
+  await page.addInitScript(([key, mode]) => {
     try {
       if (!sessionStorage.getItem('__sa_cleared')) {
         localStorage.clear();
+        if (mode) localStorage.setItem(key, mode);
         sessionStorage.setItem('__sa_cleared', '1');
       }
     } catch (e) { /* storage unavailable */ }
-  });
+  }, [CONTROL_MODE_KEY, controlMode]);
+  if (recordText) {
+    // Observe (not alter) canvas text drawing so labels like "Controls: Buttons" can be checked
+    await page.addInitScript(() => {
+      window.__drawnTexts = new Set();
+      const orig = CanvasRenderingContext2D.prototype.fillText;
+      CanvasRenderingContext2D.prototype.fillText = function (text, ...rest) {
+        window.__drawnTexts.add(String(text));
+        return orig.call(this, text, ...rest);
+      };
+    });
+  }
   await page.goto('/');
   await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: 10000 });
   return errors;
+}
+
+/** Strings drawn on the canvas during the next few frames (needs openFresh recordText). */
+export function drawnTexts(page, n = 3) {
+  return page.evaluate((count) => new Promise((resolve) => {
+    window.__drawnTexts.clear();
+    let left = count;
+    const tick = () => (--left <= 0 ? resolve([...window.__drawnTexts]) : requestAnimationFrame(tick));
+    requestAnimationFrame(tick);
+  }), n);
 }
 
 /** Username flow via the (autofocused) DOM input and Enter. */
@@ -154,23 +188,36 @@ export class Fingers {
   }
 
   async down(id, selector) {
-    const p = await centerOf(this.page, selector);
-    this.points.set(id, p);
+    await this.downAt(id, await centerOf(this.page, selector));
+  }
+
+  /** Put a finger down at a page point {x, y}. */
+  async downAt(id, p) {
+    this.points.set(id, { x: p.x, y: p.y });
     if (this.useCdp) await this._cdpSend('touchStart', id, p);
     else await this._synthetic('pointerdown', id, p.x, p.y);
   }
 
   async moveTo(id, selector) {
-    const p = await centerOf(this.page, selector);
+    await this.moveToPoint(id, await centerOf(this.page, selector));
+  }
+
+  /** Slide a held finger to a page point in a few steps. */
+  async moveToPoint(id, p, steps = 4) {
     const start = this.points.get(id);
     // A few intermediate steps, like a real finger slide
-    const steps = 4;
     for (let i = 1; i <= steps; i++) {
       const q = { x: start.x + ((p.x - start.x) * i) / steps, y: start.y + ((p.y - start.y) * i) / steps };
       this.points.set(id, q);
       if (this.useCdp) await this._cdpSend('touchMove', id, q);
       else await this._synthetic('pointermove', id, q.x, q.y);
     }
+  }
+
+  /** Slide a held finger by (dx, dy) pixels from where it is now. */
+  async moveBy(id, dx, dy, steps = 4) {
+    const start = this.points.get(id);
+    await this.moveToPoint(id, { x: start.x + dx, y: start.y + dy }, steps);
   }
 
   async up(id) {
