@@ -23,6 +23,7 @@ import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
 import { createCamera } from './camera.js';
+import { MODES, getMode, scaleForPlayers, pickSpawnPoint, ringSpawnGrid, worldSpawnGrid } from './modes.js';
 import { createPlayer, tickPowerUps, teamScore, isLiving, livingPlayers, nearestLivingShip } from './players.js';
 
 // Game States Enum
@@ -444,6 +445,39 @@ const BOSS_LEVEL_INTERVAL = 2; // Boss every 2 levels
 // player and shares ShipUpgrades. A default player exists before the first game.
 let players = [createPlayer({ slot: 0, lives: Difficulty.MEDIUM.startingLives, upgrades: ShipUpgrades })];
 function p1() { return players[0]; }
+
+// Game mode (js/modes.js): rules and pure hooks; main.js applies their decisions. Single-player
+// is MODES.solo, which reproduces the classic game exactly. `round` is the per-round data the
+// hooks read (timer, phase, difficulty); `lastLobby` is kept for Restart.
+let mode = MODES.solo;
+let round = null;
+let lastLobby = null;
+let lastRoundResult = null;
+function createRound(m) {
+    const timer = m.timer ? m.timer.default : null;
+    return {
+        elapsed: 0, timeLeft: timer, phase: 'normal', overtimeLeft: null, overtimeWinner: null,
+        difficulty: selectedDifficulty.id, target: null,
+    };
+}
+// Numbers for this mode, player count and level (single-player: today's constants)
+function currentScaling() {
+    return scaleForPlayers(mode, players.length, Math.max(1, level));
+}
+// Starting lives: the mode's fixed count, else the difficulty's plus the Starting Lives upgrade
+function startingLivesFor(upgrades) {
+    return mode.lives.count ?? (selectedDifficulty.startingLives + upgrades.getExtraStartingLives());
+}
+// Input seam: `p.input` is anything with isPressed/consumeAction/getJoystick. Single-player
+// uses the shared InputHandler (every source drives seat 0); a lobby seat gets this view of it.
+function seatInput(seat) {
+    return {
+        seat,
+        isPressed: (action) => inputHandler.isPressed(action, seat),
+        consumeAction: (action) => inputHandler.consumeAction(action, seat),
+        getJoystick: () => inputHandler.getJoystick(seat),
+    };
+}
 let level = 1;
 let currentGameState = GameState.PROMPT_USER;
 let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty
@@ -650,7 +684,7 @@ function startOrResume() {
         openTutorialAsk();
     } else {
         console.log("Executing startGame() from menu...");
-        startGame();
+        startGame('solo');
     }
 }
 
@@ -766,11 +800,11 @@ function answerTutorialAsk(play) {
     if (currentUser) {
         persistenceManager.saveTutorialState(currentUser, { asked: true, done: false, skipped: !play, version: TUTORIAL_VERSION });
     }
-    startGame({ tutorial: play });
+    startGame('solo', null, { tutorial: play });
 }
 function replayTutorial() {
     pausedGameExists = false;
-    startGame({ tutorial: true });
+    startGame('solo', null, { tutorial: true });
 }
 function currentInputKind() {
     return detectInputKind({
@@ -847,7 +881,7 @@ function finishTutorial(skipped) {
     const p = p1();
     p.score = 0;
     level = 1;
-    p.lives = selectedDifficulty.startingLives + p.upgrades.getExtraStartingLives();
+    p.lives = startingLivesFor(p.upgrades);
     p.nextExtraLifeScore = EXTRA_LIFE_SCORE;
     bullets = [];
     asteroids = [];
@@ -1347,7 +1381,7 @@ function resetPowerUps() {
     for (const p of players) {
         for (const key of Object.keys(p.powerUps)) p.powerUps[key] = 0;
     }
-    powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
+    powerUpSpawnTimer = currentScaling().powerUpInterval; // POWERUP_SPAWN_INTERVAL in single-player
 }
 
 // Magnet: pull green asteroids toward the ship of the player who holds the magnet
@@ -1369,10 +1403,18 @@ function applyMagnet(p, deltaTime) {
     });
 }
 
+// A random power-up type among the ones this mode allows (single-player: all of them, one roll)
+function randomPowerUpType() {
+    const allowed = mode.powerUps.types;
+    let type = PowerUp.getRandomType();
+    for (let i = 0; i < 20 && !allowed.includes(type.id); i++) type = PowerUp.getRandomType();
+    return allowed.includes(type.id) ? type : (Object.values(PowerUpType).find(t => allowed.includes(t.id)) || type);
+}
+
 // Spawn a power-up at a position (e.g., from destroyed enemy)
 function spawnPowerUpAt(x, y) {
     if (Math.random() < POWERUP_SPAWN_CHANCE) {
-        const type = PowerUp.getRandomType();
+        const type = randomPowerUpType();
         const powerUp = PowerUp.spawnType(x, y, type);
         powerUps.push(powerUp);
         console.log(`Power-up dropped: ${type.name} at (${x.toFixed(0)}, ${y.toFixed(0)})`);
@@ -1432,10 +1474,10 @@ document.addEventListener('DOMContentLoaded', () => {
             inputHandler.releaseAll();
             stopVibration();
             if (currentGameState === GameState.PLAYING) pauseGame();
-            ShipUpgrades.save(persistenceManager, currentUser);
+            saveAllUpgrades();
         }
     });
-    window.addEventListener('pagehide', () => ShipUpgrades.save(persistenceManager, currentUser));
+    window.addEventListener('pagehide', () => saveAllUpgrades());
 
     // Read-only snapshot used by the automated browser tests
     window.__spaceAdventure = {
@@ -1496,7 +1538,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 scaleCap: renderScaleCap, downgrades: renderPerf.downgrades, avgFrameMs: renderPerf.lastAvgMs,
             };
         },
-        get ship() { const ship = p1().ship; return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY, isAlive: ship.isAlive, isThrusting: ship.isThrusting } : null; },
+        get ship() { return shipSnapshot(p1().ship); },
+        // Every player (player 1 first); score, lives and ship above read player 1
+        get players() {
+            return players.map(p => ({
+                id: p.id, slot: p.slot, name: p.name, profile: p.profile, colour: p.colour,
+                score: p.score, lives: p.lives, respawnTimer: p.respawnTimer, out: p.out,
+                nextExtraLifeScore: p.nextExtraLifeScore,
+                combo: { count: p.combo.count, multiplier: p.combo.multiplier },
+                powerUps: { ...p.powerUps }, stats: { ...p.stats }, ship: shipSnapshot(p.ship),
+                credits: p.upgrades ? p.upgrades.currency : 0, hasAchievements: !!p.achievements,
+            }));
+        },
+        get mode() {
+            return {
+                id: mode.id, name: mode.name, kind: mode.kind,
+                elapsed: round ? round.elapsed : 0, timeLeft: round ? round.timeLeft : null,
+                phase: round ? round.phase : null, result: lastRoundResult ? { ...lastRoundResult } : null,
+            };
+        },
+        get bulletsByOwner() {
+            const out = {};
+            for (const b of bullets) if (b.isPlayerBullet) out[b.ownerId] = (out[b.ownerId] || 0) + 1;
+            return out;
+        },
         // Shared camera: centre (x, y), top-left of the view (left, top) and zoom
         get camera() { return { x: camera.cx, y: camera.cy, left: camera.x, top: camera.y, zoom: camera.zoom }; },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
@@ -1509,6 +1574,12 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- Core Game Functions ---
+
+// Read-only copy of a ship for the test hook
+function shipSnapshot(ship) {
+    return ship ? { x: ship.x, y: ship.y, rotation: ship.rotation, velX: ship.velX, velY: ship.velY,
+        isAlive: ship.isAlive, isThrusting: ship.isThrusting, ownerId: ship.ownerId } : null;
+}
 
 // Function to load data for a specific user
 function loadUserData(username) {
@@ -1528,22 +1599,65 @@ function loadUserData(username) {
     audioManager.stopUfoHum();
 }
 
+// Players for a new round. No lobby: the signed-in user alone (single-player). A lobby is
+// { players: [{ name?, profile?, colour?, bindingId?, seat?, input? }] }: player 1 should be the
+// signed-in user (shares ShipUpgrades and the achievement manager), other profiles load their
+// own, guests (no profile) and modes without own upgrades fly standard ships.
+function buildPlayers(lobby) {
+    const entries = lobby && Array.isArray(lobby.players) && lobby.players.length
+        ? lobby.players.slice(0, mode.players.max)
+        : [{ name: currentUser, profile: currentUser }];
+    return entries.map((e, slot) => {
+        const profile = e.profile || null;
+        const own = mode.upgradesApply === 'own' && profile;
+        const upgrades = !own ? UpgradeState.zero()
+            : profile === currentUser ? ShipUpgrades : loadProfileUpgrades(profile);
+        const p = createPlayer({
+            slot, name: e.name || profile || `Guest ${slot + 1}`, profile, colour: e.colour,
+            bindingId: e.bindingId ?? null, upgrades, lives: startingLivesFor(upgrades),
+        });
+        p.input = e.input || (Number.isInteger(e.seat) ? seatInput(e.seat) : inputHandler);
+        p.achievements = !(mode.earnsAchievements && profile) ? null
+            : profile === currentUser ? achievementManager : loadProfileAchievements(profile);
+        return p;
+    });
+}
+function loadProfileUpgrades(profile) {
+    const u = new UpgradeState();
+    u.load(persistenceManager, profile);
+    return u;
+}
+function loadProfileAchievements(profile) {
+    const m = new AchievementManager(persistenceManager);
+    m.loadUserAchievements(profile);
+    return m;
+}
+// Save credits: the signed-in user's, plus other profiles playing in this round
+function saveAllUpgrades() {
+    ShipUpgrades.save(persistenceManager, currentUser);
+    for (const p of players) {
+        if (p.profile && p.profile !== currentUser && p.upgrades !== ShipUpgrades) p.upgrades.save(persistenceManager, p.profile);
+    }
+}
+
 // Resets game variables for a new play session using selected difficulty.
-// options.tutorial: start the Training wave (level 0, no asteroids) instead of Level 1.
-function startGame({ tutorial: withTutorial = false } = {}) {
+// modeId: a js/modes.js mode ('solo' = the classic single-player game); lobby: see buildPlayers.
+// options.tutorial: start the Training wave (level 0, no asteroids) instead of Level 1
+// (single-player only).
+function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = false } = {}) {
     if (!currentUser) {
         console.error("Cannot start game without a user.");
         currentGameState = GameState.PROMPT_USER;
         return;
     }
-    console.log(`Starting New Game (User: ${currentUser}, Difficulty: ${selectedDifficulty.name})`);
-    // One fresh player record (score 0, extra-life threshold reset); upgrade: extra starting lives
-    players = [createPlayer({
-        slot: 0, name: currentUser, profile: currentUser, upgrades: ShipUpgrades,
-        lives: selectedDifficulty.startingLives + ShipUpgrades.getExtraStartingLives(),
-    })];
-    players[0].input = inputHandler;
-    players[0].achievements = achievementManager; // the signed-in user's achievements
+    mode = getMode(modeId) || MODES.solo;
+    lastLobby = lobby;
+    lastRoundResult = null;
+    if (mode.id !== 'solo') withTutorial = false;
+    console.log(`Starting New Game (User: ${currentUser}, Mode: ${mode.id}, Difficulty: ${selectedDifficulty.name})`);
+    // Fresh player records (score 0, extra-life threshold reset); upgrade: extra starting lives
+    players = buildPlayers(lobby);
+    round = createRound(mode);
     level = 1;
     bullets = [];
     asteroids = [];
@@ -1566,7 +1680,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
     // Initialize camera at center of the world
     camera.reset(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, cameraView());
 
-    respawnPlayer(players[0], true); // Fresh player, fresh ship; before creating asteroids
+    for (const p of players) respawnPlayer(p, true); // Fresh ships; before creating asteroids
     tutorial.reset();
     tutorialPending = [];
     tutorialTarget = null;
@@ -1589,6 +1703,7 @@ function startGame({ tutorial: withTutorial = false } = {}) {
     // Show initial level notification
     levelUpNotificationTimer = withTutorial ? 0 : LEVEL_UP_NOTIFICATION_DURATION;
     syncTutorialDom();
+    mode.hooks.onStart(round, players);
 }
 
 // Function to handle username prompt input
@@ -1692,7 +1807,7 @@ function pauseGame() {
     audioManager.stopThrustSound();
     audioManager.stopUfoHum();
     stopVibration();
-    ShipUpgrades.save(persistenceManager, currentUser);
+    saveAllUpgrades();
     console.log("Game Paused");
 }
 
@@ -2014,8 +2129,8 @@ function handleInput(deltaTime) {
                         console.log("Game Resumed");
                         break;
                     case 'Restart':
-                        ShipUpgrades.save(persistenceManager, currentUser);
-                        startGame({ tutorial: tutorial.active }); // keeps the current mode
+                        saveAllUpgrades();
+                        startGame(mode.id, lastLobby, { tutorial: tutorial.active }); // keeps the current mode
                         break;
                     case 'Main Menu':
                         currentGameState = GameState.MENU;
@@ -2222,10 +2337,10 @@ function updateGame(deltaTime) {
     if (!tutorial.active) powerUpSpawnTimer -= deltaTime;
     if (powerUpSpawnTimer <= 0) {
         const newPowerUp = PowerUp.spawnRandom(WORLD_WIDTH, WORLD_HEIGHT);
-        newPowerUp.type = PowerUp.getRandomType();
+        newPowerUp.type = randomPowerUpType();
         powerUps.push(newPowerUp);
         // Apply DDA modifier: lower mod = faster spawns (helps struggling players)
-        powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL * DynamicDifficulty.powerUpSpawnMod;
+        powerUpSpawnTimer = currentScaling().powerUpInterval * (mode.ddaEnabled ? DynamicDifficulty.powerUpSpawnMod : 1);
         console.log(`Spawned random power-up: ${newPowerUp.type.name}`);
     }
 
@@ -2247,14 +2362,18 @@ function updateGame(deltaTime) {
 
         // Level up when all asteroids are cleared and boss is defeated (if present)
         const bossCleared = !currentBoss || !currentBoss.isAlive;
-        if (asteroids.length === 0 && ufos.length === 0 && bossCleared && players.some(p => p.respawnTimer <= 0 && p.ship && p.ship.isAlive)) {
+        if (mode.levelProgression && asteroids.length === 0 && ufos.length === 0 && bossCleared &&
+            players.some(p => p.respawnTimer <= 0 && p.ship && p.ship.isAlive)) {
             levelUp();
         }
 
         for (const p of players) checkPlayerAchievements(p);
 
         // Evaluate performance (team-wide) and adjust difficulty
-        DynamicDifficulty.evaluate(teamScore(players));
+        if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(players));
+
+        // Round timer and the mode's end conditions
+        updateRound(deltaTime);
     }
 
     // Update visual effects systems
@@ -2466,7 +2585,7 @@ function renderGame() {
             ctx.fillText(`Asteroids: ${asteroids.length}`, 10, viewHeight - 10);
 
             // Draw Dynamic Difficulty Adjustment indicator (not during training)
-            if (!tutorial.active) {
+            if (!tutorial.active && mode.ddaEnabled) {
                 ctx.fillStyle = DynamicDifficulty.getAdjustmentColor();
                 ctx.font = '12px Arial';
                 ctx.textAlign = 'left';
@@ -2799,7 +2918,8 @@ function createLevelAsteroids(isBossLevel = false) {
     asteroids = [];
 
     // Calculate number of asteroids for this level (fewer during boss battles)
-    let numAsteroids = BASE_ASTEROIDS_PER_LEVEL + (level - 1) * ASTEROIDS_PER_LEVEL_INCREASE;
+    // Single-player: BASE_ASTEROIDS_PER_LEVEL + (level - 1) * ASTEROIDS_PER_LEVEL_INCREASE
+    let numAsteroids = currentScaling().asteroidCount;
     if (isBossLevel) {
         numAsteroids = Math.floor(numAsteroids * 0.4); // 40% of normal asteroids during boss fight
     }
@@ -2879,6 +2999,9 @@ function checkShipCollisions(p) {
                 touching = ship.collidesWith(asteroid);
             }
             if (touching) {
+                // The mode decides what a collected green gives (single-player: points)
+                const greenRule = asteroid.isGreen() && !tutorial.active
+                    ? (mode.hooks.onCollectGreen(round, p) || { points: true }) : null;
                 if (asteroid.isGreen() && tutorial.active) {
                     // Training: collect without score, credits, combo or achievements
                     asteroid.destroy();
@@ -2886,6 +3009,16 @@ function checkShipCollisions(p) {
                     if (audioManager) audioManager.play('collectGreen');
                     vibrate('collect');
                     queueTutorial(tutorial.notify('collectedGreen'));
+                } else if (greenRule && !greenRule.points) {
+                    // No points (e.g. Duel: a green gives shield time instead)
+                    asteroid.destroy();
+                    Particles.collect(asteroid.x, asteroid.y, palette.collect);
+                    if (audioManager) audioManager.play('collectGreen');
+                    vibrate('collect');
+                    p.stats.greens++;
+                    if (greenRule.shieldSeconds) {
+                        p.powerUps.shield = Math.min(greenRule.shieldCap ?? Infinity, p.powerUps.shield + greenRule.shieldSeconds);
+                    }
                 } else if (asteroid.isGreen()) {
                     // GREEN asteroid: Collect it for points!
                     console.log("Collision: Ship <-> Green Asteroid (Collected!)");
@@ -2932,7 +3065,8 @@ function checkShipCollisions(p) {
                     }
                     vibrate('collect');
                     trackAchievement(p, 'trackAsteroidCollected');
-                    DynamicDifficulty.trackGreenCollected(p.combo.count);
+                    if (mode.ddaEnabled) DynamicDifficulty.trackGreenCollected(p.combo.count);
+                    if (greenRule.endRound) round.overtimeWinner = greenRule.winner; // e.g. Harvest overtime
                 } else {
                     // RED asteroid: Lose a life (unless shield is active)!
                     if (p.powerUps.shield > 0) {
@@ -3017,6 +3151,12 @@ function checkCollisions() {
                     Particles.spawn(asteroid.x, asteroid.y, 8, palette.collect, 90, 0.4, 2); // wasted crystal
                     asteroid.split(asteroids, audioManager); // Just destroys, no children
                     if (tutorial.active) queueTutorial(tutorial.notify('shotGreen'));
+                    else if (shooter && (mode.hooks.onShootGreen(round, shooter) || {}).denied) {
+                        // e.g. Harvest Race: shooting a green denies it to the other player
+                        shooter.stats.greensDenied++;
+                        const at = camera.worldToScreen(asteroid.x, asteroid.y);
+                        FloatingTexts.spawn(at.x, at.y, 'DENIED', shooter.colour, 18);
+                    }
                 } else if (tutorial.active) {
                     // Training: the red target is gone; no power-ups, achievements or DDA
                     Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
@@ -3138,7 +3278,7 @@ function checkCollisions() {
                         const offsetX = (Math.random() - 0.5) * 100;
                         const offsetY = (Math.random() - 0.5) * 100;
                         const powerUp = new PowerUp(currentBoss.x + offsetX, currentBoss.y + offsetY);
-                        powerUp.type = PowerUp.getRandomType();
+                        powerUp.type = randomPowerUpType();
                         powerUps.push(powerUp);
                     }
 
@@ -3210,26 +3350,66 @@ function handlePlayerDeath(p, forced = false) {
     }
 
     if (destroyed) {
-        console.log(`Player death handled. Lives left: ${p.lives - 1}`);
+        const unlimitedLives = mode.lives.type === 'unlimited';
+        console.log(`Player death handled. Lives left: ${unlimitedLives ? 'unlimited' : p.lives - 1}`);
         audioManager.stopThrustSound();
-        DynamicDifficulty.onPlayerDeath(); // Immediate difficulty adjustment on death
+        if (mode.ddaEnabled) DynamicDifficulty.onPlayerDeath(); // Immediate difficulty adjustment on death
 
         // Visual effects
         Particles.explode(shipX, shipY, '#FFFFFF', 30);
         ScreenShake.trigger(15, 0.5);
         showComboLost(p, p.combo.break());
 
-        p.lives--;
+        if (!unlimitedLives) p.lives--;
         p.stats.deaths++;
         updateUI();
-        if (p.lives <= 0) {
-            gameOver(); // plays the game-over vibration
+        const decision = mode.hooks.onDeath(round, p, players) || {};
+        if (decision.out || (!unlimitedLives && p.lives <= 0)) {
+            // Out of lives: the round may be over (single-player: game over)
+            p.out = true;
+            const end = mode.hooks.checkEnd(round, players);
+            if (end && end.ended) {
+                endRound(end); // plays the game-over vibration
+            } else {
+                vibrate('lifeLost');
+                p.ship = null; // out until revived or the round ends
+            }
         } else {
             vibrate('lifeLost');
-            console.log(`Starting respawn timer (${RESPAWN_DELAY}s)`);
-            p.respawnTimer = RESPAWN_DELAY;
+            const delay = mode.respawn.delay ?? RESPAWN_DELAY;
+            console.log(`Starting respawn timer (${delay}s)`);
+            p.respawnTimer = delay;
             p.ship = null;
         }
+    }
+}
+
+// Where a player's ship appears. Single-player: the world centre, as always. Several ships
+// starting together line up around the centre; later respawns follow the mode's placement.
+function respawnPoint(p, isInitialSpawn) {
+    const centre = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+    if (players.length === 1) return centre;
+    if (isInitialSpawn) {
+        return { x: centre.x + (p.slot - (players.length - 1) / 2) * 80, y: centre.y };
+    }
+    const hazards = [
+        ...asteroids.filter(a => a.isAlive && !a.isGreen()),
+        ...ufos.filter(u => u.isAlive),
+        ...(currentBoss && currentBoss.isAlive ? [currentBoss] : []),
+    ];
+    switch (mode.respawn.placement) {
+        case 'nearTeam': {
+            const c = cameraCentre();
+            return pickSpawnPoint(ringSpawnGrid(c.x, c.y, 150, WORLD_WIDTH, WORLD_HEIGHT), [], hazards,
+                WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre;
+        }
+        case 'furthestFromOpponents': {
+            const opponents = livingPlayers(players).filter(o => o !== p).map(o => o.ship);
+            return pickSpawnPoint(worldSpawnGrid(WORLD_WIDTH, WORLD_HEIGHT), opponents, hazards,
+                WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre;
+        }
+        default:
+            return centre;
     }
 }
 
@@ -3238,9 +3418,10 @@ function respawnPlayer(p, isInitialSpawn = false) {
     if (currentGameState !== GameState.GAME_OVER && (!p.ship || !p.ship.isAlive)) {
          console.log("Respawning Player - Conditions Met");
 
-         // Spawn at center of the world
-         const centerX = WORLD_WIDTH / 2;
-         const centerY = WORLD_HEIGHT / 2;
+         // Spawn at the centre of the world (single-player) or where the mode says
+         const spot = respawnPoint(p, isInitialSpawn);
+         const centerX = spot.x;
+         const centerY = spot.y;
 
          const ship = new PlayerShip(centerX, centerY);
          ship.ownerId = p.id;
@@ -3252,8 +3433,9 @@ function respawnPlayer(p, isInitialSpawn = false) {
 
          // Make ship invulnerable after respawn (unless initial spawn)
          if (!isInitialSpawn) {
-             ship.makeInvulnerable(3); // 3 seconds of invulnerability after respawn
-             console.log("Ship made invulnerable for 3 seconds");
+             const seconds = mode.respawn.invulnerability ?? 3; // 3 seconds unless the mode says otherwise
+             ship.makeInvulnerable(seconds);
+             console.log(`Ship made invulnerable for ${seconds} seconds`);
          }
 
          // Reset camera to player position (single-player; a shared camera keeps framing everyone)
@@ -3280,7 +3462,7 @@ function levelUp() {
     bossDefeatedThisLevel = false;
 
     // Check if this is a boss level
-    if (level > 1 && level % BOSS_LEVEL_INTERVAL === 0) {
+    if (mode.bosses && level > 1 && level % BOSS_LEVEL_INTERVAL === 0) {
         // Spawn boss at top of visible area (in world coordinates)
         // (above the centre of the shared view: the ship in single-player)
         const centre = cameraCentre();
@@ -3289,6 +3471,8 @@ function levelUp() {
         const targetY = centre.y - viewHeight / 2 + 150;
         const bossLevel = Math.floor(level / BOSS_LEVEL_INTERVAL);
         currentBoss = new Boss(bossX, targetY, bossLevel);
+        const scaling = currentScaling();
+        currentBoss.applyScaling(scaling.bossHpMult, scaling.bossAttackMult); // x1 in single-player
         console.log(`BOSS BATTLE! Spawning level ${bossLevel} boss at target y=${targetY}!`);
 
         // Show boss warning
@@ -3309,9 +3493,33 @@ function levelUp() {
     for (const p of players) checkPlayerAchievements(p);
 }
 
+// The mode says the round is over. Single-player (and, until the results screen exists, every
+// mode) goes to the existing Game Over screen.
+function endRound(result) {
+    lastRoundResult = result;
+    gameOver();
+}
+
+// Round clock and mode checks, once per frame while playing (not in training)
+function updateRound(deltaTime) {
+    if (!round || tutorial.active || currentGameState !== GameState.PLAYING) return;
+    round.elapsed += deltaTime;
+    if (round.timeLeft !== null) round.timeLeft = Math.max(0, round.timeLeft - deltaTime);
+    if (round.phase === 'overtime' && round.overtimeLeft !== null) round.overtimeLeft = Math.max(0, round.overtimeLeft - deltaTime);
+    mode.hooks.onTick(round, deltaTime, players);
+    const end = mode.hooks.checkEnd(round, players);
+    if (!end) return;
+    if (end.ended) {
+        endRound(end);
+    } else if (end.startPhase) {
+        round.phase = end.startPhase;
+        round.overtimeLeft = end.duration ?? null;
+    }
+}
+
 function gameOver() {
     console.log("Game Over!");
-    finalScore = p1().score;
+    finalScore = players.length === 1 ? p1().score : teamScore(players);
     currentGameState = GameState.GAME_OVER;
     gameOverInputDelay = 1;
     pausedGameExists = false;
@@ -3324,10 +3532,10 @@ function gameOver() {
     // after it because the game-over screen has no vibrating events.
     stopVibration();
     vibrate('gameOver');
-    checkAndAddHighScore(finalScore);
+    if (mode.leaderboard === 'highScores' && players.length === 1) checkAndAddHighScore(finalScore);
 
     // Save upgrade currency earned this session
-    ShipUpgrades.save(persistenceManager, currentUser);
+    saveAllUpgrades();
     console.log(`Saved ${ShipUpgrades.currency} upgrade credits.`);
 
     // Clear boss if present
@@ -3361,7 +3569,7 @@ function checkAndAddHighScore(currentScore) {
 }
 
 function resetUfoSpawnTimer() {
-    let interval = UFO_SPAWN_BASE_INTERVAL;
+    let interval = UFO_SPAWN_BASE_INTERVAL * currentScaling().ufoIntervalMult; // x1 in single-player
     interval *= selectedDifficulty.ufoSpawnMultiplier;
     interval *= DynamicDifficulty.ufoSpawnMod; // Apply DDA modifier
     interval *= Math.max(0.5, 1 - (level * 0.05));
@@ -3374,7 +3582,7 @@ function updateUfoSpawning(deltaTime) {
     // Not while every ship is waiting to respawn
     if (!players.some(p => p.respawnTimer <= 0 && isLiving(p))) return;
 
-    if (ufos.length >= UFO.MaxActiveUFOs) return;
+    if (!mode.ufos.enabled || ufos.length >= currentScaling().ufoMaxActive) return;
 
     ufoSpawnTimer -= deltaTime;
     if (ufoSpawnTimer <= 0) {
@@ -3710,7 +3918,7 @@ function awardPoints(p, points, credits = Math.ceil(points * 0.1)) {
     }
     updateUI();
     checkPlayerAchievements(p);
-    if (credits > 0 && p.upgrades && p.upgrades.persistent) {
+    if (credits > 0 && mode.earnsCredits && p.upgrades && p.upgrades.persistent) {
         p.upgrades.addCurrency(credits);
         p.stats.creditsEarned += credits;
     }

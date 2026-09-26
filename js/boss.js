@@ -60,6 +60,22 @@ export class Boss extends Entity {
         this.maxEntryTime = 3; // seconds for entry animation
     }
 
+    /**
+     * Scale for several players (js/modes.js scaling): weak point health x hpMult and attacks
+     * attackMult times as often. (1, 1) leaves the boss unchanged.
+     */
+    applyScaling(hpMult = 1, attackMult = 1) {
+        if (hpMult !== 1) {
+            this.weakPoints.forEach(wp => {
+                wp.maxHealth = Math.round(wp.maxHealth * hpMult);
+                wp.health = wp.maxHealth;
+            });
+            this.maxHealth = this.getMaxTotalHealth();
+            this.health = this.maxHealth;
+        }
+        if (attackMult !== 1 && attackMult > 0) this.attackCooldown /= attackMult;
+    }
+
     createWeakPoints() {
         const points = [];
         const numPoints = 3 + Math.floor(this.level / 2); // More weak points at higher levels

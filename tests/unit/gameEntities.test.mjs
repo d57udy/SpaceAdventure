@@ -98,6 +98,25 @@ test('Boss.update: with several ships it hovers around the anchor and rotates at
     assert.equal(aimed.length, 0);
 });
 
+test('Boss.applyScaling: (1, 1) changes nothing; co-op numbers scale health and attack rate', () => {
+    const plain = new Boss(0, 0, 2);
+    const before = { health: plain.health, max: plain.maxHealth, cd: plain.attackCooldown,
+        wps: plain.weakPoints.map(w => w.maxHealth) };
+    plain.applyScaling(1, 1);
+    assert.deepEqual({ health: plain.health, max: plain.maxHealth, cd: plain.attackCooldown,
+        wps: plain.weakPoints.map(w => w.maxHealth) }, before);
+
+    const coop = new Boss(0, 0, 2);
+    coop.applyScaling(1.6, 1.25);
+    coop.weakPoints.forEach((w, i) => {
+        assert.equal(w.maxHealth, Math.round(before.wps[i] * 1.6));
+        assert.equal(w.health, w.maxHealth);
+    });
+    assert.equal(coop.maxHealth, coop.weakPoints.reduce((s, w) => s + w.maxHealth, 0));
+    assert.equal(coop.health, coop.maxHealth);
+    assert.ok(Math.abs(coop.attackCooldown - before.cd / 1.25) < 1e-12);
+});
+
 test('Bullet: moves and expires after its lifetime', () => {
     const b = new Bullet(0, 0, 100, 0);
     b.update(1.0, 800, 600);

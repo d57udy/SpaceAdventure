@@ -11,7 +11,7 @@ import { defineConfig, devices } from '@playwright/test';
 // Only tests/integration is scanned; tests/unit is owned by a separate runner.
 const PORT = 8082;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js'];
 const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js'];
 
 export default defineConfig({
