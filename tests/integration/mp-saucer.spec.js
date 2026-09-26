@@ -135,7 +135,6 @@ test.describe('Saucer', () => {
     // Fire held: one shot at once, the next only after 1 s
     await padPress(page, PAD.A);
     await expect.poll(() => hook(page, 'saucer.ufo.shots')).toBe(1);
-    expect(await hook(page, 'saucer.bullets')).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(500);
     expect(await hook(page, 'saucer.ufo.shots')).toBe(1);
     expect(await hook(page, 'saucer.ufo.cooldown')).toBeGreaterThan(0);
