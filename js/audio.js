@@ -160,7 +160,13 @@ export class AudioManager {
         console.log("Sound loading complete.");
     }
 
-    play(soundName, loop = false, volume = 1.0) {
+    // Stereo panning (local multiplayer, side by side): feature-detected StereoPannerNode
+    get stereoSupported() {
+        return !!(this.audioContext && typeof this.audioContext.createStereoPanner === 'function');
+    }
+
+    // pan: -1 (left) … 1 (right); 0 or no StereoPannerNode plays centred as before
+    play(soundName, loop = false, volume = 1.0, pan = 0) {
         // 'suspended' (autoplay policy) or 'interrupted' (iOS, e.g. phone call) cannot play
         if (!this.audioContext || this.isMuted || this.sfxVolume <= 0 || this.audioContext.state !== 'running') {
             return null;
@@ -183,11 +189,39 @@ export class AudioManager {
         gainNode.gain.value = volume;
 
         source.connect(gainNode);
-        gainNode.connect(this.sfxGain);
+        const panner = this.createPanner(pan, loop);
+        if (panner) {
+            gainNode.connect(panner);
+            panner.connect(this.sfxGain);
+            source.panner = panner;
+        } else {
+            gainNode.connect(this.sfxGain);
+        }
 
         source.loop = loop;
         source.start(0);
         return source; // Return the source node for potential control (e.g., stopping loops)
+    }
+
+    // A StereoPannerNode at `pan`, or null (unsupported, or centred and not a loop that may move)
+    createPanner(pan, always = false) {
+        const p = Number(pan);
+        if (!this.stereoSupported || (!always && !(Number.isFinite(p) && p !== 0))) return null;
+        try {
+            const panner = this.audioContext.createStereoPanner();
+            panner.pan.value = Number.isFinite(p) ? Math.max(-1, Math.min(1, p)) : 0;
+            return panner;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Move the thrust loop left or right (local multiplayer: the thrusting players' side)
+    setThrustPan(pan) {
+        const src = this.thrustSoundSource;
+        if (!src || !src.panner) return;
+        const p = Number(pan);
+        try { src.panner.pan.value = Number.isFinite(p) ? Math.max(-1, Math.min(1, p)) : 0; } catch (e) { /* ignore */ }
     }
 
     // Procedural collect sound - a pleasant rising chime

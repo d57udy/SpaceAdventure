@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, frames, loginWithKeyboard, openCoopLobby, lobbyPress, lobbyPad,
-  padPress, padRelease, padTap, padStick, padDisconnect, drawnTexts, rectsOverlap, PAD,
+  padPress, padRelease, padTap, padStick, padDisconnect, drawnTexts, rectsOverlap, PAD, skipRoundIntro,
 } from './helpers.js';
 
 const XBOX = 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)';
@@ -28,6 +28,7 @@ async function joinTwoPads(page) {
   await lobbyPad(page, 0, 0, (c) => c.ready);
   await lobbyPad(page, 1, 1, (c) => c.ready);
   await waitForState(page, 'playing', 6000);
+  await skipRoundIntro(page); // controls card (MP-7): Ⓐ on both
   await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
 }
 
@@ -66,6 +67,12 @@ test.describe('controllers in multiplayer', () => {
     await lobbyPad(page, 0, 0, (c) => c.ready);
     await lobbyPad(page, 1, 1, (c) => c.ready);
     await waitForState(page, 'playing', 6000);
+    // Controls card (MP-7): each controller's own glyphs
+    const cards = await hook(page, 'mp.intro.cards');
+    expect(cards[0].lines).toContain('Ⓐ or RT fire');
+    expect(cards[1].lines).toEqual(['Controller 2: stick steers', '✕ or RT fire', '○ hyperspace']);
+    await expect(page.locator('#mp-hud .seat-hud-intro').nth(1)).toContainText('✕ or RT fire');
+    await skipRoundIntro(page);
     await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
     expect((await hook(page, 'players')).map((p) => [p.label, p.seat])).toEqual([['P1', 0], ['P2', 1]]);
     expect((await hook(page, 'seats')).seats.slice(0, 2).map((s) => s.source)).toEqual(['pad:0', 'pad:1']);
@@ -80,9 +87,13 @@ test.describe('controllers in multiplayer', () => {
     await padStick(page, 0, 0, { pad: 1 });
 
     // Controller 1's Ⓐ fires for P1 only
+    // (counted by shots: the Ⓐ taps that started the controls card may have fired already)
+    await frames(page, 30);
+    const shots = async () => (await hook(page, 'players')).map((p) => p.stats.shots);
+    const before = await shots();
     await padPress(page, PAD.A, { pad: 0 });
-    await expect.poll(async () => (await hook(page, 'bulletsByOwner')).p1 || 0).toBeGreaterThan(0);
-    expect((await hook(page, 'bulletsByOwner')).p2 || 0).toBe(0);
+    await expect.poll(async () => (await shots())[0]).toBeGreaterThan(before[0]);
+    expect((await shots())[1]).toBe(before[1]);
     await padRelease(page, PAD.A, { pad: 0 });
     expect(errors).toEqual([]);
   });
@@ -98,7 +109,7 @@ test.describe('controllers in multiplayer', () => {
     expect(mp.reserved).toEqual([1]);
     expect(mp.disconnectNotice).toBe("P2's controller disconnected. Press Ⓐ on a controller to continue as P2, or pause menu › Drop P2");
     expect((await hook(page, 'seats')).seats[1]).toMatchObject({ source: null, reserved: true, reservedFrom: { source: 'pad:1' } });
-    expect(await hook(page, 'pauseOptions')).toEqual(['Resume', 'Restart round', 'Change players', 'Main menu', 'Drop P2']);
+    expect(await hook(page, 'pauseOptions')).toEqual(['Resume', 'Restart round', 'Change players', 'Main menu', 'Mute', 'Drop P2']);
     const texts = await drawnTexts(page);
     expect(texts).toContain("P2's controller disconnected.");
     expect(texts).toContain('or pause menu › Drop P2');
@@ -180,15 +191,20 @@ test.describe('controllers in multiplayer', () => {
     await lobbyPress(page, 'Space', 0, (c) => c.ready);
     await lobbyPad(page, 0, 1, (c) => c.ready);
     await waitForState(page, 'playing', 6000);
+    await skipRoundIntro(page);
     await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
 
     // Space fires for P1, the controller's RT for P2
+    // (counted by shots: the presses that started the controls card may have fired already)
+    await frames(page, 30);
+    const shots = async () => (await hook(page, 'players')).map((p) => p.stats.shots);
+    const before = await shots();
     await page.keyboard.down('Space');
-    await expect.poll(async () => (await hook(page, 'bulletsByOwner')).p1 || 0).toBeGreaterThan(0);
-    expect((await hook(page, 'bulletsByOwner')).p2 || 0).toBe(0);
+    await expect.poll(async () => (await shots())[0]).toBeGreaterThan(before[0]);
+    expect((await shots())[1]).toBe(before[1]);
     await page.keyboard.up('Space');
     await padPress(page, PAD.RT, { pad: 0 });
-    await expect.poll(async () => (await hook(page, 'bulletsByOwner')).p2 || 0).toBeGreaterThan(0);
+    await expect.poll(async () => (await shots())[1]).toBeGreaterThan(before[1]);
     await padRelease(page, PAD.RT, { pad: 0 });
 
     // D turns P1 right, the controller's stick turns P2 left
@@ -213,6 +229,8 @@ test.describe('controllers in multiplayer', () => {
     await lobbyPress(page, 'Space', 0, (c) => c.ready);
     for (const pad of [0, 1, 2]) await lobbyPad(page, pad, pad + 1, (c) => c.ready);
     await waitForState(page, 'playing', 6000);
+    expect((await hook(page, 'mp.intro.cards')).map((c) => c.source)).toEqual(['kbLeft', 'pad:0', 'pad:1', 'pad:2']);
+    await skipRoundIntro(page);
     await expect.poll(() => hook(page, 'players.3.ship.isAlive')).toBe(true);
     const players = await hook(page, 'players');
     expect(players.map((p) => [p.label, p.seat])).toEqual([['P1', 0], ['P2', 1], ['P3', 2], ['P4', 3]]);

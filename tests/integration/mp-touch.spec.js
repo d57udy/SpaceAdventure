@@ -4,7 +4,7 @@
 import { test, expect } from '@playwright/test';
 import {
   MENU, openFresh, hook, waitForState, frames, loginWithTouch, tapAt, menuItemCenter, tapRegionCenter,
-  tapRegionPoint, centerOf, rectsOverlap, Fingers,
+  tapRegionPoint, centerOf, rectsOverlap, Fingers, skipRoundIntro,
 } from './helpers.js';
 
 const angDist = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -45,6 +45,7 @@ async function startTouchCoop(page, opts = {}) {
   await tapPad(page, 'a', 0, (c) => c.ready);
   await tapPad(page, 'b', 1, (c) => c.ready);
   await waitForState(page, 'playing', 6000);
+  await skipRoundIntro(page); // controls card (MP-7): both fire buttons
   await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
   await expect(page.locator('#touch-fire-btn-b')).toBeVisible();
   return errors;
@@ -248,6 +249,8 @@ test.describe('co-op side by side (touch)', () => {
     await page.screenshot({ path: `tests/screenshots/${name}-coop-lobby.png` });
     await tapPad(page, 'b', 1, (c) => c.ready);
     await waitForState(page, 'playing', 6000);
+    await page.screenshot({ path: `tests/screenshots/${name}-coop-intro.png` });
+    await skipRoundIntro(page);
     await page.waitForTimeout(3200); // past the LEVEL banner
     await page.screenshot({ path: `tests/screenshots/${name}-coop-ingame.png` });
 

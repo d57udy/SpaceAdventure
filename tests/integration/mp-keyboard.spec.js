@@ -3,7 +3,7 @@
 import { test, expect } from '@playwright/test';
 import {
   MENU, openFresh, hook, waitForState, frames, loginWithKeyboard, selectMenuRow, openCoopLobby,
-  joinTwoWithKeyboard, jumpTo, selfDestruct, rectsOverlap,
+  joinTwoWithKeyboard, jumpTo, selfDestruct, rectsOverlap, skipRoundIntro,
 } from './helpers.js';
 
 const TAU = Math.PI * 2;
@@ -264,6 +264,8 @@ test.describe('co-op screenshots for review (desktop)', () => {
     await page.screenshot({ path: `tests/screenshots/${name}-coop-lobby.png` });
     await page.keyboard.press('Enter');
     await waitForState(page, 'playing', 6000);
+    await page.screenshot({ path: `tests/screenshots/${name}-coop-intro.png` });
+    await skipRoundIntro(page);
     await page.keyboard.down('Space');
     await page.keyboard.down('ArrowLeft');
     await page.waitForTimeout(600);

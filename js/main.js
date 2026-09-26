@@ -54,6 +54,10 @@ import {
     TIME_ATTACK, stepCourse, createSeededWorld, ghostKeysForCourse, isGhostRecord, makeGhostRecord, isBetterRun,
     pickBestGhost, viewSizeDiffers, paceDelta, formatPace, formatClock, ownerColour, summarizeRun,
 } from './timeAttack.js';
+import {
+    controlsCard, introRulesLine, introSessionKey, createIntro, introPressFire, tickIntro, keyboardTable,
+    stereoPan, thrustPan,
+} from './mpIntro.js';
 
 // Game States Enum
 const GameState = {
@@ -712,6 +716,7 @@ const settingsRows = [
         visible: () => gamepadSeen },
     { id: 'offerTutorial', label: () => 'Offer tutorial', setting: 'offerTutorial', format: (v) => (v ? 'On' : 'Off') },
     { id: 'replayTutorial', label: () => 'Replay tutorial', select: () => replayTutorial() },
+    { id: 'multiplayer', label: () => 'Multiplayer', select: () => openMpSettings() }, // sub-page (MP-7)
     // Tapped/clicked through a DOM button laid over the row (fullscreen needs a real click)
     { id: 'fullscreen', label: () => (pwa && pwa.isFullscreen() ? 'Exit full screen' : 'Full screen'),
         select: () => pwaUi && pwaUi.toggleFromGame(), visible: () => !!pwa && pwa.shouldShowFullscreenButton() },
@@ -970,7 +975,7 @@ function syncTutorialDom() {
 }
 function getPauseMenuOptions() {
     if (isTimeAttack()) return TA_PAUSE_OPTIONS;
-    if (isMultiplayer()) return mpPauseOptions(MP_PAUSE_OPTIONS);
+    if (isMultiplayer()) return mpPauseOptions([...MP_PAUSE_OPTIONS, muteOptionLabel()]);
     return tutorial.active ? [...pauseMenuOptions, 'Skip Tutorial'] : pauseMenuOptions;
 }
 
@@ -1695,6 +1700,10 @@ function pausedByName() {
 function selectMultiplayerPauseOption(option) {
     switch (option) {
         case 'Resume': resumeGame(); break;
+        case 'Mute':
+        case 'Unmute':
+            toggleMuteSetting(); // stays paused
+            break;
         case 'Restart round':
             saveAllUpgrades();
             startGame(mode.id, lastLobby);
@@ -2326,7 +2335,8 @@ document.addEventListener('DOMContentLoaded', () => {
         get controlMode() { return controlMode.id; },
         get settings() { return settings.all(); },
         get settingsIndex() { return settingsIndex; },
-        get settingsRows() { return visibleRows(settingsRows).map(r => ({ id: r.id, label: r.label(), value: rowValue(r) })); },
+        get settingsRows() { return visibleRows(currentSettingsRows()).map(r => ({ id: r.id, label: r.label(), value: rowValue(r) })); },
+        get settingsPage() { return settingsPage; },
         get palette() { return palette.id; },
         get haptics() {
             return { supported: haptics.supported, enabled: haptics.enabled, calls: haptics.stats.calls,
@@ -2430,6 +2440,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     field: countField(asteroids), materialising: asteroids.filter(a => a.isAlive && a.materialising).length,
                 },
                 zones: mpLayoutState.zones.slice(), simultaneous: simultaneousRound(),
+                intro: roundIntroSnapshot(), help: { page: helpPage },
                 cameraSingleInstant: !!camera.options.singleInstant,
                 scaling: { ...currentScaling() }, boss: currentBoss ? { maxHealth: currentBoss.maxHealth } : null,
                 ...touchLobbyNotes(),
@@ -2621,6 +2632,7 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     syncTutorialDom();
     mode.hooks.onStart(round, players);
     afterStartGameMP5(); // the saucer appears; a still-disconnected controller pauses at once
+    setupRoundIntro(); // multiplayer: controls card first (MP-7)
 }
 
 // Function to handle username prompt input
@@ -2951,9 +2963,9 @@ function handleShipInput(p, deltaTime) {
         tutorialFireHeld = fireHeld;
     }
 
-    if (input.isPressed('fire')) {
+    if (input.isPressed('fire') || autoFireFor(p)) {
         const bulletCountBefore = bullets.length;
-        ship.fire(bullets, audioManager);
+        ship.fire(bullets, audioFor(p));
         // Track shots fired for DDA
         if (bullets.length > bulletCountBefore) {
             DynamicDifficulty.trackShotFired();
@@ -3015,10 +3027,11 @@ function handleInput(deltaTime) {
 
         case GameState.SETTINGS:
             if (inputHandler.consumeAction('escape')) {
-                returnToMenu();
+                if (settingsPage === 'mp') closeMpSettings();
+                else returnToMenu();
                 break;
             }
-            navigateRows(visibleRows(settingsRows), () => settingsIndex, (i) => { settingsIndex = i; });
+            navigateRows(visibleRows(currentSettingsRows()), () => settingsIndex, (i) => { settingsIndex = i; });
             break;
 
         case GameState.MP_MODE_SELECT:
@@ -3057,6 +3070,7 @@ function handleInput(deltaTime) {
                 break;
             }
             if (resumeCountdown > 0) break; // multiplayer resume: 3, 2, 1
+            if (roundIntro) { handleRoundIntroInput(); break; } // controls card: fire = ready
             // Training: Enter or controller View skips it
             const skipByEnter = inputHandler.consumeAction('enter');
             const skipByPad = inputHandler.consumeAction('skipTutorial');
@@ -3071,8 +3085,10 @@ function handleInput(deltaTime) {
             if (currentGameState === GameState.PLAYING) handleSaucerInput(); // Saucer: P2 (MP-5)
             // One thrust loop, on while any ship thrusts
             const thrusting = players.some(p => p.ship && p.ship.isAlive && p.ship.isThrusting);
-            if (thrusting && currentGameState === GameState.PLAYING && !audioManager.isMuted) audioManager.startThrustSound();
-            else audioManager.stopThrustSound();
+            if (thrusting && currentGameState === GameState.PLAYING && !audioManager.isMuted) {
+                audioManager.startThrustSound();
+                audioManager.setThrustPan(currentThrustPan());
+            } else audioManager.stopThrustSound();
             break;
         }
         case GameState.PAUSED: {
@@ -3180,6 +3196,8 @@ function handleInput(deltaTime) {
             break;
 
         case GameState.HELP:
+            if (inputHandler.consumeAction('menuLeft')) setHelpPage(helpPage - 1);
+            if (inputHandler.consumeAction('menuRight')) setHelpPage(helpPage + 1);
             if (inputHandler.consumeAction('key_T') || inputHandler.consumeAction('replayTutorial')) {
                 replayTutorial();
                 break;
@@ -3244,6 +3262,7 @@ function updateGame(deltaTime) {
     syncStateTransition();
     syncTutorialDom();
     syncMpDom();
+    syncMp7Dom();
     inputHandler.endFrame();
     if (currentGameState !== GameState.MENU && currentGameState !== GameState.PROMPT_USER) {
         for (const m of achievementManagers()) m.updateNotifications(deltaTime);
@@ -3258,6 +3277,11 @@ function updateGame(deltaTime) {
     if (resumeCountdown > 0) {
         // Multiplayer resume: the world waits for 3, 2, 1
         resumeCountdown = Math.max(0, resumeCountdown - deltaTime);
+        return;
+    }
+    if (roundIntro) {
+        // Controls card: the world waits until everyone pressed fire (or the card times out)
+        updateRoundIntro(deltaTime);
         return;
     }
 
@@ -3604,18 +3628,18 @@ function drawCompactSeatHud(p) {
     ctx.textAlign = left ? 'left' : 'right';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = p.colour;
-    ctx.font = 'bold 14px Arial';
+    ctx.font = 'bold 18px Arial'; // HUD text at least 18 px (plan §12)
     ctx.fillText(hud.name, x, y, viewWidth * 0.3);
-    y += 20;
+    y += 22;
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = 'bold 18px Arial';
+    ctx.font = 'bold 20px Arial';
     ctx.fillText(`${hud.score}  ${hud.lives}`, x, y);
     const extra = [hud.powerUps.map(u => u.label).join(' '), hud.combo ? `${hud.combo.count}x` : '', hud.status]
         .filter(Boolean).join('  ');
     if (extra) {
-        y += 17;
+        y += 21;
         ctx.fillStyle = '#FFD700';
-        ctx.font = 'bold 13px Arial';
+        ctx.font = 'bold 18px Arial';
         ctx.fillText(extra, x, y, viewWidth * 0.4);
     }
 }
@@ -3791,6 +3815,7 @@ function renderGame() {
 
             drawTimeAttackHud(); // timer, ghost pace, screen-size notice
             drawMultiplayerOverlay(); // whose turn, resume countdown, round-end banner
+            drawRoundIntro(); // controls card (MP-7)
             break;
 
         case GameState.TA_SETUP:
@@ -3858,7 +3883,8 @@ function renderGame() {
             drawHelpScreen();
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
             // Registered after the full-screen region: taps are checked last-to-first
-            drawHelpReplayButton();
+            if (helpPage === 0) drawHelpReplayButton();
+            drawHelpTabs();
             break;
 
         case GameState.GAME_OVER:
@@ -4965,9 +4991,9 @@ function drawSettingsScreen() {
     ctx.textAlign = 'center';
     ctx.font = '36px Arial';
     const titleY = viewHeight * 0.14; // below the DOM HUD line
-    ctx.fillText('SETTINGS', viewWidth / 2, titleY);
+    ctx.fillText(settingsPage === 'mp' ? 'MULTIPLAYER SETTINGS' : 'SETTINGS', viewWidth / 2, titleY);
 
-    const rows = visibleRows(settingsRows);
+    const rows = visibleRows(currentSettingsRows());
     if (settingsIndex >= rows.length) settingsIndex = 0;
     const listStartY = titleY + 70;
     const lineHeight = Math.min(55, (viewHeight - 90 - listStartY) / rows.length);
@@ -6051,7 +6077,7 @@ function drawVersusBanner(region) {
         title = round.phase === 'overtime' ? 'OVERTIME' : 'SUDDEN DEATH';
         sub = round.phase === 'overtime' ? 'Scores are tied: the next crystal wins' : 'The next kill wins';
         alpha = Math.min(1, versus.phaseBanner);
-    } else if (versus.intro > 0) {
+    } else if (versus.intro > 0 && !roundIntro) { // after the controls card (MP-7)
         title = mode.name.toUpperCase();
         sub = mode.winCondition === 'kills' ? `First to ${round.target ?? 5} kills · one hit kills`
             : `Most crystals in ${formatClock(round.timeLeft ?? 0)} · shoot crystals to deny them`;
@@ -6367,7 +6393,7 @@ function handleSaucerInput() {
     }, input.getJoystick());
     input.consumeAction('hyperspace'); // ↓ steers; the saucer has no hyperspace
     ufo.steer(v.x, v.y);
-    if (input.isPressed('fire') && ufo.cooldown <= 0) {
+    if ((input.isPressed('fire') || autoFireOn()) && ufo.cooldown <= 0) { // auto-fire (MP-7) too
         const ship = pilotShip();
         const targets = asteroids.filter(a => a.isAlive && a.isGreen());
         if (ship && !ship.isInvulnerable) targets.push(ship);
@@ -6855,6 +6881,10 @@ function drawUfoIcon(x, y, r) {
 }
 
 function drawHelpScreen() {
+    if (helpPage === 1) {
+        drawHelpMultiplayer();
+        return;
+    }
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.font = '28px Arial';
@@ -6977,3 +7007,334 @@ function drawUserPrompt() {
 
 // Export necessary functions/variables if using modules elsewhere
 // export { canvas, ctx, score, lives, level }; 
+// --- MP-7: round intro card, multiplayer help and accessibility (plan 05 §12, §14) ---
+// Round intro: before the first round of a lobby session each seat's HUD panel shows that
+// seat's controls, the canvas shows each touch player's half and one line of rules, and the
+// world is frozen. It starts when every seat has pressed fire or after 8 s; later rounds of
+// the same session (rematch, restart, same line-up) show it for 2 s. Leaving to the main menu
+// or the mode select ends the session.
+let roundIntro = null;            // js/mpIntro.js createIntro() while the controls card shows
+let introSessionLast = null;      // session key of the last intro (short intro when it matches)
+let introViewersDrawn = 0;        // viewer copies of the intro text drawn last frame (facing: 2)
+let helpPage = 0;                 // Help: 0 = game, 1 = multiplayer
+const HELP_PAGES = 2;
+let settingsPage = 'main';        // Settings: 'main' or the 'mp' sub-page
+let mp7DomKey = '';
+
+// Multiplayer settings sub-page. Fire side is a Settings row rather than a lobby-card tap:
+// the join pad already uses tap (join/ready) and hold (leave), the choice is a lasting
+// preference of whoever usually sits there (left-handed players), and a Settings row works
+// the same with touch, keys and controllers.
+const FIRE_SIDE_NAMES = { outer: 'Outer', inner: 'Inner' };
+const onOff = (v) => (v ? 'On' : 'Off');
+const mpSettingsRows = [
+    { id: 'mpAutoFire', label: () => 'Auto-fire (multiplayer)', setting: 'mpAutoFire', format: onOff },
+    { id: 'mpFireSideA', label: () => 'Fire side, left/bottom', setting: 'mpFireSideA',
+        format: (v) => FIRE_SIDE_NAMES[v] || v, visible: () => isTouchDevice },
+    { id: 'mpFireSideB', label: () => 'Fire side, right/top', setting: 'mpFireSideB',
+        format: (v) => FIRE_SIDE_NAMES[v] || v, visible: () => isTouchDevice },
+    { id: 'mpStereo', label: () => 'Stereo (side by side)', setting: 'mpStereo', format: onOff,
+        visible: () => !!audioManager && audioManager.stereoSupported },
+    { id: 'mpBack', label: () => '< Back to Settings >', select: () => closeMpSettings() },
+];
+function currentSettingsRows() { return settingsPage === 'mp' ? mpSettingsRows : settingsRows; }
+function openMpSettings() {
+    settingsPage = 'mp';
+    settingsIndex = 0;
+}
+function closeMpSettings() {
+    settingsPage = 'main';
+    settingsIndex = Math.max(0, visibleRows(settingsRows).findIndex(r => r.id === 'multiplayer'));
+}
+
+// Mute from the multiplayer pause menu (same setting as M and the speaker button)
+function muteOptionLabel() { return audioManager && audioManager.isMuted ? 'Unmute' : 'Mute'; }
+function toggleMuteSetting() {
+    settings.set('muted', !audioManager.isMuted);
+    applyMuted();
+}
+
+// Auto-fire: each living ship fires on its own in multiplayer rounds (not single-player,
+// not Time Attack, not during the intro card)
+function autoFireOn() {
+    return !!settings.get('mpAutoFire') && isMultiplayer() && !isTimeAttack() && !roundIntro
+        && currentGameState === GameState.PLAYING;
+}
+function autoFireFor(p) {
+    return autoFireOn() && !!p.ship && p.ship.isAlive;
+}
+
+// Stereo panning (side by side): a player's fire sound comes from their side
+const pannedAudio = new Map();
+function playerPan(p) {
+    if (!simultaneousRound()) return 0;
+    return stereoPan(hudColumnFor(p), { enabled: !!settings.get('mpStereo'), layout: mpLayoutState.layout });
+}
+function audioFor(p) {
+    const pan = playerPan(p);
+    if (!pan || !audioManager.stereoSupported) return audioManager;
+    if (!pannedAudio.has(pan)) pannedAudio.set(pan, { play: (n, loop, vol) => audioManager.play(n, loop, vol, pan) });
+    return pannedAudio.get(pan);
+}
+function currentThrustPan() {
+    return thrustPan(players.filter(p => p.ship && p.ship.isAlive && p.ship.isThrusting).map(playerPan));
+}
+
+// --- Round intro ---
+function introApplies() {
+    return isMultiplayer() && !isTimeAttack() && simultaneous()
+        && (currentGameState === GameState.PLAYING || currentGameState === GameState.PAUSED); // paused: a missing controller
+}
+function setupRoundIntro() {
+    roundIntro = null;
+    if (!introApplies()) return;
+    const key = introSessionKey(mode.id, players.map(p => p.bindingId));
+    roundIntro = createIntro(players.length, { full: key !== introSessionLast });
+    introSessionLast = key;
+}
+function handleRoundIntroInput() {
+    players.forEach((p, i) => {
+        const input = p.input || inputHandler;
+        input.consumeAction('hyperspace'); // no jump queued for after the card
+        if (input.isPressed('fire') && introPressFire(roundIntro, i) && audioManager) audioManager.play('collectGreen');
+    });
+}
+function updateRoundIntro(dt) {
+    if (tickIntro(roundIntro, dt)) roundIntro = null;
+}
+function roundIntroSnapshot() {
+    if (!roundIntro) return null;
+    return {
+        full: roundIntro.full, duration: roundIntro.duration, timeLeft: roundIntro.timeLeft,
+        ready: roundIntro.ready.slice(), viewers: introViewersDrawn, rules: introRules(),
+        cards: players.map((p, i) => ({ source: p.bindingId, ...introCardFor(p, i) })),
+    };
+}
+function fireSideFor(source) {
+    if (source === 'touch:a') return settings.get('mpFireSideA');
+    if (source === 'touch:b') return settings.get('mpFireSideB');
+    return 'outer';
+}
+function introCardFor(p, i) {
+    const src = p.bindingId;
+    // Controller seats: that controller's own glyphs; Saucer: the seat's role
+    const role = mode.id === 'saucer' ? (saucer && p === saucer.player ? 'saucer' : 'ship') : null;
+    const card = controlsCard(src, {
+        pad: { fire: seatPadGlyph(src, GP.A), hyperspace: seatPadGlyph(src, GP.B) }, fireSide: fireSideFor(src), role,
+    });
+    const ready = !!(roundIntro && roundIntro.ready[i]);
+    const status = ready ? 'READY' : roundIntro && roundIntro.full ? 'Press FIRE when ready' : 'Get ready';
+    return { lines: card.lines, status, ready };
+}
+function introRules() {
+    const info = MP_MODE_INFO[mode.id];
+    return introRulesLine(mode.id, {
+        target: round ? round.target : null, roundSeconds: round ? round.timeLeft : null,
+        fallback: info ? `${mode.name}: ${info[1] || info[0]}` : mode.name,
+    });
+}
+
+// DOM: intro lines in each seat's HUD panel, pulsing touch zones, fire side classes
+function syncMp7Dom() {
+    if (currentGameState !== GameState.HELP) helpPage = 0;
+    if (currentGameState !== GameState.SETTINGS) settingsPage = 'main';
+    if (currentGameState === GameState.MENU || currentGameState === GameState.MP_MODE_SELECT) introSessionLast = null;
+    if (roundIntro && !inRound()) roundIntro = null;
+    const showIntro = !!roundIntro && currentGameState === GameState.PLAYING;
+    const zoneWaiting = (zone) => showIntro && players.some((p, i) => p.bindingId === `touch:${zone}` && !roundIntro.ready[i]);
+    const key = [showIntro, zoneWaiting('a'), zoneWaiting('b'), settings.get('mpFireSideA'), settings.get('mpFireSideB')].join('|');
+    if (key !== mp7DomKey) {
+        mp7DomKey = key;
+        const body = document.body;
+        body.classList.toggle('mp-intro', showIntro);
+        body.classList.toggle('intro-zone-a', zoneWaiting('a'));
+        body.classList.toggle('intro-zone-b', zoneWaiting('b'));
+        body.classList.toggle('mp-fire-inner-a', settings.get('mpFireSideA') === 'inner');
+        body.classList.toggle('mp-fire-inner-b', settings.get('mpFireSideB') === 'inner');
+    }
+    if (showIntro && mpLayoutState.hud === 'dom') {
+        for (const panel of document.querySelectorAll('#mp-hud .seat-hud')) {
+            const i = players.findIndex(p => String(p.number - 1) === panel.dataset.seat);
+            if (i < 0) continue;
+            let box = panel.querySelector('.seat-hud-intro');
+            if (!box) {
+                box = document.createElement('div');
+                box.className = 'seat-hud-intro';
+                panel.appendChild(box);
+            }
+            const card = introCardFor(players[i], i);
+            const k = JSON.stringify(card);
+            if (box.dataset.key === k) continue;
+            box.dataset.key = k;
+            box.textContent = '';
+            for (const line of card.lines) {
+                const el = document.createElement('div');
+                el.className = 'seat-hud-intro-line';
+                el.textContent = line;
+                box.appendChild(el);
+            }
+            const st = document.createElement('div');
+            st.className = `seat-hud-intro-status${card.ready ? ' ready' : ''}`;
+            st.textContent = card.status;
+            box.appendChild(st);
+        }
+    }
+}
+
+// Canvas: a faint divider and tint per touch player's half, the rules line and the countdown
+// (drawn for both viewers in the facing layout); controls per player when the HUD is on canvas
+function drawRoundIntro() {
+    introViewersDrawn = 0;
+    if (!roundIntro || currentGameState !== GameState.PLAYING) return;
+    ctx.save();
+    const facing = mpLayoutState.layout === 'facing';
+    const zones = mpLayoutState.zones || [];
+    for (const zone of zones) {
+        const i = players.findIndex(p => p.bindingId === `touch:${zone}`);
+        if (i < 0) continue;
+        const half = facing
+            ? (zone === 'a' ? { x: 0, y: viewHeight / 2, w: viewWidth, h: viewHeight / 2 } : { x: 0, y: 0, w: viewWidth, h: viewHeight / 2 })
+            : (zone === 'a' ? { x: 0, y: 0, w: viewWidth / 2, h: viewHeight } : { x: viewWidth / 2, y: 0, w: viewWidth / 2, h: viewHeight });
+        ctx.globalAlpha = roundIntro.ready[i] ? 0.05 : 0.1 + 0.05 * Math.sin(performance.now() / 250);
+        ctx.fillStyle = players[i].colour || '#FFFFFF';
+        ctx.fillRect(half.x, half.y, half.w, half.h);
+    }
+    ctx.globalAlpha = 1;
+    if (zones.length > 0) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 10]);
+        ctx.beginPath();
+        if (facing) {
+            ctx.moveTo(0, viewHeight / 2);
+            ctx.lineTo(viewWidth, viewHeight / 2);
+        } else {
+            ctx.moveTo(viewWidth / 2, 0);
+            ctx.lineTo(viewWidth / 2, viewHeight);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    const rules = introRules();
+    const secs = Math.max(1, Math.ceil(roundIntro.timeLeft));
+    const onCanvas = mpLayoutState.hud !== 'dom';
+    drawForViewers((region) => {
+        introViewersDrawn++;
+        const lines = [];
+        if (onCanvas) {
+            players.forEach((p, i) => {
+                const c = introCardFor(p, i);
+                lines.push({ text: `${p.label} ${p.name}: ${c.status}`, colour: p.colour, font: 'bold 18px Arial' });
+                lines.push({ text: c.lines.join(' · '), colour: '#FFFFFF', font: '18px Arial' });
+            });
+        }
+        const h = 70 + lines.length * 24;
+        const top = region.half ? region.y + region.h * 0.62 - h / 2 : viewHeight * 0.26 - 35;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(0, top, viewWidth, h);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 20px Arial';
+        ctx.fillText(rules, viewWidth / 2, top + 22, viewWidth - 20);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '18px Arial';
+        ctx.fillText(roundIntro.full ? `Everyone press FIRE to start · ${secs}` : `Get ready · ${secs}`,
+            viewWidth / 2, top + 50, viewWidth - 20);
+        lines.forEach((l, k) => {
+            ctx.fillStyle = l.colour || '#FFFFFF';
+            ctx.font = l.font;
+            ctx.fillText(l.text, viewWidth / 2, top + 78 + k * 24, viewWidth - 20);
+        });
+    });
+    ctx.restore();
+}
+
+// --- Help: page 2 "Multiplayer" (◂ ▸, or tap the page button at the top) ---
+function setHelpPage(page) {
+    helpPage = ((page % HELP_PAGES) + HELP_PAGES) % HELP_PAGES;
+}
+function drawHelpTabs() {
+    const w = 150;
+    const h = 34;
+    const y = viewHeight * 0.12 - 30;
+    const toMp = helpPage === 0;
+    const x = toMp ? viewWidth - w - 8 : 8;
+    drawButtonBox(x, y, w, h, toMp ? 'Multiplayer ▸' : '◂ Game help', false, 'bold 16px Arial');
+    tapRegions.push({ x, y, w, h, onTap: () => setHelpPage(helpPage + 1), id: 'help:page' });
+}
+function drawHelpMultiplayer() {
+    const s = Math.min(1, viewHeight / 720);
+    const px = (n) => `${Math.round(n * s)}px`;
+    const left = viewWidth * 0.07;
+    const maxW = viewWidth - 2 * left;
+    let y = viewHeight * 0.12;
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = `${px(28)} Arial`;
+    ctx.fillText('MULTIPLAYER HELP', viewWidth / 2, y);
+    y += 26 * s;
+    ctx.font = `${px(14)} Arial`;
+    ctx.fillStyle = '#CCCCCC';
+    ctx.fillText('2 to 4 players on one device: shared keyboard, controllers or one tablet.', viewWidth / 2, y, maxW);
+
+    const lh = 18 * s;
+    const section = (title) => {
+        y += 27 * s;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#FFD700';
+        ctx.font = `bold ${px(16)} Arial`;
+        ctx.fillText(title, left, y);
+        ctx.font = `${px(14)} Arial`;
+        ctx.fillStyle = 'white';
+    };
+    const line = (text) => {
+        y += lh;
+        ctx.textAlign = 'left';
+        ctx.fillText(text, left, y, maxW);
+    };
+
+    section('KEYBOARD (two players)');
+    const cols = [left, left + maxW * 0.24, left + maxW * 0.56];
+    y += lh;
+    ctx.fillStyle = '#AAAAAA';
+    ['', 'P1 (left)', 'P2 (right)'].forEach((t, k) => ctx.fillText(t, cols[k], y));
+    ctx.fillStyle = 'white';
+    for (const row of keyboardTable()) {
+        y += lh;
+        ctx.fillText(row.action, cols[0], y);
+        ctx.fillText(row.p1, cols[1], y, maxW * 0.3);
+        ctx.fillText(row.p2, cols[2], y, maxW * 0.44);
+    }
+    line('Anyone pauses (P, Esc) or mutes (M). If a keyboard drops keys, try Auto-fire.');
+
+    section('CONTROLLERS');
+    const A = lobbyPadGlyph(GP.A, 'A');
+    const B = lobbyPadGlyph(GP.B, 'B');
+    line(`Each controller is a player: ${A} joins in the lobby, ${B} leaves.`);
+    line(`Stick steers · ${A} or RT fire · ${B} hyperspace · Start pauses.`);
+
+    section('TABLET');
+    line('Side by side (landscape): drag on your half, fire in your side bar.');
+    line('Facing (flat on a table): P1 at the bottom, P2 at the top.');
+    line('Lobby: tap your pad to join, again when ready; hold it to leave.');
+    line('iPad: turn off Settings > Multitasking & Gestures first.');
+
+    section('MODES');
+    for (const id of [...MP_MODE_IDS, 'timeattack']) {
+        const info = MP_MODE_INFO[id];
+        const m = getMode(id);
+        if (!info || !m) continue;
+        line(`${m.name}: ${info[0]}`);
+    }
+
+    section('ACCESSIBILITY');
+    line('Settings > Multiplayer: auto-fire, fire button side, stereo sound.');
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'white';
+    ctx.font = `${px(16)} Arial`;
+    ctx.fillText(inputHint('◂ ▸ pages · Space/Enter/Esc to return', 'Tap the button above for game help, elsewhere to return',
+        () => `◂ ▸ pages   ${padGlyph(GP.B)} Back`), viewWidth / 2, viewHeight - 12, viewWidth - 20);
+}

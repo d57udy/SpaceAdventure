@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, frames, loginWithTouch, tapAt, menuItemCenter, tapRegionCenter, canvasToPage,
-  centerOf, rectsOverlap, Fingers, padTap, padStick, PAD,
+  centerOf, rectsOverlap, Fingers, padTap, padStick, PAD, skipRoundIntro,
 } from './helpers.js';
 
 const angDist = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -36,6 +36,7 @@ async function joinBoth(page) {
   await tapPad(page, 'a', 0, (c) => c.ready);
   await tapPad(page, 'b', 1, (c) => c.ready);
   await waitForState(page, 'playing', 6000);
+  await skipRoundIntro(page); // controls card (MP-7): both fire buttons
   await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
 }
 

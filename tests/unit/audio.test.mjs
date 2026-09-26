@@ -174,3 +174,52 @@ test('preferAmbientAudioSession is feature-detected', () => {
     const broken = { get audioSession() { throw new Error('nope'); } };
     assert.equal(preferAmbientAudioSession(broken), false);
 });
+
+// Stereo panning (local multiplayer, side by side; MP-7)
+class PannerCtx extends FakeCtx {
+    createStereoPanner() { return this._n('panner', { pan: new FakeParam(0) }); }
+}
+function makePannerManager() {
+    globalThis.window = { AudioContext: PannerCtx };
+    return quiet(() => new AudioManager());
+}
+
+test('play(pan) routes through a StereoPannerNode into sfxGain; centred sounds stay direct', () => {
+    const am = makePannerManager();
+    assert.equal(am.stereoSupported, true);
+    am.sounds.playerShoot = {};
+    const src = am.play('playerShoot', false, 1, -0.6);
+    const panner = am.audioContext.created.find(n => n.kind === 'panner');
+    assert.ok(panner && src.panner === panner);
+    assert.equal(panner.pan.value, -0.6);
+    assert.deepEqual(panner.out, [am.sfxGain]);
+    const before = am.audioContext.created.filter(n => n.kind === 'panner').length;
+    am.play('playerShoot'); // centred: no panner
+    assert.equal(am.audioContext.created.filter(n => n.kind === 'panner').length, before);
+    am.play('playerShoot', false, 1, 5);
+    assert.equal(am.audioContext.created.filter(n => n.kind === 'panner').pop().pan.value, 1, 'clamped');
+});
+
+test('the thrust loop can be panned while it plays', () => {
+    const am = makePannerManager();
+    am.sounds.playerThrust = {};
+    am.startThrustSound();
+    assert.ok(am.thrustSoundSource.panner, 'loops always get a panner');
+    am.setThrustPan(0.6);
+    assert.equal(am.thrustSoundSource.panner.pan.value, 0.6);
+    am.setThrustPan(NaN);
+    assert.equal(am.thrustSoundSource.panner.pan.value, 0);
+    am.stopThrustSound();
+    am.setThrustPan(0.3); // no loop: ignored
+});
+
+test('without StereoPannerNode, pan is ignored (feature-detected)', () => {
+    const am = makeManager();
+    assert.equal(am.stereoSupported, false);
+    am.sounds.playerShoot = {};
+    am.sounds.playerThrust = {};
+    assert.notEqual(am.play('playerShoot', false, 1, 0.6), null);
+    am.startThrustSound();
+    am.setThrustPan(0.6);
+    assert.ok(!am.audioContext.created.some(n => n.kind === 'panner'));
+});
