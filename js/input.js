@@ -111,8 +111,10 @@ export class InputHandler {
         this._pointerUpHandler = (e) => this.handlePointerUp(e);
         this._releaseAllHandler = () => this.releaseAll();
         this._preventTouchDefault = (e) => {
-            // Stop iOS double-tap zoom, scrolling and long-press callouts on game surfaces
-            if (e.target.closest && e.target.closest('.touch-btn, canvas')) e.preventDefault();
+            // Stop iOS double-tap zoom, scrolling and long-press callouts on game surfaces.
+            // Never on .app-btn (Full screen / Install): cancelling touchstart would suppress
+            // the click that grants the user activation those browser APIs require.
+            if (e.target.closest && e.target.closest('.touch-btn:not(.app-btn), canvas')) e.preventDefault();
         };
 
         window.addEventListener('keydown', this._keydownHandler);

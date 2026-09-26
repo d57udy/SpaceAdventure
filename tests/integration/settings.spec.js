@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 import {
   MENU, SETTINGS_ROWS_DESKTOP, CONTROL_MODE_KEY, PALETTE_KEY, MUTED_KEY,
   HAPTICS_KEY, MUSIC_TUNE_KEY, MUSIC_VOLUME_KEY, SFX_VOLUME_KEY, TUNE_LABELS,
-  touchSettingsRows, hasVibrate, vibrations,
+  touchSettingsRows, hasVibrate, vibrations, withFullscreenRow,
   CONTROL_LABELS, PALETTE_LABELS, openFresh, hook, snap, waitForState, loginWithKeyboard, loginWithTouch,
   tapMenuItem, tapAt, tapRegionCenter, tapRegionPoint, settingsRowIndex, drawnTexts, frames,
 } from './helpers.js';
@@ -49,7 +49,7 @@ test.describe('settings: keyboard', () => {
 
   test('opens with the desktop rows, defaults and one tap region per row', async ({ page }) => {
     const s = await snap(page);
-    expect(s.settingsRows.map((r) => r.id)).toEqual(SETTINGS_ROWS_DESKTOP);
+    expect(s.settingsRows.map((r) => r.id)).toEqual(await withFullscreenRow(page, SETTINGS_ROWS_DESKTOP));
     expect(s.settingsIndex).toBe(0);
     expect(s.settings.palette).toBe('standard');
     expect(s.settings.muted).toBe(false);
@@ -155,7 +155,7 @@ test.describe('settings: touch', () => {
   test('opens with the touch rows (Controls first) and finger-sized tap regions inside the canvas', async ({ page }) => {
     const s = await snap(page);
     // Chromium has navigator.vibrate (so the Vibration row shows); WebKit does not
-    expect(s.settingsRows.map((r) => r.id)).toEqual(touchSettingsRows(await hasVibrate(page)));
+    expect(s.settingsRows.map((r) => r.id)).toEqual(await withFullscreenRow(page, touchSettingsRows(await hasVibrate(page))));
     expect(s.settingsRows[0].value).toBe(CONTROL_LABELS.joystick);
     expect(s.tapRegions.length).toBe(s.settingsRows.length);
     for (const r of s.tapRegions) {
@@ -232,7 +232,7 @@ test.describe('settings: vibration (touch)', () => {
 
   test('row shows "On" with navigator.vibrate; toggling persists and plays the confirmation tick', async ({ page }) => {
     const errors = await openTouchSettings(page, { vibrate: true });
-    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(touchSettingsRows(true));
+    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(await withFullscreenRow(page, touchSettingsRows(true)));
     expect(await rowValue(page, 'vibration')).toBe('On');
     expect(await hook(page, 'haptics')).toMatchObject({ supported: true, enabled: true });
 
@@ -290,7 +290,7 @@ test.describe('settings: vibration (touch)', () => {
     test.skip(browserName !== 'webkit', 'WebKit lacks navigator.vibrate');
     const errors = await openTouchSettings(page);
     expect(await hasVibrate(page)).toBe(false);
-    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(touchSettingsRows(false));
+    expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(await withFullscreenRow(page, touchSettingsRows(false)));
     expect(await hook(page, 'haptics.supported')).toBe(false);
     expect(errors).toEqual([]);
   });
@@ -304,7 +304,7 @@ test('settings: desktop has no Vibration row, even with navigator.vibrate', asyn
   await page.keyboard.press('Enter');
   await waitForState(page, 'settings');
   expect(await hasVibrate(page)).toBe(true);
-  expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(SETTINGS_ROWS_DESKTOP);
+  expect((await hook(page, 'settingsRows')).map((r) => r.id)).toEqual(await withFullscreenRow(page, SETTINGS_ROWS_DESKTOP));
   expect(await hook(page, 'haptics.supported')).toBe(true);
 });
 

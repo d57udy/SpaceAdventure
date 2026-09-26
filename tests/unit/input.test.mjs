@@ -379,6 +379,15 @@ test('touchstart on game surfaces is prevented, elsewhere it is not', () => {
     assert.equal(offGame.defaultPrevented, false);
 });
 
+test('touchstart on an .app-btn (Full screen / Install) is never prevented', () => {
+    const { doc } = setup();
+    // A real browser: .app-btn elements are not .touch-btn, so the selector does not match them
+    const appBtn = { target: { closest: (sel) => (sel.includes(':not(.app-btn)') ? null : {}) },
+        defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    doc.dispatch('touchstart', appBtn);
+    assert.equal(appBtn.defaultPrevented, false);
+});
+
 test('a press released within the same frame still counts until endFrame() (quick taps fire)', () => {
     const { doc, input } = setup();
     const btn = makeButton('fire');
