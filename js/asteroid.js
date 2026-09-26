@@ -3,12 +3,12 @@ import { randomRange, degToRad, isNearAny } from './utils.js';
 import { Palettes } from './palette.js';
 
 // Asteroid Types
-const AsteroidType = {
+export const AsteroidType = {
     GREEN: 'green',  // Collectible - gives points on collision
     RED: 'red'       // Dangerous - lose life on collision, must be shot
 };
 
-const AsteroidSize = {
+export const AsteroidSize = {
     LARGE: { radius: 40, points: 10, speedMultiplier: 1, greenScore: 100, redScore: 0 },
     MEDIUM: { radius: 30, points: 8, speedMultiplier: 1.5, greenScore: 50, redScore: 0 },
     SMALL: { radius: 20, points: 6, speedMultiplier: 2, greenScore: 25, redScore: 0 },
@@ -157,6 +157,11 @@ export class Asteroid extends Entity {
         // Pulse effect timer for green asteroids
         this.pulseTimer = Math.random() * Math.PI * 2; // Random start phase
 
+        // Fade-in after a field refill (multiplayer modes without levels): while it lasts the
+        // asteroid is drawn translucent and can't be collected, hit or crash into anything.
+        this.fadeLeft = 0;
+        this.fadeTotal = 0;
+
         // Shape depends on the type (known before the shape is built)
         this.shapeVertices = this.generateShape(rand);
 
@@ -195,8 +200,20 @@ export class Asteroid extends Entity {
     }
 
     // Update for infinite world (no screen wrapping)
+    // Start the refill fade-in (seconds)
+    fadeIn(seconds) {
+        this.fadeTotal = Math.max(0, seconds);
+        this.fadeLeft = this.fadeTotal;
+    }
+
+    // True while fading in: not collectible and not harmful yet
+    get materialising() {
+        return this.fadeLeft > 0;
+    }
+
     updateInfinite(deltaTime) {
         if (!this.isAlive) return;
+        if (this.fadeLeft > 0) this.fadeLeft = Math.max(0, this.fadeLeft - deltaTime);
 
         // Apply rotation
         this.rotation += this.rotationSpeed * deltaTime;
@@ -215,6 +232,7 @@ export class Asteroid extends Entity {
         if (!this.isAlive) return;
         const palette = Asteroid.palette;
         ctx.save();
+        if (this.fadeLeft > 0 && this.fadeTotal > 0) ctx.globalAlpha *= 0.15 + 0.85 * (1 - this.fadeLeft / this.fadeTotal);
         ctx.translate(this.x, this.y);
         if (this.type === AsteroidType.GREEN) {
             const pulse = 0.5 + 0.5 * Math.sin(this.pulseTimer);

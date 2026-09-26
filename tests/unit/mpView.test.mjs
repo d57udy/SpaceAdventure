@@ -78,12 +78,12 @@ test('touch layout: side by side in landscape with bars >= 120 px, else rotate; 
     assert.equal(at(1024, 768, false).layout, null);
     // A landscape phone: bars too narrow
     assert.equal(at(844, 390).layout, 'sides'); // 844 - 351 = 493 / 2 = 246
-    assert.equal(at(1000, 900).layout, 'rotate'); // bar 95
+    assert.equal(at(1000, 900).layout, 'facing'); // bar 95: too narrow for side by side, switch to facing (plan §9)
     assert.equal(MP_BAR_MIN, 120);
     // Exactly at the threshold
     const canvas = 600;
     assert.equal(touchLayout({ viewportW: canvas + 2 * MP_BAR_MIN, viewportH: 667, canvasSize: canvas, touch: true }).layout, 'sides');
-    assert.equal(touchLayout({ viewportW: canvas + 2 * MP_BAR_MIN - 2, viewportH: 667, canvasSize: canvas, touch: true }).layout, 'rotate');
+    assert.equal(touchLayout({ viewportW: canvas + 2 * MP_BAR_MIN - 2, viewportH: 667, canvasSize: canvas, touch: true }).layout, 'facing');
 });
 
 test('HUD: DOM panels from 150 px bars, compact canvas HUD below; seats alternate sides', () => {
@@ -133,4 +133,65 @@ test('respawn ring fraction and device checks', () => {
     assert.equal(touchPointsWarning(4), false);
     assert.equal(touchPointsWarning(10), false);
     assert.equal(touchPointsWarning(undefined), false);
+});
+
+// --- MP-4: facing layout ---
+import {
+    resolveMpLayout, topBarHeight, layoutKey, hudColumn, joinPadTitle, rotateRect180, rotatePoint180, viewerRegions,
+    MP_LAYOUT_SETTINGS,
+} from '../../js/mpView.js';
+
+test('layout setting: auto = landscape sides / portrait facing; sides in portrait asks to rotate', () => {
+    assert.deepEqual(MP_LAYOUT_SETTINGS, ['auto', 'sides', 'facing']);
+    assert.equal(resolveMpLayout('auto', true, 175), 'sides');
+    assert.equal(resolveMpLayout('auto', false, 40), 'facing');
+    assert.equal(resolveMpLayout('auto', true, 90), 'facing'); // bars too narrow
+    assert.equal(resolveMpLayout('sides', true, 175), 'sides');
+    assert.equal(resolveMpLayout('sides', false, 40), 'rotate');
+    assert.equal(resolveMpLayout('facing', true, 175), 'facing');
+    assert.equal(resolveMpLayout('facing', false, 40), 'facing');
+    assert.equal(resolveMpLayout('bogus', false, 40), 'facing'); // unknown = auto
+});
+
+test('touch layout with a setting: portrait facing uses the top/bottom bar height', () => {
+    const at = (w, h, setting) => touchLayout({ viewportW: w, viewportH: h, canvasSize: Math.floor(Math.min(w, h) * 0.9), touch: true, setting });
+    assert.deepEqual(at(810, 1080, 'auto'), { layout: 'facing', bar: 175, landscape: false });
+    assert.deepEqual(at(810, 1080, 'sides'), { layout: 'rotate', bar: 40, landscape: false });
+    assert.deepEqual(at(1080, 810, 'facing'), { layout: 'facing', bar: 175, landscape: true });
+    assert.deepEqual(at(1080, 810, 'auto'), { layout: 'sides', bar: 175, landscape: true });
+    assert.equal(topBarHeight(1080, 729, { top: 20, bottom: 10 }), 160);
+    assert.equal(layoutKey({ layout: 'facing', landscape: false }), 'facing:P');
+    assert.notEqual(layoutKey(at(810, 1080, 'auto')), layoutKey(at(1080, 810, 'auto')));
+    assert.equal(layoutKey({ layout: null }), '');
+});
+
+test('HUD column follows the touch zone; join pad titles per layout', () => {
+    assert.equal(hudColumn('facing', 'a', 1), 'left');
+    assert.equal(hudColumn('facing', 'b', 0), 'right');
+    assert.equal(hudColumn(null, null, 0), 'left');
+    assert.equal(hudColumn(null, null, 1), 'right');
+    assert.equal(joinPadTitle('facing', 'a'), 'BOTTOM PLAYER');
+    assert.equal(joinPadTitle('facing', 'b'), 'TOP PLAYER');
+    assert.equal(joinPadTitle('sides', 'a'), 'LEFT PLAYER');
+    assert.equal(joinPadTitle(null, 'b'), 'RIGHT PLAYER');
+});
+
+test('rotated tap region: 180° about the view centre; twice is the identity', () => {
+    const r = { x: 100, y: 500, w: 200, h: 40 };
+    assert.deepEqual(rotateRect180(r, 729, 729), { x: 429, y: 189, w: 200, h: 40 });
+    assert.deepEqual(rotateRect180(rotateRect180(r, 729, 729), 729, 729), r);
+    // A point inside the region maps inside the rotated region
+    const p = rotatePoint180(150, 510, 729, 729);
+    const q = rotateRect180(r, 729, 729);
+    assert.ok(p.x >= q.x && p.x <= q.x + q.w && p.y >= q.y && p.y <= q.y + q.h);
+    // Full-width bottom half maps onto the top half
+    assert.deepEqual(rotateRect180({ x: 0, y: 364.5, w: 729, h: 364.5 }, 729, 729), { x: 0, y: 0, w: 729, h: 364.5 });
+});
+
+test('viewer regions: one upright view, or two halves in the facing layout', () => {
+    assert.deepEqual(viewerRegions('sides', 600, 600), [{ x: 0, y: 0, w: 600, h: 600, rotated: false, half: false }]);
+    assert.deepEqual(viewerRegions(null, 600, 600).length, 1);
+    const [a, b] = viewerRegions('facing', 600, 600);
+    assert.deepEqual(a, { x: 0, y: 300, w: 600, h: 300, half: true, rotated: false });
+    assert.deepEqual(b, { ...a, rotated: true });
 });

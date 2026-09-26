@@ -25,7 +25,8 @@ const round2 = (v) => Math.round(v * 100) / 100;
  * @param {number} [model.slot] - 0-based seat, shown as P1..P4
  * @param {string} [model.name]
  * @param {number} [model.score]
- * @param {number} [model.lives]
+ * @param {string} [model.scoreText] - shown instead of the score when given
+ * @param {number} [model.lives] - Infinity: unlimited
  * @param {Object<string,number>} [model.powerUps] - seconds left per power-up id
  * @param {Object<string,number>} [model.powerUpDurations] - overrides POWER_UP_INFO durations
  * @param {{count:number, multiplier:number, timer:number, maxTime:number}} [model.combo]
@@ -39,10 +40,18 @@ const round2 = (v) => Math.round(v * 100) / 100;
 export function formatSeatHud(model = {}) {
     const slot = Number.isInteger(model.slot) ? model.slot : 0;
     const name = `P${slot + 1}${model.name ? ` ${String(model.name).toUpperCase()}` : ''}`;
-    const score = String(Math.max(0, Math.floor(Number(model.score) || 0)));
+    // scoreText replaces the number (e.g. Duel shows kills: "3 KILLS")
+    const score = typeof model.scoreText === 'string' && model.scoreText
+        ? model.scoreText
+        : String(Math.max(0, Math.floor(Number(model.score) || 0)));
 
-    const livesN = Math.max(0, Math.floor(Number(model.lives) || 0));
-    const lives = livesN > MAX_LIFE_ICONS ? `${LIVES_ICON} x${livesN}` : LIVES_ICON.repeat(livesN);
+    let lives;
+    if (model.lives === Infinity) {
+        lives = `${LIVES_ICON} ∞`; // unlimited lives (Harvest, Duel)
+    } else {
+        const livesN = Math.max(0, Math.floor(Number(model.lives) || 0));
+        lives = livesN > MAX_LIFE_ICONS ? `${LIVES_ICON} x${livesN}` : LIVES_ICON.repeat(livesN);
+    }
 
     const powerUps = [];
     for (const [id, left] of Object.entries(model.powerUps || {})) {

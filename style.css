@@ -814,3 +814,192 @@ body.mp-rotate .touch-controls {
 .seat-hud [data-hud="combo"][style*="none"] + .seat-hud-combo-track {
     display: none;
 }
+
+/* ===================================================================================
+   Facing layout (plan §9): the tablet lies flat between two players. P1 (zone a) sits at
+   the bottom edge, P2 (zone b) at the top: P2's controls, HUD panel and join pad are the
+   same layout turned 180°. Stick zones are the bottom and top halves; stick visuals stay in
+   the unrotated .joystick-layer and touch directions are never rotated (finger direction
+   on the glass already matches the ship). Portrait: the bars above and below the canvas;
+   landscape: the lower (P1) and upper (P2) halves of both side bars.
+   =================================================================================== */
+body.mp-active.mp-layout-facing.mp-zone-a #joystick-zone {
+    display: block;
+    left: 0;
+    right: 0;
+    width: auto;
+    top: 50%;
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+}
+
+body.mp-active.mp-layout-facing .touch-right {
+    left: auto;
+    right: calc(8px + var(--safe-right));
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+    grid-template-columns: auto auto;
+    grid-template-areas: "hyper fire";
+    column-gap: 12px;
+    align-items: end;
+}
+
+body.mp-active.mp-layout-facing .touch-top {
+    right: auto;
+    top: auto;
+    left: calc(8px + var(--safe-left));
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+}
+
+body.mp-active.mp-layout-facing #joystick-base {
+    left: 28%; /* clear of the round clock at the bottom centre */
+    top: calc(100% - var(--mp-bar) - 110px - var(--safe-bottom));
+}
+
+body.mp-active.mp-layout-facing.mp-zone-b .touch-zone-b,
+body.mp-active.mp-layout-facing.mp-zone-b .joystick-layer {
+    display: block;
+}
+
+/* Zone B: the top half, turned 180° about its centre. Inside it "bottom" is the screen's
+   top edge and "right" the screen's left edge, so the insets swap accordingly. */
+body.mp-active.mp-layout-facing .touch-zone-b {
+    inset: 0 0 50% 0;
+    transform: rotate(180deg);
+}
+
+body.mp-active.mp-layout-facing .touch-zone-b .joystick-zone-b {
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: calc(var(--mp-edge) + var(--safe-top));
+}
+
+body.mp-active.mp-layout-facing .mp-cluster-b {
+    right: calc(8px + var(--safe-left));
+    bottom: calc(var(--mp-edge) + var(--safe-top));
+    grid-template-columns: auto auto;
+    grid-template-areas: "hyper fire";
+    column-gap: 12px;
+}
+
+body.mp-active.mp-layout-facing .touch-zone-b .mp-pause-b {
+    top: auto;
+    right: auto;
+    left: calc(8px + var(--safe-right));
+    bottom: calc(var(--mp-edge) + var(--safe-top));
+}
+
+body.mp-active.mp-layout-facing .joystick-layer .joystick-base-b {
+    left: 72%; /* mirror of P1's: P2's left hand side */
+    top: calc(var(--mp-bar) + 110px + var(--safe-top));
+}
+
+/* Landscape: the controls sit in the side bars, stacked (hyperspace above fire) */
+body.mp-active.mp-layout-facing:not(.mp-portrait) .touch-right,
+body.mp-active.mp-layout-facing:not(.mp-portrait) .mp-cluster-b {
+    grid-template-columns: auto;
+    grid-template-areas:
+        "hyper"
+        "fire";
+    row-gap: 12px;
+}
+
+body.mp-active.mp-layout-facing:not(.mp-portrait) #joystick-base {
+    left: calc(var(--mp-bar) + 100px + var(--safe-left));
+    top: calc(100% - 200px - var(--safe-bottom));
+}
+
+body.mp-active.mp-layout-facing:not(.mp-portrait) .joystick-layer .joystick-base-b {
+    left: calc(100% - var(--mp-bar) - 100px - var(--safe-right));
+    top: calc(200px + var(--safe-top));
+}
+
+/* HUD panels: P1's in the bottom bar, P2's in the top bar turned to face them */
+body.mp-layout-facing .mp-hud-col {
+    width: min(280px, calc(100vw - 380px));
+}
+
+body.mp-layout-facing.mp-portrait .mp-hud-left {
+    left: 50%;
+    top: auto;
+    bottom: calc(6px + var(--safe-bottom));
+    transform: translateX(-50%);
+}
+
+body.mp-layout-facing.mp-portrait .mp-hud-right {
+    left: 50%;
+    right: auto;
+    top: calc(6px + var(--safe-top));
+    transform: translateX(-50%) rotate(180deg);
+}
+
+body.mp-layout-facing:not(.mp-portrait) .mp-hud-col {
+    width: calc(var(--mp-bar) - 16px);
+}
+
+body.mp-layout-facing:not(.mp-portrait) .mp-hud-left {
+    top: calc(50% + 12px);
+}
+
+body.mp-layout-facing:not(.mp-portrait) .mp-hud-right {
+    top: auto;
+    bottom: calc(50% + 12px);
+    transform: rotate(180deg);
+}
+
+/* Portrait bars are short: a more compact panel */
+body.mp-layout-facing.mp-portrait .seat-hud {
+    font-size: 15px;
+    line-height: 1.15;
+    max-height: calc(var(--mp-bar) - 12px);
+}
+
+body.mp-layout-facing.mp-portrait .seat-hud [data-hud="score"] {
+    font-size: 20px;
+}
+
+/* Lobby join pads: bottom and top (rotated) */
+body.touch-enabled.state-lobby.mp-touch-lobby.mp-layout-facing .mp-join-pads {
+    display: block;
+}
+
+body.mp-layout-facing.mp-portrait .touch-btn.join-pad {
+    left: 50%;
+    right: auto;
+    width: min(360px, 80vw);
+    height: calc(var(--mp-bar) - 16px);
+}
+
+body.mp-layout-facing.mp-portrait #join-pad-a {
+    left: 50%;
+    right: auto;
+    top: auto;
+    bottom: calc(8px + var(--safe-bottom));
+    transform: translateX(-50%);
+}
+
+body.mp-layout-facing.mp-portrait #join-pad-b {
+    left: 50%;
+    right: auto;
+    top: calc(8px + var(--safe-top));
+    transform: translateX(-50%) rotate(180deg);
+}
+
+body.mp-layout-facing:not(.mp-portrait) .touch-btn.join-pad {
+    height: min(220px, calc(50vh - 40px));
+}
+
+body.mp-layout-facing:not(.mp-portrait) #join-pad-a {
+    top: auto;
+    bottom: calc(var(--mp-edge) + var(--safe-bottom));
+    transform: none;
+}
+
+body.mp-layout-facing:not(.mp-portrait) #join-pad-b {
+    top: calc(var(--mp-edge) + var(--safe-top));
+    transform: rotate(180deg);
+}
+
+/* Results after a facing round: the canvas draws both copies; hide the single-player HUD line */
+body.mp-results-facing .ui-overlay {
+    display: none;
+}

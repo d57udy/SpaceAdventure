@@ -146,3 +146,10 @@ test('elements can be injected directly and missing ones are skipped', () => {
     assert.equal(score.textContent, '1234');
     assert.equal(view.writes, 1);
 });
+
+test('unlimited lives show ∞; scoreText replaces the score (Duel kills)', () => {
+    const h = formatSeatHud({ slot: 1, name: 'bob', score: 250, lives: Infinity, scoreText: '3 KILLS' });
+    assert.equal(h.lives, '▲ ∞');
+    assert.equal(h.score, '3 KILLS');
+    assert.equal(formatSeatHud({ score: 250, scoreText: '' }).score, '250');
+});

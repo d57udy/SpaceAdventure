@@ -3,7 +3,8 @@
 //
 //   hull marks     a per-seat mark on the ship hull, so colour is never the only cue
 //   side bars      the space left and right of the square canvas (tablet controls, HUD panels)
-//   touch layout   side by side in landscape when the bars are wide enough, else "rotate"
+//   touch layout   side by side, facing (P2 rotated 180°) or "rotate", from the mpLayout setting
+//   viewers        per-viewer regions and 180° rotated tap regions for the facing layout
 //   edge arrows    where to point at a ship or revive beacon that is outside the view
 //   devices        multi-touch warning and the iPad gesture hint
 
@@ -67,21 +68,104 @@ export function sideBarWidth(viewportW, canvasSize, safe = {}) {
     return Math.max(0, Math.floor((avail - canvasSize) / 2));
 }
 
+/** Layout settings (settings.js 'mpLayout'): auto picks by orientation. */
+export const MP_LAYOUT_SETTINGS = Object.freeze(['auto', 'sides', 'facing']);
+
 /**
- * Which touch layout applies (plan §9; the facing layout comes later).
+ * Height of the bars above and below the centred square canvas (portrait facing layout).
+ * @param {number} viewportH window.innerHeight
+ * @param {{top?:number, bottom?:number}} [safe]
+ */
+export function topBarHeight(viewportH, canvasSize, safe = {}) {
+    const avail = viewportH - (safe.top || 0) - (safe.bottom || 0);
+    return Math.max(0, Math.floor((avail - canvasSize) / 2));
+}
+
+/**
+ * Layout for a setting and orientation (plan §9):
+ *   auto   - landscape: side by side (facing when the side bars are narrower than MP_BAR_MIN);
+ *            portrait: facing
+ *   sides  - landscape: side by side (facing when the bars are too narrow); portrait: 'rotate'
+ *            (ask to turn the device, or choose Facing)
+ *   facing - facing in both orientations
+ * @returns {'sides'|'facing'|'rotate'}
+ */
+export function resolveMpLayout(setting, landscape, sideBar) {
+    const s = MP_LAYOUT_SETTINGS.includes(setting) ? setting : 'auto';
+    if (s === 'facing') return 'facing';
+    if (landscape) return sideBar >= MP_BAR_MIN ? 'sides' : 'facing';
+    return s === 'sides' ? 'rotate' : 'facing';
+}
+
+/**
+ * Which touch layout applies (plan §9).
  * @param {object} o
  * @param {number} o.viewportW @param {number} o.viewportH
  * @param {number} o.canvasSize
- * @param {{left?:number, right?:number}} [o.safe]
+ * @param {{left?:number, right?:number, top?:number, bottom?:number}} [o.safe] safe-area insets
  * @param {boolean} o.touch - touch players take part (or may join, in the lobby)
- * @returns {{layout:'sides'|'rotate'|null, bar:number, landscape:boolean}}
- *   null: no touch players; 'sides': controls in the bars; 'rotate': ask to turn the device.
+ * @param {'auto'|'sides'|'facing'} [o.setting='sides'] - the mpLayout setting
+ * @returns {{layout:'sides'|'facing'|'rotate'|null, bar:number, landscape:boolean}}
+ *   null: no touch players; 'sides': controls in the side bars; 'facing': P1 at the bottom, P2
+ *   at the top (rotated); 'rotate': ask to turn the device. `bar` is the bar the layout uses:
+ *   the side bar width, or in portrait facing the top/bottom bar height.
  */
-export function touchLayout({ viewportW, viewportH, canvasSize, safe = {}, touch }) {
-    const bar = sideBarWidth(viewportW, canvasSize, safe);
+export function touchLayout({ viewportW, viewportH, canvasSize, safe = {}, touch, setting = 'sides' }) {
+    const side = sideBarWidth(viewportW, canvasSize, safe);
     const landscape = viewportW > viewportH;
-    if (!touch) return { layout: null, bar, landscape };
-    return { layout: landscape && bar >= MP_BAR_MIN ? 'sides' : 'rotate', bar, landscape };
+    if (!touch) return { layout: null, bar: side, landscape };
+    const layout = resolveMpLayout(setting, landscape, side);
+    const bar = layout === 'facing' && !landscape ? topBarHeight(viewportH, canvasSize, safe) : side;
+    return { layout, bar, landscape };
+}
+
+/** Key that changes when a running round has to be laid out again (auto-pause on rotation). */
+export function layoutKey(state) {
+    if (!state || !state.layout) return '';
+    return `${state.layout}:${state.landscape ? 'L' : 'P'}`;
+}
+
+/**
+ * HUD column ('left' | 'right') for a player. In the facing layout the 'left' column is the
+ * bottom player's (zone a) and the 'right' column the top player's (zone b, rotated), so a
+ * touch player's HUD follows the zone they sit in; everyone else goes by seat (hudSide).
+ */
+export function hudColumn(layout, zone, seat) {
+    if (zone === 'a') return 'left';
+    if (zone === 'b') return 'right';
+    return hudSide(seat);
+}
+
+/** Title of a lobby join pad for the layout. */
+export function joinPadTitle(layout, zone) {
+    if (layout === 'facing') return zone === 'a' ? 'BOTTOM PLAYER' : 'TOP PLAYER';
+    return zone === 'a' ? 'LEFT PLAYER' : 'RIGHT PLAYER';
+}
+
+/**
+ * A rectangle turned 180° about the centre of a W x H view (the facing player's copy of a
+ * tap region drawn under a 180° rotation).
+ * @param {{x:number, y:number, w:number, h:number}} r
+ */
+export function rotateRect180(r, W, H) {
+    return { x: W - r.x - r.w, y: H - r.y - r.h, w: r.w, h: r.h };
+}
+
+/** A point turned 180° about the centre of a W x H view. */
+export function rotatePoint180(x, y, W, H) {
+    return { x: W - x, y: H - y };
+}
+
+/**
+ * Regions to draw centre texts, banners and menus in, one per viewer (plan §11).
+ * Not facing: the whole view, upright. Facing: the bottom half upright for the bottom player,
+ * and the same half drawn under a 180° rotation for the top player (it lands on the top half).
+ * @returns {Array<{x:number, y:number, w:number, h:number, rotated:boolean, half:boolean}>}
+ */
+export function viewerRegions(layout, W, H) {
+    if (layout !== 'facing') return [{ x: 0, y: 0, w: W, h: H, rotated: false, half: false }];
+    const half = { x: 0, y: H / 2, w: W, h: H / 2, half: true };
+    return [{ ...half, rotated: false }, { ...half, rotated: true }];
 }
 
 /** 'dom' (panels in the side bars) or 'canvas' (compact HUD in the canvas corners). */

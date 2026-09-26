@@ -1,6 +1,6 @@
 // Co-op on one tablet, side by side (plan 05 §8 pointer routing, §9 layouts, §10.2 join pads,
 // §13.2 MP-3). Runs on iPad landscape (WebKit) and Chromium with touch; the portrait iPad
-// project only checks the "Rotate to landscape" prompt.
+// project only checks that the lobby switches to the facing layout (mp-facing.spec.js covers it).
 import { test, expect } from '@playwright/test';
 import {
   MENU, openFresh, hook, waitForState, frames, loginWithTouch, tapAt, menuItemCenter, tapRegionCenter,
@@ -23,7 +23,7 @@ async function openCoopTouchLobby(page, { hard = false } = {}) {
   }
   await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
   await waitForState(page, 'mp_mode_select');
-  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'coop', 'timeattack', 'back']);
+  expect(await hook(page, 'mp.modeSelect.rows')).toEqual(['turns', 'coop', 'harvest', 'duel', 'timeattack', 'back']);
   await tapAt(page, await tapRegionCenter(page, 1));
   await waitForState(page, 'lobby');
   expect(await hook(page, 'lobby')).toMatchObject({ kind: 'seats', modeId: 'coop' });
@@ -298,13 +298,20 @@ test.describe('co-op on a portrait tablet', () => {
     test.skip(isLandscape(page), 'portrait only');
   });
 
-  test('the lobby asks to rotate to landscape; no join pads', async ({ page }) => {
+  test('the lobby uses the facing layout (Auto): join pads at the bottom and top, no rotate prompt', async ({ page }) => {
     const errors = await openCoopTouchLobby(page);
-    expect(await hook(page, 'mp.layout')).toBe('rotate');
-    await expect(page.locator('#mp-rotate-prompt')).toBeVisible();
-    await expect(page.locator('#mp-rotate-prompt')).toContainText('Rotate to landscape');
-    await expect(page.locator('#join-pad-a')).toBeHidden();
-    await page.screenshot({ path: `tests/screenshots/${test.info().project.name}-coop-rotate.png` });
+    expect(await hook(page, 'mp.layout')).toBe('facing');
+    expect(await hook(page, 'mp.layoutSetting')).toBe('auto');
+    await expect(page.locator('#mp-rotate-prompt')).toBeHidden();
+    await expect(page.locator('#join-pad-a')).toBeVisible();
+    await expect(page.locator('#join-pad-b')).toBeVisible();
+    await expect(page.locator('#join-pad-a .join-pad-title')).toHaveText('BOTTOM PLAYER');
+    await expect(page.locator('#join-pad-b .join-pad-title')).toHaveText('TOP PLAYER');
+    const canvas = await page.locator('#gameCanvas').boundingBox();
+    const a = await page.locator('#join-pad-a').boundingBox();
+    const b = await page.locator('#join-pad-b').boundingBox();
+    expect(a.y).toBeGreaterThanOrEqual(canvas.y + canvas.height - 1);
+    expect(b.y + b.height).toBeLessThanOrEqual(canvas.y + 1);
     expect(errors).toEqual([]);
   });
 });

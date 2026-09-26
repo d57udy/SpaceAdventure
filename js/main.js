@@ -33,15 +33,19 @@ import {
     serializeLineup, parseLineup, LINEUP_KEY,
 } from './lobby.js';
 import { buildResults, resultBanner, historyEntry } from './mpResults.js';
-import { MP_KEYS, addHistory, addToBoard, recordRivalry, isHistory, isBoard, isRivalry } from './mpRecords.js';
+import { MP_KEYS, addHistory, addToBoard, recordRivalry, rivalryKey, isHistory, isBoard, isRivalry } from './mpRecords.js';
 import { formatSeatHud, SeatHudView } from './hud.js';
 import {
     hullMarkFor, touchLayout, hudMode, hudSide, compactHudCorner, edgeArrow, respawnFraction, isIpad,
-    touchPointsWarning,
+    touchPointsWarning, layoutKey, hudColumn, joinPadTitle, rotateRect180, viewerRegions, MP_LAYOUT_SETTINGS,
 } from './mpView.js';
-import { initPwa } from './pwa.js';
+import {
+    BUMP, bumpShips, bumpPairKey, tickBumpCooldowns, countField, planFieldRefill, findFieldSpawn, versusStartPoint,
+    modeOption, formatOption, cycleValue, roundOptionsFor, roundClock,
+} from './versus.js';
+import { initPwa, isLocalhost } from './pwa.js';
 import { createPwaUi } from './pwaUi.js';
-import { createAsteroidField } from './asteroid.js';
+import { createAsteroidField, AsteroidSize, AsteroidType } from './asteroid.js';
 import { GhostRecorder, GhostPlayer, decodeGhost, ghostStorageKey } from './ghost.js';
 import {
     TIME_ATTACK, stepCourse, createSeededWorld, ghostKeysForCourse, isGhostRecord, makeGhostRecord, isBetterRun,
@@ -484,11 +488,12 @@ let mode = MODES.solo;
 let round = null;
 let lastLobby = null;
 let lastRoundResult = null;
-function createRound(m) {
-    const timer = m.timer ? m.timer.default : null;
+// options: the lobby's choices (js/versus.js roundOptionsFor): roundSeconds (Harvest), target (Duel)
+function createRound(m, options = {}) {
+    const timer = m.timer ? (debugRoundSeconds(m) ?? options.roundSeconds ?? m.timer.default) : null;
     return {
         elapsed: 0, timeLeft: timer, phase: 'normal', overtimeLeft: null, overtimeWinner: null,
-        difficulty: selectedDifficulty.id, target: null,
+        difficulty: selectedDifficulty.id, target: options.target ?? null,
     };
 }
 // Numbers for this mode, player count and level (single-player: today's constants)
@@ -967,10 +972,12 @@ function getPauseMenuOptions() {
 // --- Local multiplayer (docs/plans/05-local-multiplayer.md §5, §10, §11) ---
 // MENU ─Multiplayer─► MP_MODE_SELECT ─► LOBBY ─► (TURN_CHANGE ⇄) PLAYING ⇄ PAUSED
 // PLAYING ─round over─► ROUND_END (2 s slow motion) ─► RESULTS ─► Rematch (LOBBY) / Change mode / Main menu
-const MP_MODE_IDS = ['turns', 'coop']; // playable modes, in the order shown on the mode select screen
+const MP_MODE_IDS = ['turns', 'coop', 'harvest', 'duel']; // playable modes, in the order shown on the mode select screen
 const MP_MODE_INFO = {
     turns: ['2 to 4 players pass one device.', 'One ship at a time; the highest score wins.'],
     coop: ['2 to 4 players fly together, each with their own ship.', 'Fly close to a fallen wingman to revive them.'],
+    harvest: ['2 players race to collect the most crystals.', 'Shoot a crystal to deny it; ships bump, no friendly fire.'],
+    duel: ['2 players, one hit kills: first to 5 wins.', 'Crystals give shield time; your own shots never hit you.'],
     timeattack: ['One player, 3 minutes on a numbered course.', 'Race the best run on this device.'],
 };
 const MP_PAUSE_OPTIONS = ['Resume', 'Restart round', 'Change players', 'Main menu'];
@@ -1131,6 +1138,9 @@ function handleLobbyInput(deltaTime) {
         requestLobbyExit();
         if (currentGameState !== GameState.LOBBY) return;
     }
+    // Lobby options (not bound to a seat): O steps the mode's option, L the tablet layout
+    if (inputHandler.consumeAction('key_O')) changeLobbyOption(1);
+    if (inputHandler.consumeAction('key_L')) settings.cycle('mpLayout', 1);
     if (tickLobby(lobby, deltaTime) === 'start') startFromLobby();
 }
 // Start the round with the lobby's players (in seat order)
@@ -1142,13 +1152,14 @@ function startFromLobby() {
     const kind = lobby.kind;
     saveLineup(m.id, kind, lineup);
     const shared = m.kind === 'turns'; // one set of controls, passed around
+    const options = roundOptionsFor(m, mpOptions[m.id]); // Harvest round length, Duel kill target
     const entries = lineup.map(e => ({
         name: e.name, profile: e.profile, colour: seatColour(e.colour), colourIndex: e.colour,
         bindingId: e.source, ...(shared ? {} : { seat: e.seat }),
     }));
     if (lineup.some(e => typeof e.source === 'string' && e.source.startsWith('touch:'))) markGestureHintSeen();
     lobby = null;
-    startGame(m.id, { kind, players: entries });
+    startGame(m.id, { kind, players: entries, options });
 }
 
 // --- Take Turns: one world per player, parked while the others play (plan §4.1) ---
@@ -1301,7 +1312,10 @@ function saveMultiplayerRecords(results) {
             const w = rows.find(r => r.winner);
             if (w) {
                 const entry = { score: w.score, name: w.name, profile: w.profile, date: results.date };
-                pm.saveJson(MP_KEYS.boardHarvest, addToBoard(pm.loadJson(MP_KEYS.boardHarvest, isBoard, []), entry));
+                const board = addToBoard(pm.loadJson(MP_KEYS.boardHarvest, isBoard, []), entry);
+                pm.saveJson(MP_KEYS.boardHarvest, board);
+                const rank = board.indexOf(entry);
+                results.boardRank = rank === -1 ? null : rank + 1;
             }
         }
         if (mode.kind !== 'coop' && rows.length > 1) {
@@ -1310,10 +1324,21 @@ function saveMultiplayerRecords(results) {
             const rivalry = recordRivalry(pm.loadJson(MP_KEYS.rivalry, isRivalry, {}), mode.id,
                 rows.map(r => ({ name: r.name, profile: r.profile })), winner);
             pm.saveJson(MP_KEYS.rivalry, rivalry);
+            results.rivalry = rivalryLine(rivalry, rows, mode.id);
         }
     } catch (e) {
         console.error('Saving multiplayer records failed:', e);
     }
+}
+// "TESTER 3 – 1 ALICE (Duel, this device)" for two profiled players, else null
+function rivalryLine(rivalry, rows, modeId) {
+    const named = rows.filter(r => r.profile);
+    if (named.length !== 2) return null;
+    const rec = (rivalry[rivalryKey(named[0].profile, named[1].profile)] || {})[modeId];
+    if (!rec) return null;
+    const w = (r) => (rec.wins && rec.wins[String(r.profile).toUpperCase()]) || 0;
+    const draws = rec.draws ? `, ${rec.draws} drawn` : '';
+    return `Head to head: ${named[0].name} ${w(named[0])} – ${w(named[1])} ${named[1].name}${draws}`;
 }
 function openResults() {
     currentBoss = null;
@@ -1408,7 +1433,9 @@ function revivePlayer(p, beacon, by) {
 // While a co-op ship waits to respawn, pick the spot near the team where it will appear
 // (shown by the respawn ring). The spot is kept while it stays clear of hazards.
 function updateRespawnSpots() {
-    if (!simultaneous() || mode.respawn.placement !== 'nearTeam') return;
+    if (!simultaneous()) return;
+    const placement = mode.respawn.placement;
+    if (placement !== 'nearTeam' && placement !== 'furthestFromOpponents') return;
     const hazards = spawnHazards();
     const clear = (pt) => hazards.every(h => Math.hypot(wrapDelta(pt.x - h.x, WORLD_WIDTH), wrapDelta(pt.y - h.y, WORLD_HEIGHT))
         - (h.radius || 0) >= SAFE_SPAWN_RADIUS);
@@ -1416,6 +1443,11 @@ function updateRespawnSpots() {
         if (!(p.respawnTimer > 0) || p.out) {
             p.respawnAt = null;
             p.respawnSlot = null;
+            continue;
+        }
+        if (placement === 'furthestFromOpponents') {
+            // Harvest, Duel: the grid point furthest from the other ships, clear of hazards
+            p.respawnAt = versusRespawnPoint(p, hazards);
             continue;
         }
         const c = cameraCentre();
@@ -1454,33 +1486,53 @@ function simultaneousRound() {
     return isMultiplayer() && simultaneous() && inRound();
 }
 
+let lastRoundZones = [];      // touch zones of the last simultaneous round (Results keep its layout)
+let lastRoundLayoutKey = '';  // layout of the running round; a change (rotation) pauses it
 function syncMpDom() {
     const roundSim = simultaneousRound();
     const touchLobby = touchLobbyActive();
-    const zones = roundSim || touchLobby ? touchZonesJoined() : [];
+    let zones = roundSim || touchLobby ? touchZonesJoined() : [];
+    if (roundSim) lastRoundZones = zones;
+    else if (!touchLobby) {
+        // Results after a touch round: drawn per viewer like the round was
+        const resultsTouch = currentGameState === GameState.RESULTS && isMultiplayer() && simultaneous();
+        if (!resultsTouch) lastRoundZones = [];
+        zones = resultsTouch ? lastRoundZones : [];
+    }
     const lay = touchLayout({
         viewportW: window.innerWidth, viewportH: window.innerHeight, canvasSize: viewWidth, safe: lastSafeInsets,
-        touch: touchLobby || (roundSim && zones.length > 0),
+        touch: touchLobby || zones.length > 0, setting: settings.get('mpLayout'),
     });
     const hud = roundSim ? hudMode(lay.bar) : null;
     mpLayoutState = { ...lay, hud, zones };
-    const key = [roundSim, touchLobby, lay.layout, lay.bar, zones.join(''), hud].join('|');
+    const key = [currentGameState === GameState.RESULTS, roundSim, touchLobby, lay.layout, lay.bar, lay.landscape, zones.join(''), hud].join('|');
     if (key !== mpDomKey) {
         mpDomKey = key;
         const body = document.body;
-        body.classList.toggle('mp-active', roundSim || touchLobby);
+        const active = roundSim || touchLobby;
+        body.classList.toggle('mp-active', active);
         body.classList.toggle('mp-round', roundSim);
         body.classList.toggle('mp-touch-lobby', touchLobby);
-        body.classList.toggle('mp-layout-sides', lay.layout === 'sides');
-        body.classList.toggle('mp-rotate', lay.layout === 'rotate');
-        body.classList.toggle('mp-zone-a', zones.includes('a'));
-        body.classList.toggle('mp-zone-b', zones.includes('b'));
+        body.classList.toggle('mp-layout-sides', active && lay.layout === 'sides');
+        body.classList.toggle('mp-layout-facing', active && lay.layout === 'facing');
+        body.classList.toggle('mp-portrait', !lay.landscape);
+        body.classList.toggle('mp-rotate', active && lay.layout === 'rotate');
+        body.classList.toggle('mp-zone-a', roundSim && zones.includes('a'));
+        body.classList.toggle('mp-zone-b', roundSim && zones.includes('b'));
         body.classList.toggle('mp-hud-dom', hud === 'dom');
+        body.classList.toggle('mp-results-facing', !roundSim && !touchLobby && lay.layout === 'facing' && zones.length > 0);
         body.style.setProperty('--mp-bar', `${lay.bar}px`);
     }
-    // Touch players in portrait: pause until the device is turned back to landscape
-    if (roundSim && zones.length > 0 && lay.layout === 'rotate' && currentGameState === GameState.PLAYING) {
-        pauseGame('system');
+    if (roundSim && zones.length > 0) {
+        // Touch players: explicit side by side in portrait pauses until the device is turned back;
+        // any other layout change mid-round (a rotation) pauses so everyone can settle, and play
+        // resumes from the pause menu with the countdown.
+        const lk = layoutKey(lay);
+        const changed = lastRoundLayoutKey && lk !== lastRoundLayoutKey;
+        lastRoundLayoutKey = lk;
+        if ((lay.layout === 'rotate' || changed) && currentGameState === GameState.PLAYING) pauseGame('system');
+    } else if (!inRound()) {
+        lastRoundLayoutKey = '';
     }
     syncSeatHudPanels(roundSim && hud === 'dom');
     if (touchLobby) updateJoinPads();
@@ -1489,7 +1541,7 @@ function syncMpDom() {
 // Per-player HUD panels (js/hud.js SeatHudView writes only what changed)
 const seatHud = { key: '', views: [] };
 function syncSeatHudPanels(show) {
-    const key = show ? players.map(p => `${p.id}:${p.number}:${p.colour}:${p.name}`).join('|') : '';
+    const key = show ? players.map(p => `${p.id}:${p.number}:${p.colour}:${p.name}:${hudColumnFor(p)}`).join('|') : '';
     if (key !== seatHud.key) {
         seatHud.key = key;
         seatHud.views = [];
@@ -1506,13 +1558,18 @@ function syncSeatHudPanels(show) {
             panel.innerHTML = '<div class="seat-hud-stripe"></div><div data-hud="name"></div><div data-hud="score"></div>'
                 + '<div data-hud="lives"></div><div class="seat-hud-chips" data-hud="powerUps"></div><div data-hud="combo"></div>'
                 + '<div class="seat-hud-combo-track"><div data-hud="comboBar"></div></div><div data-hud="status"></div>';
-            cols[hudSide(p.number - 1)].appendChild(panel);
+            cols[hudColumnFor(p)].appendChild(panel);
             seatHud.views.push({ p, view: new SeatHudView(panel) });
         }
     }
     for (const { p, view } of seatHud.views) view.update(formatSeatHud(seatHudModel(p)));
 }
 
+// HUD column of a player: a touch player's follows their zone (facing: left = bottom, right = top)
+function hudColumnFor(p) {
+    const src = typeof p.bindingId === 'string' && p.bindingId.startsWith('touch:') ? p.bindingId.slice(6) : null;
+    return hudColumn(mpLayoutState.layout, src, p.number - 1);
+}
 const POWER_UP_DURATIONS = Object.fromEntries(Object.values(PowerUpType).map(t => [t.id, t.duration]));
 function seatHudModel(p) {
     const mult = p.upgrades ? p.upgrades.getPowerUpDurationMult() : 1;
@@ -1524,7 +1581,9 @@ function seatHudModel(p) {
     else if (b && b.progress > 0) status = `REVIVING ${Math.round((b.progress / REVIVE.time) * 100)}%`;
     else if (currentGameState === GameState.PAUSED && pausedBy === p.number - 1) status = 'PAUSED (by you)';
     return {
-        slot: p.number - 1, name: p.name, score: p.score, lives: p.lives, powerUps: p.powerUps,
+        slot: p.number - 1, name: p.name, score: p.score, powerUps: p.powerUps,
+        lives: mode.lives.type === 'unlimited' ? Infinity : p.lives,
+        scoreText: mode.winCondition === 'kills' ? `${p.stats.kills} ${p.stats.kills === 1 ? 'KILL' : 'KILLS'}` : null,
         powerUpDurations: durations, combo: p.combo, paused: currentGameState === GameState.PAUSED,
         out: p.out, respawnTimer: p.respawnTimer, status,
     };
@@ -1565,7 +1624,7 @@ function updateJoinPads() {
         const colourIndex = card ? inputHandler.seats.colourOf(seat) : null;
         return { zone, seat, card, colour: card ? seatColour(colourIndex) : '' };
     });
-    const key = JSON.stringify(info.map(i => [i.seat, i.card && i.card.name, i.card && i.card.ready, i.colour]));
+    const key = JSON.stringify([mpLayoutState.layout, ...info.map(i => [i.seat, i.card && i.card.name, i.card && i.card.ready, i.colour])]);
     if (key === joinPadKey) return;
     joinPadKey = key;
     for (const { zone, seat, card, colour } of info) {
@@ -1577,7 +1636,7 @@ function updateJoinPads() {
         else pad.style.removeProperty('--seat-colour');
         const title = pad.querySelector('.join-pad-title');
         const text = pad.querySelector('.join-pad-text');
-        if (title) title.textContent = card ? `P${seat + 1} ${card.name}` : (zone === 'a' ? 'LEFT PLAYER' : 'RIGHT PLAYER');
+        if (title) title.textContent = card ? `P${seat + 1} ${card.name}` : joinPadTitle(mpLayoutState.layout, zone);
         if (text) text.textContent = !card ? 'Tap to join' : card.ready ? 'READY' : 'Tap when ready';
     }
 }
@@ -2266,6 +2325,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 count: info.count, seen: gamepadSeen, rumbles: rumbleStats.calls, lastRumble: rumbleStats.last };
         },
         get toasts() { return toasts.map(t => t.text); },
+        // Floating texts on screen now (e.g. 'DENIED' in the shooter's colour)
+        get floatingTexts() { return FloatingTexts.texts.map(t => ({ text: t.text, colour: t.color })); },
         get audioState() { return audioManager.audioContext ? audioManager.audioContext.state : 'none'; },
         get tutorial() {
             const rec = tutorialRecord();
@@ -2310,6 +2371,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 id: mode.id, name: mode.name, kind: mode.kind,
                 elapsed: round ? round.elapsed : 0, timeLeft: round ? round.timeLeft : null,
                 phase: round ? round.phase : null, result: lastRoundResult ? { ...lastRoundResult } : null,
+                overtimeLeft: round ? round.overtimeLeft : null, overtimeWinner: round ? round.overtimeWinner : null,
+                target: round ? round.target : null, friendlyFire: mode.friendlyFire, shipBump: mode.shipBump,
             };
         },
         get bulletsByOwner() {
@@ -2321,10 +2384,13 @@ document.addEventListener('DOMContentLoaded', () => {
         get camera() { return { x: camera.cx, y: camera.cy, left: camera.x, top: camera.y, zoom: camera.zoom }; },
         // Asteroids in the current world (position, type, radius)
         get asteroids() {
-            return asteroids.filter(a => a.isAlive).map(a => ({ x: a.x, y: a.y, velX: a.velX, velY: a.velY, type: a.type, radius: a.radius }));
+            return asteroids.filter(a => a.isAlive).map(a => ({ x: a.x, y: a.y, velX: a.velX, velY: a.velY, type: a.type, radius: a.radius,
+                materialising: !!a.materialising }));
         },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
-        get tapRegions() { return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })); },
+        get tapRegions() {
+            return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h, id: r.id ?? null, rotated: !!r.rotated }));
+        },
         isPressed(action) { return inputHandler.isPressed(action); },
         isPressedSeat(action, seat) { return inputHandler.isPressed(action, seat); },
         joystickFor(seat) { return inputHandler.getJoystick(seat); },
@@ -2336,6 +2402,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 modeSelect: { index: mpModeIndex, rows: mpModeRows().map(r => r.id) },
                 lineup: savedLineup() ? JSON.parse(JSON.stringify(savedLineup())) : null,
                 layout: mpLayoutState.layout, bar: mpLayoutState.bar, hud: mpLayoutState.hud,
+                landscape: mpLayoutState.landscape, layoutSetting: settings.get('mpLayout'),
+                versus: {
+                    bumps: versus.bumps, spawned: versus.spawned, intro: versus.intro, phaseBanner: versus.phaseBanner,
+                    field: countField(asteroids), materialising: asteroids.filter(a => a.isAlive && a.materialising).length,
+                },
                 zones: mpLayoutState.zones.slice(), simultaneous: simultaneousRound(),
                 cameraSingleInstant: !!camera.options.singleInstant,
                 scaling: { ...currentScaling() }, boss: currentBoss ? { maxHealth: currentBoss.maxHealth } : null,
@@ -2465,7 +2536,8 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     console.log(`Starting New Game (User: ${currentUser}, Mode: ${mode.id}, Difficulty: ${selectedDifficulty.name})`);
     // Fresh player records (score 0, extra-life threshold reset); upgrade: extra starting lives
     players = buildPlayers(lobby);
-    round = createRound(mode);
+    round = createRound(mode, (lobby && lobby.options) || {});
+    resetVersus();
     level = 1;
     setupTimeAttackRun(); // seeded world, recorder and ghost (Time Attack); clears them otherwise
     bullets = [];
@@ -2500,6 +2572,8 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     if (withTutorial) {
         level = 0; // HUD shows "Training"; targets are spawned step by step
         processTutorialRequests(tutorial.start());
+    } else if (fieldMode()) {
+        createFieldAsteroids(); // Harvest, Duel: a fixed field, topped up during the round
     } else {
         createLevelAsteroids();
     }
@@ -2515,8 +2589,9 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
     pauseMenuSelectionIndex = 0;
     pausedGameExists = false;
 
-    // Show initial level notification
-    levelUpNotificationTimer = withTutorial ? 0 : LEVEL_UP_NOTIFICATION_DURATION;
+    // Show initial level notification (modes without levels show their rules banner instead)
+    levelUpNotificationTimer = withTutorial || fieldMode() ? 0 : LEVEL_UP_NOTIFICATION_DURATION;
+    if (fieldMode()) versus.intro = VERSUS_INTRO_SECONDS;
     syncTutorialDom();
     mode.hooks.onStart(round, players);
 }
@@ -2856,6 +2931,7 @@ function handleShipInput(p, deltaTime) {
         if (bullets.length > bulletCountBefore) {
             DynamicDifficulty.trackShotFired();
             p.stats.shots++;
+            if (p.spawnGrace) endSpawnGrace(p); // Duel: firing cancels respawn invulnerability
         }
 
         // Triple shot: add 2 more bullets at angles if power-up active and we fired
@@ -3173,6 +3249,7 @@ function updateGame(deltaTime) {
     }
 
     for (const p of activePlayers()) updateShip(p, deltaTime);
+    updateShipBumps(deltaTime); // Harvest, Duel: ships bounce off each other
     updateCamera(deltaTime);
 
     // Update asteroids and wrap their positions
@@ -3239,6 +3316,7 @@ function updateGame(deltaTime) {
 
     checkCollisions();
     if (currentGameState === GameState.PLAYING) updateBeacons(deltaTime);
+    if (currentGameState === GameState.PLAYING) updateFieldRefill(deltaTime); // levels off: top the field up
 
     bullets = bullets.filter(bullet => bullet.isAlive);
     asteroids = asteroids.filter(asteroid => asteroid.isAlive);
@@ -3464,14 +3542,19 @@ function drawMpWorldOverlays() {
 // when the side bars are too narrow for the DOM panels
 function drawTeamHud() {
     ctx.save();
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-    ctx.font = 'bold 22px Arial';
-    ctx.fillText(`TEAM ${teamScore(players)}`, viewWidth / 2, 28);
-    ctx.font = '14px Arial';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.fillText(`LEVEL ${level}`, viewWidth / 2, 46);
+    if (isVersus() && round) {
+        // Round clock (flashes in the last 10 s), rules line, start and overtime banners
+        drawForViewers((region) => { drawVersusHud(region); drawVersusBanner(region); });
+    } else {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.font = 'bold 22px Arial';
+        ctx.fillText(`TEAM ${teamScore(players)}`, viewWidth / 2, 28);
+        ctx.font = '14px Arial';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.fillText(`LEVEL ${level}`, viewWidth / 2, 46);
+    }
     if (mpLayoutState.hud !== 'dom') {
         for (const p of players) drawCompactSeatHud(p);
     }
@@ -4052,7 +4135,7 @@ function checkShipCollisions(p) {
     if (ship && ship.isAlive && !ship.isInvulnerable) {
         const collectRadius = ship.radius * p.upgrades.getCollectionRadiusMult();
         for (const asteroid of asteroids) {
-            if (!asteroid.isAlive) continue;
+            if (!asteroid.isAlive || asteroid.materialising) continue; // fading in: not there yet
             // Collection Radius upgrade enlarges the pickup range for green asteroids only
             let touching;
             if (asteroid.isGreen()) {
@@ -4170,16 +4253,21 @@ function checkShipCollisions(p) {
         }
 
         for (const bullet of bullets) {
-            if (bullet.isAlive && !bullet.isPlayerBullet && ship.collidesWith(bullet)) {
+            if (!bullet.isAlive) continue;
+            // Friendly fire (Duel): another player's bullet hits too; your own never does
+            const pvp = bullet.isPlayerBullet && mode.friendlyFire && bullet.ownerId !== null && bullet.ownerId !== p.id;
+            if ((!bullet.isPlayerBullet || pvp) && ship.collidesWith(bullet)) {
+                const shooter = pvp ? bulletOwner(bullet) : null;
+                if (shooter) shooter.stats.hits++;
                 if (p.powerUps.shield > 0) {
-                    console.log("Collision: Ship <-> UFO Bullet (Shield blocked!)");
+                    console.log("Collision: Ship <-> Bullet (Shield blocked!)");
                     p.powerUps.shield = 0;
                     vibrate('shieldHit');
                     ship.makeInvulnerable(1);
                     bullet.destroy();
                 } else {
-                    console.log("Collision: Ship <-> UFO Bullet");
-                    handlePlayerDeath(p);
+                    console.log(pvp ? "Collision: Ship <-> Player Bullet" : "Collision: Ship <-> UFO Bullet");
+                    handlePlayerDeath(p, false, shooter);
                     bullet.destroy();
                     return true;
                 }
@@ -4203,7 +4291,7 @@ function checkCollisions() {
         let bulletHit = false;
         for (let j = asteroids.length - 1; j >= 0; j--) {
             const asteroid = asteroids[j];
-            if (!asteroid.isAlive) continue;
+            if (!asteroid.isAlive || asteroid.materialising) continue;
             if (bullet.collidesWith(asteroid)) {
                 bullet.destroy();
 
@@ -4274,7 +4362,7 @@ function checkCollisions() {
 
         for (let j = asteroids.length - 1; j >= 0; j--) {
             const asteroid = asteroids[j];
-            if (!asteroid.isAlive) continue;
+            if (!asteroid.isAlive || asteroid.materialising) continue;
 
             if (bullet.collidesWith(asteroid)) {
                 bullet.destroy();
@@ -4395,7 +4483,9 @@ function checkShipBossCollision(p) {
     }
 }
 
-function handlePlayerDeath(p, forced = false) {
+// killer: the player whose bullet did it (friendly fire), else null. Self-inflicted deaths
+// (hyperspace, rocks, own bullets) credit nobody.
+function handlePlayerDeath(p, forced = false, killer = null) {
     const ship = p.ship;
     let destroyed = forced;
     const shipX = ship ? ship.x : WORLD_WIDTH / 2;
@@ -4428,6 +4518,7 @@ function handlePlayerDeath(p, forced = false) {
 
         if (!unlimitedLives) p.lives--;
         p.stats.deaths++;
+        creditKill(killer, p, shipX, shipY);
         updateUI();
         const decision = mode.hooks.onDeath(round, p, players) || {};
         const handOver = isTurns() && decision.turnChange && Number.isInteger(decision.nextIndex);
@@ -4465,6 +4556,7 @@ function respawnPoint(p, isInitialSpawn) {
     const centre = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
     if (!simultaneous()) return centre; // single-player and Take Turns: one ship per world
     if (isInitialSpawn) {
+        if (mode.kind === 'versus') return versusStartPoint(p.slot, players.length, WORLD_WIDTH, WORLD_HEIGHT);
         return { x: centre.x + (p.slot - (players.length - 1) / 2) * 80, y: centre.y };
     }
     const hazards = spawnHazards();
@@ -4475,11 +4567,8 @@ function respawnPoint(p, isInitialSpawn) {
             return pickSpawnPoint(ringSpawnGrid(c.x, c.y, NEAR_TEAM_RADIUS, WORLD_WIDTH, WORLD_HEIGHT), [], hazards,
                 WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre;
         }
-        case 'furthestFromOpponents': {
-            const opponents = livingPlayers(players).filter(o => o !== p).map(o => o.ship);
-            return pickSpawnPoint(worldSpawnGrid(WORLD_WIDTH, WORLD_HEIGHT), opponents, hazards,
-                WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre;
-        }
+        case 'furthestFromOpponents':
+            return versusRespawnPoint(p, hazards) || centre;
         default:
             return centre;
     }
@@ -4519,9 +4608,11 @@ function respawnPlayer(p, isInitialSpawn = false, { at = null, invulnerability =
          audioManager.stopThrustSound();
 
          // Make ship invulnerable after respawn (unless initial spawn)
+         p.spawnGrace = false;
          if (!isInitialSpawn) {
              const seconds = invulnerability ?? mode.respawn.invulnerability ?? 3; // 3 s unless the mode says otherwise
              ship.makeInvulnerable(seconds);
+             p.spawnGrace = !!mode.respawn.cancelOnFire; // Duel: firing ends the protection
              console.log(`Ship made invulnerable for ${seconds} seconds`);
          }
 
@@ -4599,13 +4690,16 @@ function updateRound(deltaTime) {
     if (round.timeLeft !== null) round.timeLeft = Math.max(0, round.timeLeft - deltaTime);
     if (round.phase === 'overtime' && round.overtimeLeft !== null) round.overtimeLeft = Math.max(0, round.overtimeLeft - deltaTime);
     mode.hooks.onTick(round, deltaTime, players);
+    updateVersusTimers(deltaTime);
     const end = mode.hooks.checkEnd(round, players);
     if (!end) return;
     if (end.ended) {
         endRound(end);
     } else if (end.startPhase) {
+        // Tie at time up: Harvest overtime (next green wins), Duel sudden death (next kill wins)
         round.phase = end.startPhase;
         round.overtimeLeft = end.duration ?? null;
+        noteRoundPhase();
     }
 }
 
@@ -4661,6 +4755,10 @@ function checkAndAddHighScore(currentScore, username = currentUser) {
 }
 
 function resetUfoSpawnTimer() {
+    if (mode.ufos.interval) {
+        ufoSpawnTimer = mode.ufos.interval; // Harvest: one UFO every 30 s
+        return;
+    }
     let interval = UFO_SPAWN_BASE_INTERVAL * currentScaling().ufoIntervalMult; // x1 in single-player
     interval *= selectedDifficulty.ufoSpawnMultiplier;
     interval *= DynamicDifficulty.ufoSpawnMod; // Apply DDA modifier
@@ -5027,7 +5125,48 @@ function checkPlayerAchievements(p) {
     if (p && p.achievements) p.achievements.checkUnlockConditions({ score: p.score, level: level, user: p.profile });
 }
 
+// Facing layout: the pause menu in both halves, the top copy rotated with its own tap areas
+function drawPauseMenuFacing() {
+    const options = getPauseMenuOptions();
+    const byName = pausedByName();
+    drawForViewers((region, tap) => {
+        const w = Math.min(420, viewWidth * 0.8);
+        const x = (viewWidth - w) / 2;
+        const lineH = Math.min(40, (region.h - 110) / options.length);
+        const h = 76 + options.length * lineH + 24;
+        const y = region.y + Math.max(8, (region.h - h) / 2);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.fillRect(x, y, w, h);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 30px Arial';
+        ctx.fillText('PAUSED', viewWidth / 2, y + 36);
+        if (byName) {
+            ctx.font = '15px Arial';
+            ctx.fillStyle = '#AAAAAA';
+            ctx.fillText(`by ${byName}`, viewWidth / 2, y + 56);
+        }
+        options.forEach((option, index) => {
+            const iy = y + 76 + index * lineH;
+            ctx.font = '22px Arial';
+            ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(option, viewWidth / 2, iy + lineH / 2);
+            ctx.textBaseline = 'alphabetic';
+            tap(x, iy, w, lineH, () => {
+                pauseMenuSelectionIndex = index;
+                inputHandler.triggerAction('menuSelect');
+            }, `pause:${option}`);
+        });
+    });
+}
+
 function drawPauseMenu() {
+    if (isMultiplayer() && facingLayout()) {
+        drawPauseMenuFacing();
+        return;
+    }
     ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
     ctx.fillRect(viewWidth * 0.25, viewHeight * 0.25, viewWidth * 0.5, viewHeight * 0.5);
 
@@ -5117,26 +5256,34 @@ function drawModeSelect() {
     const w = Math.min(520, viewWidth - 60);
     const x = (viewWidth - w) / 2;
     let y = top + 10;
+    // Mode boxes share the height left above the hint line (96 px at most)
+    const gap = 8;
+    const modeCount = rows.filter(r => r.id !== 'back').length;
+    const backH = 44;
+    const modeH = Math.max(40, Math.min(96, (viewHeight - 34 - y - backH - gap * modeCount) / Math.max(1, modeCount)));
+    const infoLines = modeH >= 76 ? 2 : modeH >= 58 ? 1 : 0;
     rows.forEach((row, i) => {
         const selected = i === mpModeIndex;
         const isMode = row.id !== 'back';
-        const h = isMode ? 96 : 48;
+        const h = isMode ? modeH : backH;
         drawButtonBox(x, y, w, h, '', selected);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
-        ctx.font = 'bold 24px Arial';
+        ctx.font = 'bold 22px Arial';
         if (isMode) {
-            ctx.fillText(row.label(), x + w / 2, y + 34);
+            const titleY = infoLines ? y + Math.min(32, h * 0.38) : y + h / 2 + 8;
+            ctx.fillText(row.label(), x + w / 2, titleY);
             ctx.font = '15px Arial';
             ctx.fillStyle = '#CCCCCC';
-            (MP_MODE_INFO[row.id] || []).forEach((line, k) => ctx.fillText(line, x + w / 2, y + 60 + k * 20));
+            (MP_MODE_INFO[row.id] || []).slice(0, infoLines)
+                .forEach((line, k) => ctx.fillText(line, x + w / 2, titleY + 23 + k * 19, w - 16));
         } else {
             ctx.font = 'bold 20px Arial';
-            ctx.fillText(row.label(), x + w / 2, y + 31);
+            ctx.fillText(row.label(), x + w / 2, y + h / 2 + 7);
         }
         addRowTapRegion(x, y, w, h, row, i, (k) => { mpModeIndex = k; });
-        y += h + 14;
+        y += h + gap;
     });
     drawHintLine(inputHint('UP/DOWN to choose, ENTER to select, ESC to go back', 'Tap a mode',
         () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`));
@@ -5177,16 +5324,41 @@ function drawSeatLobby() {
     }
     const gap = 12;
     const cols = 2;
+    const optRows = lobbyOptionRows();
+    const optH = 34;
+    const optSpace = optRows.length ? optRows.length * (optH + 6) + 4 : 0;
     const w = Math.min(300, (viewWidth - 40 - gap) / cols);
-    const h = Math.min(170, (viewHeight - top - 150 - gap - noteLines.length * 18) / 2);
+    const h = Math.min(170, (viewHeight - top - 150 - gap - noteLines.length * 18 - optSpace) / 2);
     const x0 = (viewWidth - (w * cols + gap)) / 2;
     const snapshot = inputHandler.seats.snapshot().seats;
+    const shownSeats = Math.min(4, lobby.max);
     for (let seat = 0; seat < 4; seat++) {
+        if (seat >= shownSeats && shownSeats <= 2) continue; // 2-player modes: two cards
         const x = x0 + (seat % cols) * (w + gap);
         const y = top + Math.floor(seat / cols) * (h + gap);
         drawLobbyCard(seat, x, y, w, h, lobby.cards[seat], snapshot[seat]);
     }
-    const infoY = top + 2 * (h + gap) + 24;
+    const cardRows = shownSeats <= 2 ? 1 : 2;
+    // Mode option (O) and tablet layout (L): tap the left part to step back, the rest forward
+    let oy = top + cardRows * (h + gap) + 2;
+    optRows.forEach((row, i) => {
+        const ow = w * cols + gap;
+        drawButtonBox(x0, oy, ow, optH, '', false);
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 17px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#FFFFFF';
+        const keyHint = isTouchDevice ? '' : `  (${row.key})`;
+        ctx.fillText(`${row.label()}${keyHint}`, x0 + 12, oy + optH / 2);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(`◂  ${rowValue(row)}  ▸`, x0 + ow - 12, oy + optH / 2);
+        ctx.textBaseline = 'alphabetic';
+        addRowTapRegion(x0, oy, ow, optH, row, i, () => {});
+        tapRegions[tapRegions.length - 1].id = `lobby:${row.id}`;
+        oy += optH + 6;
+    });
+    const infoY = (optRows.length ? oy + 18 : top + cardRows * (h + gap) + 24);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     const joined = joinedSeats(lobby).length;
@@ -5384,39 +5556,95 @@ function drawMultiplayerOverlay() {
         ctx.fillStyle = p.colour;
         ctx.fillText(`P${turn.index + 1} ${p.name}`, viewWidth - 10, viewHeight - 10);
     }
+    // Countdown and banners: drawn once per viewer (twice, one rotated, in the facing layout)
     if (resumeCountdown > 0 && currentGameState === GameState.PLAYING) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
         ctx.fillRect(0, 0, viewWidth, viewHeight);
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 96px Arial';
-        ctx.fillText(String(Math.ceil(resumeCountdown)), viewWidth / 2, viewHeight / 2);
-        ctx.font = '20px Arial';
-        ctx.fillText('Get ready', viewWidth / 2, viewHeight / 2 + 70);
+        drawForViewers((region) => {
+            const cy = region.half ? region.y + region.h * 0.45 : viewHeight / 2;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `bold ${region.half ? 72 : 96}px Arial`;
+            ctx.fillText(String(Math.ceil(resumeCountdown)), viewWidth / 2, cy);
+            ctx.font = '20px Arial';
+            ctx.fillText('Get ready', viewWidth / 2, cy + (region.half ? 56 : 70));
+        });
     }
     if (currentGameState === GameState.ROUND_END) {
-        const h = 120;
-        const y = viewHeight / 2 - h / 2;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(0, y, viewWidth, h);
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 40px Arial';
-        const coop = !!lastResults && lastResults.kind === 'coop';
-        ctx.fillText(coop ? 'GAME OVER' : 'ROUND OVER', viewWidth / 2, y + 42);
-        ctx.fillStyle = '#FFD700';
-        ctx.font = 'bold 26px Arial';
-        ctx.fillText(coop ? `TEAM SCORE ${lastResults.teamScore}` : roundBanner(lastResults), viewWidth / 2, y + 88);
+        drawForViewers((region) => {
+            const h = region.half ? 104 : 120;
+            const y = region.half ? region.y + region.h * 0.4 - h / 2 : viewHeight / 2 - h / 2;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, y, viewWidth, h);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `bold ${region.half ? 34 : 40}px Arial`;
+            const coop = !!lastResults && lastResults.kind === 'coop';
+            ctx.fillText(coop ? 'GAME OVER' : 'ROUND OVER', viewWidth / 2, y + h * 0.35);
+            ctx.fillStyle = '#FFD700';
+            ctx.font = 'bold 26px Arial';
+            ctx.fillText(coop ? `TEAM SCORE ${lastResults.teamScore}` : roundBanner(lastResults), viewWidth / 2, y + h * 0.73,
+                viewWidth - 20);
+        });
     }
     ctx.restore();
 }
 
 // Results (§11): banner, one column per player (ranked), highlights, Rematch / Change mode / Main menu
+// Facing layout: a compact copy of the results in each half (the top one rotated)
+function drawResultsFacing() {
+    const r = lastResults;
+    const rows = r.players;
+    const kills = r.mode === 'duel';
+    drawForViewers((region, tap) => {
+        let y = region.y + 34;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 28px Arial';
+        ctx.fillText(r.kind === 'coop' ? `TEAM SCORE ${r.teamScore}` : roundBanner(r), viewWidth / 2, y, viewWidth - 20);
+        y += 22;
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText(r.modeName || '', viewWidth / 2, y);
+        y += 8;
+        const lineH = Math.min(26, (region.h - 150) / Math.max(1, rows.length));
+        rows.forEach((p) => {
+            y += lineH;
+            ctx.font = 'bold 18px Arial';
+            ctx.fillStyle = p.colour || '#FFFFFF';
+            const main = kills ? `${p.kills} kills` : `${p.score}`;
+            const extra = kills ? `deaths ${p.deaths}` : `greens ${p.greens} · denied ${p.greensDenied}`;
+            ctx.fillText(`${p.winner ? '★ ' : ''}${p.name}   ${main}   (${extra})`, viewWidth / 2, y, viewWidth - 20);
+        });
+        const n = resultsButtons().length;
+        const gap = 10;
+        const bw = Math.min(170, (viewWidth - 40 - gap * (n - 1)) / n);
+        const bh = 44;
+        const bx0 = (viewWidth - (bw * n + gap * (n - 1))) / 2;
+        const by = region.y + region.h - bh - 16;
+        resultsButtons().forEach((label, i) => {
+            const bx = bx0 + i * (bw + gap);
+            ctx.globalAlpha = resultsInputDelay > 0 ? 0.4 : 1;
+            drawButtonBox(bx, by, bw, bh, label, i === resultsIndex, 'bold 17px Arial');
+            ctx.globalAlpha = 1;
+            tap(bx, by, bw, bh, () => {
+                resultsIndex = i;
+                inputHandler.triggerAction('menuSelect');
+            }, `results:${label}`);
+        });
+    });
+}
+
 function drawResults() {
     const r = lastResults;
     if (!r) return;
+    if (facingLayout()) {
+        drawResultsFacing();
+        return;
+    }
     const mins = Math.floor(r.duration / 60);
     const secs = String(Math.floor(r.duration % 60)).padStart(2, '0');
     const coop = r.kind === 'coop';
@@ -5429,15 +5657,17 @@ function drawResults() {
     const colW = (viewWidth - left - 16) / Math.max(1, rows.length);
     const fields = [
         ['Score', (p) => p.score],
+        ...(r.mode === 'duel' ? [['Kills', (p) => p.kills]] : []),
         ...(r.kind === 'turns' ? [['Level', (p) => p.level ?? '-']] : []),
         ['Greens', (p) => p.greens],
         ['Rocks shot', (p) => p.redsShot],
         ['UFOs', (p) => p.ufos],
         ['Deaths', (p) => p.deaths],
         ...(coop ? [['Revives', (p) => p.revivesGiven]] : []),
+        ...(r.mode === 'harvest' ? [['Denied', (p) => p.greensDenied]] : []),
         ['Best combo', (p) => p.bestCombo],
         ['Accuracy', (p) => `${Math.round(p.accuracy * 100)}%`],
-        ['Credits', (p) => (p.profile ? `+${p.credits}` : '-')],
+        ...(r.kind !== 'versus' ? [['Credits', (p) => (p.profile ? `+${p.credits}` : '-')]] : []), // none in competitive modes
     ];
     const lineH = Math.min(28, (viewHeight * 0.52) / (fields.length + 2));
     const headY = top + 10;
@@ -5470,6 +5700,10 @@ function drawResults() {
     if (coop && r.boardRank) {
         extra.unshift(r.boardRank === 1 ? 'New team best on this device!' : `Team board: #${r.boardRank} on this device`);
     }
+    if (r.mode === 'harvest' && r.boardRank) {
+        extra.unshift(r.boardRank === 1 ? 'New Harvest record on this device!' : `Harvest board: #${r.boardRank} on this device`);
+    }
+    if (r.rivalry) extra.push(r.rivalry);
     rows.forEach(p => { if (p.newAchievements.length) extra.push(`${p.name}: ${p.newAchievements.join(', ')}`); });
     extra.slice(0, 4).forEach(line => {
         ctx.fillStyle = '#FFD700';
@@ -5512,6 +5746,7 @@ function lobbySnapshot() {
     const seats = inputHandler.seats.snapshot().seats;
     return {
         kind: 'seats', modeId: lobbyModeId, countdown: lobby.countdown, exitNotice: lobbyExitNotice,
+        options: lobbyOptionsSnapshot(),
         min: lobby.min, max: lobby.max, joined: joinedSeats(lobby).length, canStart: canStart(lobby),
         cards: lobby.cards.map((c, seat) => (c ? {
             seat, name: c.name, profile: c.profile, ready: c.ready,
@@ -5520,6 +5755,266 @@ function lobbySnapshot() {
             colourHex: seats[seat] ? seatColour(seats[seat].colour) : null,
         } : null)),
     };
+}
+
+// --- Versus: Harvest Race and Duel (docs/plans/05-local-multiplayer.md §2, §4.3, §4.4, MP-4) ---
+// Levels are off: the field is topped up every second (js/versus.js planFieldRefill), new
+// asteroids appear at least 250 px from every ship and fade in for 0.5 s (not collectible or
+// harmful meanwhile). Ships bump elastically; in Duel bullets hit other players' ships and the
+// shooter gets the kill. Respawns go to the grid point furthest from the opponents.
+const VERSUS_INTRO_SECONDS = 3;
+const mpOptions = {};              // lobby choice per mode id, e.g. { harvest: { roundSeconds: 120 } }
+const bumpCooldowns = new Map();   // pair key -> seconds until that pair can bump again
+const versus = { bumps: 0, refillTimer: 0, spawned: 0, intro: 0, phaseBanner: 0, lastPhase: 'normal' };
+const LAYOUT_NAMES = { auto: 'Auto', sides: 'Side by side', facing: 'Facing' };
+
+function isVersus() { return mode.kind === 'versus'; }
+// Modes without levels whose asteroid field is refilled (Harvest, Duel)
+function fieldMode() { return !mode.levelProgression && !!mode.field; }
+
+function resetVersus() {
+    bumpCooldowns.clear();
+    versus.bumps = 0;
+    versus.spawned = 0;
+    versus.refillTimer = mode.field ? mode.field.refillInterval : 0;
+    versus.intro = 0;
+    versus.phaseBanner = 0;
+    versus.lastPhase = 'normal';
+}
+
+// Test and tuning aid: `?roundSeconds=N` on localhost shortens versus rounds (1-600 s)
+function debugRoundSeconds(m) {
+    if (!m || m.kind !== 'versus' || typeof location === 'undefined') return null;
+    try {
+        if (!isLocalhost(location.hostname)) return null;
+        const raw = new URLSearchParams(location.search).get('roundSeconds');
+        if (raw === null) return null;
+        const v = Number(raw);
+        return Number.isFinite(v) && v >= 1 && v <= 600 ? v : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// --- Lobby options: the mode's option (O) and the tablet layout (L) ---
+function lobbyOptionValue(m) {
+    const opt = modeOption(m);
+    return opt ? roundOptionsFor(m, mpOptions[m.id])[opt.key] : null;
+}
+function changeLobbyOption(dir) {
+    const m = getMode(lobbyModeId);
+    const opt = modeOption(m);
+    if (!opt) return;
+    mpOptions[m.id] = { ...(mpOptions[m.id] || {}), [opt.key]: cycleValue(opt.values, lobbyOptionValue(m), dir) };
+    if (lobby) lobby.countdown = null; // a changed rule restarts the countdown
+}
+function lobbyOptionRows() {
+    const m = getMode(lobbyModeId);
+    const rows = [];
+    const opt = modeOption(m);
+    if (opt) {
+        rows.push({ id: 'option', key: 'O', label: () => opt.label, value: () => formatOption(opt, lobbyOptionValue(m)),
+            change: (d) => changeLobbyOption(d) });
+    }
+    if (isTouchDevice && m && m.kind !== 'turns') {
+        rows.push({ id: 'layout', key: 'L', label: () => 'Layout', setting: 'mpLayout', format: (v) => LAYOUT_NAMES[v] || v,
+            change: (d) => settings.cycle('mpLayout', d) });
+    }
+    return rows;
+}
+function lobbyOptionsSnapshot() {
+    const m = getMode(lobbyModeId);
+    return { ...roundOptionsFor(m, mpOptions[m ? m.id : '']), layout: settings.get('mpLayout'),
+        rows: lobbyOptionRows().map(r => r.id) };
+}
+
+// --- Field ---
+function randomFieldSize() {
+    const r = Math.random();
+    return r < 0.5 ? AsteroidSize.LARGE : r < 0.85 ? AsteroidSize.MEDIUM : AsteroidSize.SMALL;
+}
+// Points new asteroids keep away from: every ship and every pending respawn spot
+function fieldAvoidPoints() {
+    const pts = [];
+    for (const p of players) {
+        if (p.ship && p.ship.isAlive) pts.push({ x: p.ship.x, y: p.ship.y });
+        if (p.respawnAt) pts.push(p.respawnAt);
+    }
+    return pts;
+}
+function spawnFieldAsteroid(type, avoid, fade) {
+    const f = mode.field;
+    const pt = findFieldSpawn(avoid, WORLD_WIDTH, WORLD_HEIGHT, f.minSpawnDistance);
+    if (!pt) return null;
+    const size = type === 'red' && f.redSize === 'large' ? AsteroidSize.LARGE : randomFieldSize();
+    const a = new Asteroid(pt.x, pt.y, size, null, selectedDifficulty.asteroidSpeedMultiplier,
+        type === 'green' ? AsteroidType.GREEN : AsteroidType.RED);
+    if (fade > 0) a.fadeIn(fade);
+    asteroids.push(a);
+    versus.spawned++;
+    return a;
+}
+function createFieldAsteroids() {
+    asteroids = [];
+    const f = mode.field;
+    const avoid = fieldAvoidPoints();
+    for (let i = 0; i < f.greens; i++) spawnFieldAsteroid('green', avoid, 0);
+    for (let i = 0; i < f.reds; i++) spawnFieldAsteroid('red', avoid, 0);
+    versus.refillTimer = f.refillInterval;
+}
+function updateFieldRefill(dt) {
+    if (!fieldMode()) return;
+    versus.refillTimer -= dt;
+    if (versus.refillTimer > 0) return;
+    versus.refillTimer = mode.field.refillInterval;
+    const need = planFieldRefill(countField(asteroids), mode.field);
+    const avoid = fieldAvoidPoints();
+    for (let i = 0; i < need.greens; i++) spawnFieldAsteroid('green', avoid, mode.field.fadeIn);
+    for (let i = 0; i < need.reds; i++) spawnFieldAsteroid('red', avoid, mode.field.fadeIn);
+}
+
+// --- Ship bump (elastic, 0.25 s per pair, wrap-aware) ---
+function updateShipBumps(dt) {
+    tickBumpCooldowns(bumpCooldowns, dt);
+    if (!mode.shipBump || !simultaneous()) return;
+    const live = players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0);
+    for (let i = 0; i < live.length; i++) {
+        for (let k = i + 1; k < live.length; k++) {
+            const a = live[i];
+            const b = live[k];
+            const key = bumpPairKey(a.id, b.id);
+            if (bumpCooldowns.has(key)) continue;
+            const r = bumpShips(a.ship, b.ship, WORLD_WIDTH, WORLD_HEIGHT);
+            if (!r) continue;
+            Object.assign(a.ship, r.a);
+            Object.assign(b.ship, r.b);
+            bumpCooldowns.set(key, BUMP.cooldown);
+            versus.bumps++;
+            const mx = a.ship.x + (r.nx * (a.ship.radius || 15));
+            const my = a.ship.y + (r.ny * (a.ship.radius || 15));
+            Particles.spawn(mx, my, 6, '#FFFFFF', 80, 0.25, 2);
+            vibrate('shieldHit');
+        }
+    }
+}
+
+// Duel: firing ends the respawn protection
+function endSpawnGrace(p) {
+    p.spawnGrace = false;
+    if (!mode.respawn.cancelOnFire || !p.ship) return;
+    p.ship.isInvulnerable = false;
+    p.ship.invulnerabilityTimer = 0;
+    p.ship.blinkOn = true;
+}
+
+// A kill by another player's bullet: the mode decides who is credited (never the victim)
+function creditKill(killer, victim, x, y) {
+    if (!killer || killer === victim) return;
+    const decision = mode.hooks.onKill(round, killer, victim);
+    const k = decision && decision.credit ? players.find(q => q.id === decision.credit) : null;
+    if (!k) return;
+    k.stats.kills++;
+    const at = worldScreenPos(x, y);
+    FloatingTexts.spawn(at.x, at.y - 30, `${k.label} +1 KILL`, k.colour, 22, 1.5);
+}
+
+function versusRespawnPoint(p, hazards = spawnHazards()) {
+    const opponents = players.filter(o => o !== p && isLiving(o)).map(o => o.ship);
+    return pickSpawnPoint(worldSpawnGrid(WORLD_WIDTH, WORLD_HEIGHT), opponents, hazards,
+        WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS });
+}
+
+// Overtime / sudden death just started: a banner for everyone
+function noteRoundPhase() {
+    if (!round || round.phase === versus.lastPhase) return;
+    versus.lastPhase = round.phase;
+    if (round.phase !== 'normal') versus.phaseBanner = 3;
+}
+function updateVersusTimers(dt) {
+    if (versus.intro > 0) versus.intro = Math.max(0, versus.intro - dt);
+    if (versus.phaseBanner > 0) versus.phaseBanner = Math.max(0, versus.phaseBanner - dt);
+    noteRoundPhase();
+}
+
+// --- Drawing for one or two viewers (facing layout, plan §9, §11) ---
+function facingLayout() {
+    return mpLayoutState.layout === 'facing' && (inRound() || currentGameState === GameState.RESULTS);
+}
+// A tap region drawn under the 180° rotation: stored where it appears on screen
+function addTapRegionRotated(x, y, w, h, onTap, id = null) {
+    const r = rotateRect180({ x, y, w, h }, viewWidth, viewHeight);
+    tapRegions.push({ ...r, onTap, id, rotated: true });
+}
+// fn(region, tap): draws in region (whole view, or the bottom half; the top player's copy is
+// the same drawing under a 180° rotation). tap(x, y, w, h, onTap, id) adds the matching region.
+function drawForViewers(fn) {
+    const regions = viewerRegions(facingLayout() ? 'facing' : null, viewWidth, viewHeight);
+    for (const region of regions) {
+        ctx.save();
+        if (region.rotated) {
+            ctx.translate(viewWidth, viewHeight);
+            ctx.rotate(Math.PI);
+        }
+        const tap = region.rotated
+            ? (x, y, w, h, onTap, id = null) => addTapRegionRotated(x, y, w, h, onTap, id)
+            : (x, y, w, h, onTap, id = null) => tapRegions.push({ x, y, w, h, onTap, id, rotated: false });
+        fn(region, tap);
+        ctx.restore();
+    }
+}
+
+// Round clock (centre top; in the facing layout at each player's own edge), mode line
+function drawVersusHud(region) {
+    const clock = roundClock(round, performance.now() / 1000);
+    const top = region.half ? region.y + region.h - 44 : 28;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    if (clock) {
+        ctx.font = 'bold 26px Arial';
+        ctx.fillStyle = clock.urgent ? (clock.flash ? '#FF4444' : '#FFFFFF') : 'rgba(255, 255, 255, 0.95)';
+        ctx.fillText(clock.label ? `${clock.label} ${clock.text}` : clock.text, viewWidth / 2, top);
+    }
+    ctx.font = '14px Arial';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    let line;
+    if (mode.winCondition === 'kills') {
+        line = round.phase === 'suddenDeath' ? 'Next kill wins' : `First to ${round.target ?? 5} kills`;
+    } else {
+        line = round.phase === 'overtime' ? 'Next crystal wins' : players.map(p => `${p.label} ${p.score}`).join('   ');
+    }
+    ctx.fillText(line, viewWidth / 2, top + 18);
+}
+
+// Rules at the start, OVERTIME / SUDDEN DEATH when it begins
+function drawVersusBanner(region) {
+    let title = null;
+    let sub = null;
+    let alpha = 1;
+    if (versus.phaseBanner > 0 && round && round.phase !== 'normal') {
+        title = round.phase === 'overtime' ? 'OVERTIME' : 'SUDDEN DEATH';
+        sub = round.phase === 'overtime' ? 'Scores are tied: the next crystal wins' : 'The next kill wins';
+        alpha = Math.min(1, versus.phaseBanner);
+    } else if (versus.intro > 0) {
+        title = mode.name.toUpperCase();
+        sub = mode.winCondition === 'kills' ? `First to ${round.target ?? 5} kills · one hit kills`
+            : `Most crystals in ${formatClock(round.timeLeft ?? 0)} · shoot crystals to deny them`;
+        alpha = Math.min(1, versus.intro);
+    }
+    if (!title) return;
+    const cy = region.half ? region.y + Math.min(90, region.h * 0.3) : viewHeight / 2 - 60;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(0, cy - 34, viewWidth, 70);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = round && round.phase !== 'normal' ? '#FF6666' : '#FFD700';
+    ctx.font = 'bold 30px Arial';
+    ctx.fillText(title, viewWidth / 2, cy - 8, viewWidth - 20);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '16px Arial';
+    ctx.fillText(sub, viewWidth / 2, cy + 20, viewWidth - 20);
+    ctx.globalAlpha = 1;
+    ctx.textBaseline = 'alphabetic';
 }
 
 // --- Time Attack vs Ghost (docs/plans/05-local-multiplayer.md §4.6, §6, MP-6) ---

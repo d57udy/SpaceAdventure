@@ -502,7 +502,7 @@ export async function selfDestruct(page, key = 'h') {
  * Jump into the path of a drifting green crystal so it runs into the ship (stubs Math.random
  * only for the jump's own rolls). The ship lands just ahead of the crystal along its drift.
  */
-export async function collectGreenByJump(page) {
+export async function collectGreenByJump(page, key = 'h') {
   await page.evaluate(() => {
     const real = window.__realRandom || Math.random;
     window.__realRandom = real;
@@ -518,7 +518,7 @@ export async function collectGreenByJump(page) {
       if (calls === 1) {
         const all = g.asteroids;
         const clear = (x, y) => all.every((a) => Math.hypot(a.x - x, a.y - y) > a.radius + r + 2);
-        const greens = all.filter((q) => q.type === 'green')
+        const greens = all.filter((q) => q.type === 'green' && !q.materialising)
           .sort((p, q) => Math.hypot(q.velX, q.velY) - Math.hypot(p.velX, p.velY));
         for (const a of greens) {
           const speed = Math.hypot(a.velX, a.velY) || 1;
@@ -535,7 +535,23 @@ export async function collectGreenByJump(page) {
       return (target.y - r) / (H - 2 * r);
     };
   });
-  await page.keyboard.press('h');
+  await page.keyboard.press(key);
+}
+
+/** Mode select -> a mode by id (keyboard) -> its seat lobby. */
+export async function openModeLobby(page, modeId) {
+  await openMultiplayer(page);
+  const rows = await hook(page, 'mp.modeSelect.rows');
+  const target = rows.indexOf(modeId);
+  expect(target, `${modeId} in ${JSON.stringify(rows)}`).toBeGreaterThanOrEqual(0);
+  for (let i = 0; i < 10 && (await hook(page, 'mp.modeSelect.index')) !== target; i++) {
+    await page.keyboard.press('ArrowDown');
+    await frames(page, 2);
+  }
+  expect(await hook(page, 'mp.modeSelect.index')).toBe(target);
+  await page.keyboard.press('Enter');
+  await waitForState(page, 'lobby');
+  expect(await hook(page, 'lobby')).toMatchObject({ kind: 'seats', modeId });
 }
 
 /** Mode select -> Co-op (second row) with the keyboard -> the seat lobby. */
