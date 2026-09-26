@@ -36,19 +36,24 @@ The shapes carry the meaning, so colour is never needed. For colour-blind player
 - Multiple difficulty levels (Easy, Medium, Hard)
 - Persistent high scores per user
 - Achievement system
-- Keyboard and touch controls
-- Sound effects
+- Keyboard, touch and game controller controls
+- Sound effects and background music
+- Local multiplayer on one device (see [Multiplayer](#multiplayer))
 
 ## Controls
+
+Single-player: both key sets drive the one ship.
 
 | Action | Keys |
 |--------|------|
 | Rotate Left/Right | Arrow Keys / A, D |
 | Thrust Forward | Up Arrow / W |
-| Fire | Spacebar |
-| Hyperspace (risky!) | H |
+| Fire | Spacebar, F or Enter |
+| Hyperspace (risky!) | H / S / Down Arrow |
 | Pause | P / Escape |
 | Mute | M |
+
+A game controller works too: left stick steers, Ⓐ or RT fires, Ⓑ is hyperspace and Start pauses. For two or more players see [Multiplayer](#multiplayer).
 
 ### Touch (tablets and phones)
 
@@ -83,6 +88,62 @@ In both schemes:
 **Settings > Music** picks the background tune (Off, Synthwave, Ambient or Chiptune) and plays a short preview. The music is generated in the browser and follows the game: quiet in menus, fuller in play, tense on your last life and in boss fights, and dimmed while paused. **Music volume** and **Sound effects** go from 0 to 10; Mute (M or the speaker button) silences everything. All choices are remembered on that device.
 
 **Vibration (Android):** on phones and tablets whose browser supports it, pickups, hits, level-ups and boss kills give a short buzz. Turn it off with **Settings > Vibration**. iPhone, iPad and desktop browsers have no vibration support, so the setting does not appear there.
+
+## Multiplayer
+
+**Main menu > Multiplayer** plays on one device with no network: a shared keyboard, game controllers, one tablet, or any mix.
+
+| Mode | Players | Rules |
+|------|---------|-------|
+| Take Turns | 2 to 4, one device passed around | One ship at a time; the highest score wins |
+| Co-op "Wingmen" | 2 to 4 | Shared team score; fly close to a fallen wingman to revive them |
+| Harvest Race | 2 | Most crystals when the clock runs out wins; shooting a crystal denies it |
+| Duel | 2 | One hit kills; first to 5 kills wins |
+| Saucer | 2 | P1 flies the ship and must reach the target score in 2:30; P2 steers the enemy saucer |
+| Time Attack vs Ghost | 1 | 3 minutes on a numbered course, racing the best run on this device |
+
+**Joining:** in the lobby each player presses their own fire to join and again when ready. Hyperspace leaves, rotate changes colour. The round starts 3 s after everyone is ready.
+
+**Controls card:** the first round of a lobby shows each player's controls in their HUD panel, plus one line of rules. The world waits until every player presses fire (or 8 s). Rematches and restarts with the same players show it for 2 s. Help has a **Multiplayer** page (◂ ▸ or the button at the top).
+
+### Controls per setup
+
+**Shared keyboard**
+
+| Action | P1 (left) | P2 (right) |
+|--------|-----------|------------|
+| Thrust | W | ↑ (numpad 8) |
+| Turn | A / D | ← / → (numpad 4 / 6) |
+| Hyperspace | S | ↓ (numpad 5) |
+| Fire | Space or F | Enter or Right Shift (numpad Enter) |
+
+Anyone can pause (P, Escape) or mute (M). Keys are matched by position, so AZERTY and QWERTZ keyboards use the same places.
+
+**Controllers:** each controller is its own player. Press Ⓐ in the lobby to join; the stick steers, Ⓐ or RT fires, Ⓑ is hyperspace, Start pauses. Up to four players can mix controllers and the two keyboard sets; with three or four the camera zooms out to keep every ship on screen. If a controller disconnects mid-round the game pauses: press Ⓐ on it (or on a free controller) to continue, or choose **Drop Pn** in the pause menu.
+
+**One tablet (touch):** each player drags on their own half to steer and uses their own fire and hyperspace buttons. Tap your side's pad in the lobby to join and again when ready; hold it to leave. **L** or the Layout row in the lobby picks the layout:
+
+| Layout | How to sit | Orientation |
+|--------|-----------|-------------|
+| Side by side | Tablet on a stand, one player at each end; controls in the left and right bars | Landscape only |
+| Facing | Tablet flat on a table between you; P1 at the bottom, P2 at the top (their controls and HUD turned to face them) | Portrait (best) or landscape |
+
+Auto picks side by side in landscape and facing in portrait. Turning the tablet mid-round pauses the game.
+
+### Tablet and keyboard tips
+
+- **iPad:** four- and five-finger swipes can throw players to the home screen. Turn them off in **Settings > Multitasking & Gestures** (or **Settings > General > Gestures** on older iPadOS), or use Guided Access. Install the app (see below) for the full screen.
+- Two players use four to six fingers at once. iPads handle this; some Android tablets report fewer touch points, and the lobby warns when fewer than 4 are available.
+- **Keyboard ghosting:** two players thrusting, turning and firing press six keys at once, and many laptop keyboards drop some combinations. Check your keys with the lights on the lobby cards, use a USB keyboard if you can, or turn on **Auto-fire** so nobody holds fire.
+
+### Accessibility
+
+**Settings > Multiplayer** holds:
+- **Auto-fire (multiplayer):** every living ship fires on its own in multiplayer rounds (never in single-player or Time Attack).
+- **Fire side (left/bottom, right/top):** Outer puts a touch player's fire button at the screen edge, Inner next to the play area (side by side) or at the other end of their bar (facing), for left-handed players.
+- **Stereo (side by side):** each player's fire and thrust sounds come from their side (where the browser supports stereo panning).
+
+Every player has a colour, a hull mark and a number; HUD panel text is at least 18 px. The multiplayer pause menu also has **Mute**.
 
 ## Install, full screen and offline play
 

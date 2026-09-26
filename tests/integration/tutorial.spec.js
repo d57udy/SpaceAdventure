@@ -415,7 +415,8 @@ test.describe('tutorial: training (keyboard)', () => {
     await page.keyboard.press('Enter');
     await waitForState(page, 'help');
     const regions = await hook(page, 'tapRegions');
-    expect(regions.length).toBe(2);
+    // Full-screen return, the Replay button, then the page button (MP-7 Multiplayer help)
+    expect(regions.map((r) => r.id)).toEqual([null, null, 'help:page']);
     const p = await tapRegionCenter(page, 1);
     await page.mouse.click(p.x, p.y);
     await waitForState(page, 'playing');

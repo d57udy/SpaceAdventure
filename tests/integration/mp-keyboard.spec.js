@@ -3,7 +3,7 @@
 import { test, expect } from '@playwright/test';
 import {
   MENU, openFresh, hook, waitForState, frames, loginWithKeyboard, selectMenuRow, openCoopLobby,
-  joinTwoWithKeyboard, jumpTo, selfDestruct, rectsOverlap,
+  joinTwoWithKeyboard, jumpTo, selfDestruct, rectsOverlap, skipRoundIntro,
 } from './helpers.js';
 
 const TAU = Math.PI * 2;
@@ -168,8 +168,12 @@ test.describe('co-op (shared keyboard)', () => {
       await waitForShip(page, 0);
       await loseLife(page, 0, 's');
     }
-    await waitForShip(page, 1);
-    await loseLife(page, 1, 'ArrowDown');
+    // (P2 has one life left and may already have been hit by a rock or UFO meanwhile)
+    await expect.poll(async () => {
+      const p2 = await player(page, 1);
+      return p2.out || !!(p2.ship && p2.ship.isAlive);
+    }, { timeout: 8000 }).toBe(true);
+    if (!(await hook(page, 'players.1.out'))) await loseLife(page, 1, 'ArrowDown');
     await expect.poll(() => hook(page, 'players.1.out')).toBe(true);
     await frames(page, 10);
     expect(await hook(page, 'state')).toBe('playing');
@@ -264,6 +268,8 @@ test.describe('co-op screenshots for review (desktop)', () => {
     await page.screenshot({ path: `tests/screenshots/${name}-coop-lobby.png` });
     await page.keyboard.press('Enter');
     await waitForState(page, 'playing', 6000);
+    await page.screenshot({ path: `tests/screenshots/${name}-coop-intro.png` });
+    await skipRoundIntro(page);
     await page.keyboard.down('Space');
     await page.keyboard.down('ArrowLeft');
     await page.waitForTimeout(600);

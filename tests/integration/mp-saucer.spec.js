@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, frames, loginWithKeyboard, openModeLobby, lobbyPress, lobbyPad,
-  padPress, padRelease, padTap, padStick, padDisconnect, drawnTexts, PAD,
+  padPress, padRelease, padTap, padStick, padDisconnect, drawnTexts, PAD, skipRoundIntro,
 } from './helpers.js';
 
 const SAUCER_TEST_KEY = 'spaceAdventure_testSaucerRound';
@@ -25,6 +25,12 @@ async function startSaucer(page, { storage = {}, p2 = 'pad', recordText = false 
       if (p2 === 'pad') await lobbyPad(page, 0, 1, (c) => c.ready);
       else await lobbyPress(page, 'Enter', 1, (c) => c.ready);
       await waitForState(page, 'playing', 6000);
+      // Controls card (MP-7): P1 flies the ship, P2 steers the saucer
+      const cards = await hook(page, 'mp.intro.cards');
+      expect(cards[0].lines[0]).toBe('You fly the SHIP');
+      expect(cards[1].lines[0]).toBe('You steer the SAUCER');
+      expect(await hook(page, 'mp.intro.rules')).toMatch(/^Saucer: the ship needs \d+ points/);
+      await skipRoundIntro(page);
       await expect.poll(() => hook(page, 'saucer.ufo.alive')).toBe(true);
     },
   };
@@ -260,8 +266,11 @@ test.describe('Saucer', () => {
     await page.keyboard.up('ArrowUp');
     await page.keyboard.down('ArrowDown');
     await page.keyboard.down('ArrowLeft');
-    await expect.poll(() => hook(page, 'saucer.ufo.velY')).toBeGreaterThan(100);
-    expect(await hook(page, 'saucer.ufo.velX')).toBeLessThan(-100); // diagonal down-left
+    // Diagonal down-left (both keys can land in different frames, so wait for both)
+    await expect.poll(async () => {
+      const u = await hook(page, 'saucer.ufo');
+      return u.velY > 100 && u.velX < -100;
+    }).toBe(true);
     await page.keyboard.up('ArrowDown');
     await page.keyboard.up('ArrowLeft');
     await expect.poll(() => hook(page, 'saucer.ufo.velX')).toBe(0);

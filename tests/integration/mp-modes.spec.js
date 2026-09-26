@@ -152,7 +152,7 @@ test.describe('Take Turns (keyboard)', () => {
     await page.keyboard.press('p');
     await waitForState(page, 'paused');
     expect(await hook(page, 'mp.pausedBy')).toBe(0);
-    expect(await hook(page, 'pauseOptions')).toEqual(['Resume', 'Restart round', 'Change players', 'Main menu']);
+    expect(await hook(page, 'pauseOptions')).toEqual(['Resume', 'Restart round', 'Change players', 'Main menu', 'Mute']);
 
     // Escape resumes with a countdown; the ship doesn't move meanwhile
     await page.keyboard.press('Escape');
@@ -178,6 +178,8 @@ test.describe('Take Turns (keyboard)', () => {
     // Pause from the hand-over screen, then Main menu
     await page.keyboard.press('Escape');
     await waitForState(page, 'paused');
+    await page.keyboard.press('ArrowUp'); // wraps to Mute (last)
+    await expect.poll(() => hook(page, 'pauseIndex')).toBe(4);
     await page.keyboard.press('ArrowUp');
     await expect.poll(() => hook(page, 'pauseIndex')).toBe(3);
     await page.keyboard.press('Enter');

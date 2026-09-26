@@ -21,6 +21,9 @@ export const SETTING_DEFS = Object.freeze({
     muted: boolDef(false),
     mpLayout: enumDef(['auto', 'sides', 'facing'], 'auto'),
     mpAutoFire: boolDef(false),
+    mpFireSideA: enumDef(['outer', 'inner'], 'outer'), // touch player in zone a (left / bottom)
+    mpFireSideB: enumDef(['outer', 'inner'], 'outer'), // touch player in zone b (right / top)
+    mpStereo: boolDef(true), // pan each player's sounds to their side (side by side)
     renderQuality: enumDef(['auto', 'sharp', 'fast'], 'auto'),
 });
 

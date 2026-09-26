@@ -20,7 +20,8 @@ export const difficultyText = (name) => `Difficulty: ${name}`;
 // Settings screen rows (Controls only on touch devices; Vibration only on touch devices
 // whose browser has navigator.vibrate, see touchSettingsRows; Controller rumble only once a
 // controller has been seen)
-const TUTORIAL_ROWS = ['offerTutorial', 'replayTutorial'];
+// 'multiplayer' opens the Multiplayer settings sub-page (MP-7)
+const TUTORIAL_ROWS = ['offerTutorial', 'replayTutorial', 'multiplayer'];
 export const SETTINGS_ROWS_TOUCH = ['controls', 'colours', 'sound', 'music', 'musicVolume', 'sfxVolume', ...TUTORIAL_ROWS, 'back'];
 export const SETTINGS_ROWS_DESKTOP = ['colours', 'sound', 'music', 'musicVolume', 'sfxVolume', ...TUTORIAL_ROWS, 'back'];
 export const touchSettingsRows = (withVibration) => (withVibration
@@ -591,13 +592,49 @@ export async function lobbyPad(page, pad, seat, check) {
   await expect.poll(async () => check((await hook(page, 'lobby.cards'))[seat]), { message: `lobby card ${seat} after pad ${pad} Ⓐ` }).toBe(true);
 }
 
-/** P1 (Space) and P2 (Enter) join and ready up in a keyboard lobby; waits for play. */
-export async function joinTwoWithKeyboard(page, startState = 'playing') {
+/**
+ * P1 (Space) and P2 (Enter) join and ready up in a keyboard lobby; waits for play. In a
+ * simultaneous mode the round opens with the controls card (MP-7): both fire to start it
+ * (skipIntro: false leaves the card up).
+ */
+export async function joinTwoWithKeyboard(page, startState = 'playing', { skipIntro = true } = {}) {
   await lobbyPress(page, 'Space', 0, (c) => !!c);
   await lobbyPress(page, 'Enter', 1, (c) => !!c);
   await lobbyPress(page, 'Space', 0, (c) => c.ready);
   await lobbyPress(page, 'Enter', 1, (c) => c.ready);
   await waitForState(page, startState, 6000);
+  if (skipIntro && startState === 'playing') await skipRoundIntro(page);
+}
+
+/**
+ * Start a round that shows the controls card (MP-7) by pressing each seat's fire with real
+ * input: Space (P1 keys), Enter (P2 keys), a tap on the zone's fire button (touch) or Ⓐ
+ * (controller). No-op when no card is up.
+ */
+export async function skipRoundIntro(page) {
+  await expect.poll(() => hook(page, 'state')).toBe('playing');
+  const intro = await hook(page, 'mp.intro');
+  if (!intro) return;
+  for (const [i, c] of intro.cards.entries()) {
+    if (intro.ready[i]) continue;
+    const src = c.source || '';
+    if (src === 'kbLeft') await page.keyboard.press('Space');
+    else if (src === 'kbRight') await page.keyboard.press('Enter');
+    else if (src === 'touch:a' || src === 'touch:b') {
+      const fire = src === 'touch:a' ? '#touch-fire-btn' : '#touch-fire-btn-b';
+      // A controller was used last: the touch controls come back with the next touch
+      if (!(await page.locator(fire).isVisible())) {
+        const c = await page.locator('#gameCanvas').boundingBox();
+        await tapAt(page, { x: c.x + c.width / 2, y: c.y + c.height - 30 });
+        await expect(page.locator(fire)).toBeVisible();
+      }
+      await tapAt(page, await centerOf(page, fire));
+    } else if (/^pad:\d+$/.test(src)) {
+      await padTap(page, PAD.A, { pad: Number(src.slice(4)) });
+    }
+    if (!(await hook(page, 'mp.intro'))) break;
+  }
+  await expect.poll(() => hook(page, 'mp.intro'), { message: 'controls card dismissed' }).toBeNull();
 }
 
 /**

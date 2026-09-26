@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, frames, loginWithTouch, tapAt, menuItemCenter, tapRegionCenter, canvasToPage,
-  centerOf, rectsOverlap, Fingers, padTap, padStick, PAD,
+  centerOf, rectsOverlap, Fingers, padTap, padStick, PAD, skipRoundIntro,
 } from './helpers.js';
 
 const angDist = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -36,6 +36,7 @@ async function joinBoth(page) {
   await tapPad(page, 'a', 0, (c) => c.ready);
   await tapPad(page, 'b', 1, (c) => c.ready);
   await waitForState(page, 'playing', 6000);
+  await skipRoundIntro(page); // controls card (MP-7): both fire buttons
   await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
 }
 
@@ -232,6 +233,9 @@ test.describe('facing layout (iPad)', () => {
     await tapPad(page, 'a', 0, (c) => c.ready);
     await padTap(page, PAD.A);
     await waitForState(page, 'playing', 6000);
+    // Controls card (MP-7) in both halves: the fire button (P1) and Ⓐ (P2) start it
+    await expect.poll(() => hook(page, 'mp.intro.viewers')).toBe(2);
+    await skipRoundIntro(page);
     await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
     expect(await hook(page, 'mp.layout')).toBe('facing');
     await expect.poll(() => hook(page, 'mp.orientations')).toEqual([0, 180, 0, 0]);

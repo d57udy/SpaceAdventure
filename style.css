@@ -670,7 +670,7 @@ body.mp-round.mp-hud-dom .mp-hud {
     position: relative;
     min-width: 28px;
     padding: 1px 4px;
-    font-size: 14px;
+    font-size: 18px; /* HUD text at least 18 px (plan §12) */
     text-align: center;
     border: 1px solid rgba(255, 255, 255, 0.5);
     border-radius: 4px;
@@ -691,7 +691,7 @@ body.mp-round.mp-hud-dom .mp-hud {
 
 .seat-hud [data-hud="combo"] {
     color: #FFD700;
-    font-size: 16px;
+    font-size: 18px;
     font-weight: bold;
 }
 
@@ -708,7 +708,7 @@ body.mp-round.mp-hud-dom .mp-hud {
 
 .seat-hud [data-hud="status"] {
     color: #FFD700;
-    font-size: 15px;
+    font-size: 18px;
     font-weight: bold;
 }
 
@@ -968,13 +968,13 @@ body.mp-layout-facing:not(.mp-portrait) .mp-hud-right {
 
 /* Portrait bars are short: a more compact panel */
 body.mp-layout-facing.mp-portrait .seat-hud {
-    font-size: 15px;
-    line-height: 1.15;
+    font-size: 18px;
+    line-height: 1.1;
     max-height: calc(var(--mp-bar) - 12px);
 }
 
 body.mp-layout-facing.mp-portrait .seat-hud [data-hud="score"] {
-    font-size: 20px;
+    font-size: 22px;
 }
 
 /* Lobby join pads: bottom and top (rotated) */
@@ -1022,4 +1022,97 @@ body.mp-layout-facing:not(.mp-portrait) #join-pad-b {
 /* Results after a facing round: the canvas draws both copies; hide the single-player HUD line */
 body.mp-results-facing .ui-overlay {
     display: none;
+}
+
+/* ===================================================================================
+   MP-7 (plan 05 §12): round intro card, fire button side, accessibility.
+   =================================================================================== */
+/* Intro: each HUD panel shows its seat's controls instead of score and lives */
+.seat-hud-intro {
+    display: none;
+}
+
+body.mp-intro .seat-hud-intro {
+    display: block;
+    margin-top: 4px;
+}
+
+body.mp-intro .seat-hud > [data-hud]:not([data-hud="name"]),
+body.mp-intro .seat-hud > .seat-hud-chips,
+body.mp-intro .seat-hud > .seat-hud-combo-track {
+    display: none;
+}
+
+.seat-hud-intro-line {
+    font-size: 18px;
+    line-height: 1.2;
+}
+
+.seat-hud-intro-status {
+    margin-top: 4px;
+    font-size: 18px;
+    font-weight: bold;
+    color: #FFD700;
+    animation: intro-blink 1.2s ease-in-out infinite;
+}
+
+.seat-hud-intro-status.ready {
+    color: #7CFF7C;
+    animation: none;
+}
+
+@keyframes intro-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
+/* A touch player who hasn't pressed fire yet: their stick zone and fire button pulse */
+@keyframes intro-zone-pulse {
+    0%, 100% { background-color: rgba(255, 215, 0, 0.04); }
+    50% { background-color: rgba(255, 215, 0, 0.14); }
+}
+
+body.intro-zone-a #joystick-zone,
+body.intro-zone-b #joystick-zone-b {
+    animation: intro-zone-pulse 1.4s ease-in-out infinite;
+}
+
+body.intro-zone-a #touch-fire-btn,
+body.intro-zone-b #touch-fire-btn-b {
+    animation: tutorial-pulse 1.1s ease-out infinite;
+    border-color: #FFD700;
+}
+
+/* Fire button side (Settings > Multiplayer). Outer: the screen edge (default). Inner: side by
+   side, next to the play area; facing, the other end of the player's own bar (pause swaps). */
+body.mp-active.mp-layout-sides.mp-fire-inner-a .touch-right {
+    left: auto;
+    right: calc(100% - var(--safe-left) - var(--mp-bar) + 8px);
+    justify-items: end;
+}
+
+body.mp-active.mp-layout-sides.mp-fire-inner-b .mp-cluster-b {
+    right: auto;
+    left: calc(100% - var(--safe-right) - var(--mp-bar) + 8px);
+    justify-items: start;
+}
+
+body.mp-active.mp-layout-facing.mp-fire-inner-a .touch-right {
+    right: auto;
+    left: calc(8px + var(--safe-left));
+}
+
+body.mp-active.mp-layout-facing.mp-fire-inner-a .touch-top {
+    left: auto;
+    right: calc(8px + var(--safe-right));
+}
+
+body.mp-active.mp-layout-facing.mp-fire-inner-b .mp-cluster-b {
+    right: auto;
+    left: calc(8px + var(--safe-right));
+}
+
+body.mp-active.mp-layout-facing.mp-fire-inner-b .touch-zone-b .mp-pause-b {
+    left: auto;
+    right: calc(8px + var(--safe-left));
 }
