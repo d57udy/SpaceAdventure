@@ -4296,7 +4296,7 @@ function checkShipCollisions(p) {
                     asteroid.destroy();
 
                     // Visual effects
-                    const screenPos = camera.worldToScreen(asteroid.x, asteroid.y);
+                    const screenPos = worldScreenPos(asteroid.x, asteroid.y); // nearest wrapped copy
                     Particles.collect(asteroid.x, asteroid.y, palette.collect);
 
                     // Floating score text
@@ -4409,7 +4409,7 @@ function checkCollisions() {
                     else if (shooter && (mode.hooks.onShootGreen(round, shooter) || {}).denied) {
                         // e.g. Harvest Race: shooting a green denies it to the other player
                         shooter.stats.greensDenied++;
-                        const at = camera.worldToScreen(asteroid.x, asteroid.y);
+                        const at = worldScreenPos(asteroid.x, asteroid.y); // nearest wrapped copy
                         FloatingTexts.spawn(at.x, at.y, 'DENIED', shooter.colour, 18);
                     }
                 } else if (tutorial.active) {
