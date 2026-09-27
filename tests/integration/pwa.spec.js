@@ -123,7 +123,7 @@ test.describe('update flow', () => {
     test.skip(testInfo.project.name !== 'pwa-subpath', 'needs the admin server (tests/support/serve.mjs --admin)');
   });
 
-  test('new version: toast in menu and pause, never in play; tapping it reloads onto the new cache', async ({ page, request }, testInfo) => {
+  test('new version: toast in the menu, never in play or with a paused run; tapping it reloads onto the new cache', async ({ page, request }, testInfo) => {
     const origin = new URL(testInfo.project.use.baseURL).origin;
     await request.post(`${origin}/__admin/reset`);
     try {
@@ -153,17 +153,30 @@ test.describe('update flow', () => {
       expect(await hook(page, 'pwa.updateToastVisible')).toBe(false);
       await expect(page.locator('#update-toast')).toBeHidden();
 
-      // Pause: now it is offered
+      // Not while paused either: the reload would lose the paused run
       await page.keyboard.press('KeyP');
       await waitForState(page, 'paused');
+      await frames(page, 5);
+      expect(await hook(page, 'pwa.updateToastVisible')).toBe(false);
+      await expect(page.locator('#update-toast')).toBeHidden();
+      // Nor in the menu while that paused game can still be resumed
+      await page.keyboard.press('ArrowDown');
+      await expect.poll(() => hook(page, 'pauseIndex')).toBe(1);
+      await page.keyboard.press('ArrowDown');
+      await expect.poll(() => hook(page, 'pauseIndex')).toBe(2);
+      await page.keyboard.press('Enter'); // Main Menu
+      await waitForState(page, 'menu');
+      expect(await hook(page, 'pausedGameExists')).toBe(true);
+      await frames(page, 5);
+      await expect(page.locator('#update-toast')).toBeHidden();
+
+      // A fresh page (no run in memory): offered in the menu again
+      await page.reload();
+      await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string');
+      await waitForState(page, 'menu');
+      await expect.poll(() => hook(page, 'pwa.updateReady'), { timeout: 15000 }).toBe(true);
       await expect(page.locator('#update-toast')).toBeVisible();
       await expect(page.locator('#update-toast')).toHaveText('New version available: tap to update');
-      // Resume hides it again
-      await page.keyboard.press('KeyP');
-      await waitForState(page, 'playing');
-      await expect(page.locator('#update-toast')).toBeHidden();
-      await page.keyboard.press('KeyP');
-      await waitForState(page, 'paused');
 
       // Tap: save, activate the new worker, reload once
       const reloaded = page.waitForEvent('load');

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     initPwa, detectIos, detectDisplayMode, isLocalhost, parseSwFlags,
-    IOS_HINT_KEY, CACHE_PREFIX,
+    IOS_HINT_KEY, CACHE_PREFIX, DEFAULT_UPDATE_SAFE_STATES,
 } from '../../js/pwa.js';
 
 // --- Fakes ------------------------------------------------------------------
@@ -246,12 +246,14 @@ test('update toast only outside play', async () => {
     const env = makeEnv({ regInit: { waiting: makeWorker('installed') } });
     const pwa = start(env, { getState: () => gs });
     await pwa.ready;
-    for (const s of ['playing', 'prompt_user']) {
+    // Not while paused either: the reload would lose the paused run
+    for (const s of ['playing', 'prompt_user', 'paused']) {
         gs = s;
         assert.equal(pwa.shouldShowUpdateToast(), false, s);
         assert.equal(pwa.getPwaState().updateToastVisible, false, s);
     }
-    for (const s of ['menu', 'paused', 'game_over', 'high_scores']) {
+    assert.equal(DEFAULT_UPDATE_SAFE_STATES.includes('paused'), false);
+    for (const s of ['menu', 'game_over', 'high_scores']) {
         gs = s;
         assert.equal(pwa.shouldShowUpdateToast(), true, s);
     }

@@ -2346,7 +2346,12 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('pagehide', () => saveAllUpgrades());
 
     // Installable app: service worker, update toast, install / iOS hint, full screen
-    pwa = initPwa({ getState: () => currentGameState, onBeforeReload: () => saveAllUpgrades() });
+    // A paused run lives only in memory: while one exists the menus count as 'paused' for
+    // the update toast, so a reload never throws the run away
+    pwa = initPwa({
+        getState: () => (pausedGameExists && currentGameState !== GameState.PLAYING ? GameState.PAUSED : currentGameState),
+        onBeforeReload: () => saveAllUpgrades(),
+    });
     pwaUi = createPwaUi(pwa, { getState: () => currentGameState, notify: showToast });
 
     // Read-only snapshot used by the automated browser tests

@@ -12,8 +12,9 @@ export const UPDATE_INTERVAL_MS = 60 * 60 * 1000;
 
 // Game states in which it is safe to show the update toast / apply an update.
 // Never during play (or while typing a name).
+// Not 'paused': applying an update reloads the page and a paused run would be lost.
 export const DEFAULT_UPDATE_SAFE_STATES = [
-    'menu', 'paused', 'game_over', 'high_scores',
+    'menu', 'game_over', 'high_scores',
     'achievements', 'upgrades', 'help', 'settings',
 ];
 
