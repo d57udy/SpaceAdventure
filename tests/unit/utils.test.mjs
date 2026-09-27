@@ -81,3 +81,20 @@ test('isNearAny measures across the world wrap (safe-spawn fix)', () => {
     // no wrapping when the world size is 0
     assert.equal(isNearAny(1195, 895, [ship], 300, 0, 0), false);
 });
+
+test('FrameErrorGuard trips once after N failing frames in a row and recovers after good frames', async () => {
+    const { FrameErrorGuard } = await import('../../js/utils.js');
+    const g = new FrameErrorGuard(3, 2);
+    assert.equal(g.fail(), false);
+    assert.equal(g.fail(), false);
+    assert.equal(g.ok(), false); // a good frame resets the streak
+    assert.equal(g.fail(), false);
+    assert.equal(g.fail(), false);
+    assert.equal(g.fail(), true); // third in a row
+    assert.equal(g.tripped, true);
+    assert.equal(g.fail(), false, 'trips only once');
+    assert.equal(g.ok(), false);
+    assert.equal(g.ok(), true, 'recovered');
+    assert.equal(g.tripped, false);
+    assert.equal(g.total, 6);
+});

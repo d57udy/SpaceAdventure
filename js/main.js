@@ -2,7 +2,7 @@ import { PlayerShip } from './player.js';
 import { Asteroid } from './asteroid.js';
 import { Bullet } from './bullet.js';
 import { InputHandler } from './input.js';
-import { randomRange, wrapDelta, isNearAny } from './utils.js';
+import { randomRange, wrapDelta, isNearAny, FrameErrorGuard } from './utils.js';
 import { UFO } from './ufo.js';
 import { AudioManager } from './audio.js';
 import { PersistenceManager } from './persistence.js';
@@ -2372,6 +2372,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get isMuted() { return audioManager.isMuted; },
         get isTouchDevice() { return isTouchDevice; },
         get loopErrors() { return loopErrorCount; },
+        get frameErrorsTripped() { return frameErrors.tripped; },
         get controlMode() { return controlMode.id; },
         get settings() { return settings.all(); },
         get settingsIndex() { return settingsIndex; },
@@ -4183,21 +4184,63 @@ function drawCenterText(line1, line2 = null) {
 // The Main Game Loop
 let lastTime = 0;
 let loopErrorCount = 0;
+const frameErrors = new FrameErrorGuard(30); // 30 failing frames in a row: pause and say so
+function logFrameError(where, error) {
+    loopErrorCount++;
+    if (loopErrorCount <= 5) console.error(`[gameLoop] ${where} error (game continues):`, error);
+}
 function gameLoop(timestamp = 0) {
     // Schedule the next frame first so one bad frame can never stop the game for good
     requestAnimationFrame(gameLoop);
     const rawDeltaTime = (timestamp - lastTime) / 1000;
     const deltaTime = Math.min(rawDeltaTime, 1 / 20);
     lastTime = timestamp;
+    // Update and render fail separately: a drawing bug must not stop the game logic (and
+    // input, e.g. pausing) from running, nor the other way round
+    let failed = false;
     try {
         trackRenderPerformance(rawDeltaTime);
         updateGame(deltaTime);
+    } catch (error) {
+        failed = true;
+        logFrameError('update', error);
+    }
+    try {
         renderGame();
     } catch (error) {
-        loopErrorCount++;
-        if (loopErrorCount <= 5) console.error('[gameLoop] frame error (game continues):', error);
+        failed = true;
+        logFrameError('render', error);
+    }
+    if (failed) {
+        if (frameErrors.fail()) onRepeatedFrameErrors();
+    } else if (frameErrors.ok()) {
+        showFrameErrorNotice(false);
     }
     updateMusic();
+}
+// Every frame failing: stop play (the run stays resumable) and tell the player, in the DOM
+// because the canvas drawing may be what fails
+function onRepeatedFrameErrors() {
+    try {
+        if (currentGameState === GameState.PLAYING) pauseGame();
+    } catch (e) { /* the notice below still shows */ }
+    showFrameErrorNotice(true);
+}
+function showFrameErrorNotice(show) {
+    let el = document.getElementById('frame-error-notice');
+    if (!show) {
+        if (el) el.hidden = true;
+        return;
+    }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'frame-error-notice';
+        el.setAttribute('role', 'alert');
+        el.textContent = 'Something went wrong and the game was paused. If it keeps happening, reload the page.';
+        el.addEventListener('click', () => { el.hidden = true; });
+        document.body.appendChild(el);
+    }
+    el.hidden = false;
 }
 
 // Every frame, in every state: follow the game's mood and schedule the next notes.

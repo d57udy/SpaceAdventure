@@ -1116,3 +1116,24 @@ body.mp-active.mp-layout-facing.mp-fire-inner-b .touch-zone-b .mp-pause-b {
     left: auto;
     right: calc(8px + var(--safe-left));
 }
+
+/* --- Repeated frame errors: the game paused itself (main.js showFrameErrorNotice) --- */
+#frame-error-notice {
+    position: fixed;
+    left: 50%;
+    top: 12px;
+    transform: translateX(-50%);
+    max-width: min(90vw, 480px);
+    padding: 10px 14px;
+    background: rgba(120, 0, 0, 0.92);
+    color: #fff;
+    font: 15px Arial, sans-serif;
+    border: 1px solid #ff8080;
+    border-radius: 6px;
+    z-index: 1000;
+    cursor: pointer;
+}
+
+#frame-error-notice[hidden] {
+    display: none;
+}

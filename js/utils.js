@@ -61,3 +61,42 @@ export function wrapDelta(delta, size) {
 export function isNearAny(x, y, points, radius, W, H) {
     return points.some(p => Math.hypot(wrapDelta(x - p.x, W), wrapDelta(y - p.y, H)) < radius);
 }
+
+/**
+ * Counts failing game-loop frames. fail() returns true once when `limit` frames in a row
+ * have failed (the loop then pauses the game and shows a notice); ok() returns true once
+ * when, after that, `recoverFrames` frames in a row succeeded (the notice can go).
+ */
+export class FrameErrorGuard {
+    constructor(limit = 30, recoverFrames = 120) {
+        this.limit = limit;
+        this.recoverFrames = recoverFrames;
+        this.consecutive = 0;
+        this.okStreak = 0;
+        this.total = 0;
+        this.tripped = false;
+    }
+
+    fail() {
+        this.total++;
+        this.consecutive++;
+        this.okStreak = 0;
+        if (!this.tripped && this.consecutive >= this.limit) {
+            this.tripped = true;
+            return true;
+        }
+        return false;
+    }
+
+    ok() {
+        this.consecutive = 0;
+        if (!this.tripped) return false;
+        this.okStreak++;
+        if (this.okStreak >= this.recoverFrames) {
+            this.tripped = false;
+            this.okStreak = 0;
+            return true;
+        }
+        return false;
+    }
+}
