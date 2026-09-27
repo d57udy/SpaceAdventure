@@ -464,9 +464,12 @@ body.state-playing .app-notices {
     pointer-events: none;
 }
 
-/* Transparent button over the Settings screen's "Full screen" row (the canvas draws the row) */
-.settings-fs-btn {
+/* Transparent button over the Settings screen's "Full screen" row (the canvas draws the row).
+   Two classes so the phone-size .app-btn padding/min-height below cannot make it taller than
+   the row: it would then cover the Back row under it. */
+.app-btn.settings-fs-btn {
     position: absolute;
+    box-sizing: border-box;
     z-index: 15;
     background: transparent;
     border: none;
