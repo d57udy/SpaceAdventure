@@ -11,6 +11,7 @@
 // Seat-bound keys are matched by KeyboardEvent.code (physical key position) so AZERTY and
 // QWERTZ keyboards work; typing (username prompt) still uses the typed character (event.key).
 import { GamepadPoller, mergePads } from './gamepad.js';
+import { JOYSTICK_DEADZONE } from './steering.js';
 import {
     SeatTable, MAX_SEATS, lookupCode, lookupShared, rotateVector,
 } from './seats.js';
@@ -24,8 +25,11 @@ export const CONTINUOUS_ACTIONS = Object.freeze(['thrust', 'rotateLeft', 'rotate
 export const SEAT_ONE_SHOTS = Object.freeze(['hyperspace']);
 /** Palm rule: a stick finger that moved less than this many CSS px ... */
 export const PALM_MOVE_PX = 6;
-/** ... for this long (ms) can be taken over by a new finger in the same zone. */
+/** ... for this long (ms) can be taken over by a new finger in the same zone ... */
 export const PALM_IDLE_MS = 500;
+/** ... but only while it rests inside the stick deadzone (a palm near where it landed), never
+ * while it holds a steady deflection (a player holding a turn or thrust). */
+export const PALM_DEADZONE = JOYSTICK_DEADZONE;
 /** Source events kept for the lobby when nobody reads them. */
 export const SOURCE_EVENT_LIMIT = 64;
 export const CHAR_QUEUE_LIMIT = 16; // typed characters kept for the username prompt
@@ -408,7 +412,8 @@ export class InputHandler {
     }
 
     // A finger landing in a stick zone. It takes the zone's seat stick if free, or if the
-    // current owner has rested (palm rule: moved at most PALM_MOVE_PX for PALM_IDLE_MS).
+    // current owner is a resting palm (moved at most PALM_MOVE_PX for PALM_IDLE_MS, and
+    // inside the stick deadzone: a steadily held deflection is steering, not a palm).
     _stickDown(event, zone) {
         const source = `touch:${zone}`;
         const seat = this._seatOf(source);
@@ -416,7 +421,12 @@ export class InputHandler {
         if (seat === null) return;
         const j = this.seatState[seat].stick;
         const now = this.now();
-        if (j.pointerId !== null && now - j.anchorAt < PALM_IDLE_MS) return;
+        if (j.pointerId !== null) {
+            const idle = now - j.anchorAt >= PALM_IDLE_MS;
+            const radius = this.joystickRadius > 0 ? this.joystickRadius : 1;
+            const inDeadzone = Math.hypot(j.x - j.originX, j.y - j.originY) / radius < PALM_DEADZONE;
+            if (!idle || !inDeadzone) return;
+        }
         j.pointerId = event.pointerId;
         j.zone = zone;
         j.originX = j.x = j.anchorX = event.clientX;

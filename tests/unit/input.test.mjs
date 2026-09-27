@@ -1463,3 +1463,18 @@ test('Meta down or up releases every held key (macOS swallows keyups while Cmd i
     input.endFrame();
     assert.equal(input.isPressed('thrust'), false);
 });
+
+test('palm rule: a steadily held deflection (outside the deadzone) is never taken over', () => {
+    const { doc, input, clock } = clockSetup(['touch:a']);
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 1, { clientX: 100, clientY: 100 }));
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 145, clientY: 100 })); // 0.75 of the radius
+    clock.t += PALM_IDLE_MS * 4; // held perfectly still for 2 s
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 2, { clientX: 300, clientY: 300 }));
+    assert.equal(input.seatState[0].stick.pointerId, 1, 'the steering finger keeps the stick');
+    assert.ok(near(input.getJoystick(0).magnitude, 0.75));
+    // Back near the centre (inside the deadzone) and idle: now a new finger may take it
+    doc.dispatch('pointermove', pointerEvent(null, 1, { clientX: 105, clientY: 100 }));
+    clock.t += PALM_IDLE_MS;
+    doc.dispatch('pointerdown', pointerEvent(zoneEl('a'), 3, { clientX: 300, clientY: 300 }));
+    assert.equal(input.seatState[0].stick.pointerId, 3);
+});
