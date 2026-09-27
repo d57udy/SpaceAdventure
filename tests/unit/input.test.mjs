@@ -1409,3 +1409,57 @@ test('pushSourceEvent (touch join pads): a lobby event with the source seat, no 
     assert.equal(input.consumeAction('hyperspace', 0), false);
     assert.equal(input.isPressed('fire', 0), false);
 });
+
+test('a keyup whose target is an INPUT still releases a key held in the game', () => {
+    const { win, input } = setup();
+    win.dispatch('keydown', keyEvent('w', { tagName: 'CANVAS' }));
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), true);
+    // Focus moved to the username field before the key was released
+    win.dispatch('keyup', keyEvent('w', { tagName: 'INPUT' }));
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+    // And the key can be pressed again (its repeat guard was cleared)
+    win.dispatch('keydown', keyEvent('w', { tagName: 'CANVAS' }));
+    assert.equal(input.isPressed('thrust'), true);
+});
+
+test('the typed-character queue is bounded and only fills while text entry is on', async () => {
+    const { CHAR_QUEUE_LIMIT } = await import('../../js/input.js');
+    const { win, input } = setup();
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for (const ch of letters) {
+        win.dispatch('keydown', keyEvent(ch.toLowerCase()));
+        win.dispatch('keyup', keyEvent(ch.toLowerCase()));
+    }
+    assert.equal(input.charQueue.length, CHAR_QUEUE_LIMIT);
+    assert.equal(input.charQueue[0], letters[letters.length - CHAR_QUEUE_LIMIT]); // oldest dropped
+    input.setTextEntry(false);
+    assert.equal(input.charQueue.length, 0);
+    win.dispatch('keydown', keyEvent('q'));
+    win.dispatch('keyup', keyEvent('q'));
+    assert.equal(input.charQueue.length, 0);
+    assert.equal(input.consumeAction('key_Q'), true); // single-letter shortcuts still work
+    input.setTextEntry(true);
+    win.dispatch('keydown', keyEvent('z'));
+    assert.equal(input.consumeLastCharKey(), 'Z');
+});
+
+test('Meta down or up releases every held key (macOS swallows keyups while Cmd is down)', () => {
+    const { win, input } = setup();
+    win.dispatch('keydown', keyEvent('w'));
+    win.dispatch('keydown', keyEvent('ArrowLeft'));
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), true);
+    assert.equal(input.isPressed('rotateLeft'), true);
+    win.dispatch('keydown', keyEvent('Meta', null, 'MetaLeft', { metaKey: true }));
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+    assert.equal(input.isPressed('rotateLeft'), false);
+    // Pressing again works (no stale repeat guard)
+    win.dispatch('keydown', keyEvent('w'));
+    assert.equal(input.isPressed('thrust'), true);
+    win.dispatch('keyup', keyEvent('Meta', null, 'MetaLeft'));
+    input.endFrame();
+    assert.equal(input.isPressed('thrust'), false);
+});

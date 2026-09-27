@@ -3283,6 +3283,8 @@ function updateCamera(deltaTime) {
 
 function updateGame(deltaTime) {
     updateToasts(deltaTime);
+    // Typed characters are queued only for the username prompt (bounded in input.js)
+    inputHandler.setTextEntry(currentGameState === GameState.PROMPT_USER);
     handleInput(deltaTime);
     syncStateTransition();
     syncTutorialDom();

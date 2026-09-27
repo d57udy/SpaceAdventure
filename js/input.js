@@ -28,6 +28,7 @@ export const PALM_MOVE_PX = 6;
 export const PALM_IDLE_MS = 500;
 /** Source events kept for the lobby when nobody reads them. */
 export const SOURCE_EVENT_LIMIT = 64;
+export const CHAR_QUEUE_LIMIT = 16; // typed characters kept for the username prompt
 
 const DEFAULT_ZONE = 'a';
 const TYPED_CHAR = /^[A-Za-z0-9]$/;
@@ -99,6 +100,7 @@ export class InputHandler {
         this.pointerInfo = new Map(); // pointerId -> { seat, zone } for button pointers
         this.pendingTaps = []; // Taps/clicks on the canvas in logical canvas coordinates
         this.charQueue = []; // Typed characters in order (username entry)
+        this.textEntry = true; // queue typed characters only while a text consumer reads them
         this.sourceEvents = []; // { source, action, seat } per press, for lobby joining
         // Drag-to-steer virtual joystick: a finger pressed in a .joystick-zone becomes the
         // stick's centre; dragging away from it gives a direction and a strength (0..1).
@@ -241,9 +243,17 @@ export class InputHandler {
     // --- Keyboard ---
 
     handleKeyEvent(event, isPressed) {
-        // Let text fields (username entry) receive keys normally
+        // Cmd (Meta) on macOS swallows the keyup of keys pressed with it: release every key
+        // hold on Meta down and up so nothing stays stuck (Cmd+Tab, Cmd+W, ...)
+        if (event.key === 'Meta' || /^(Meta|OS)(Left|Right)$/.test(event.code || '')) {
+            this.releaseKeys();
+            return;
+        }
         const target = event.target;
-        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+        const inTextField = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+        // Let text fields (username entry) receive keys normally; a keyup is always processed
+        // (a key pressed in the game and released in a field must not stay held)
+        if (inTextField && isPressed) return;
 
         const code = codeOf(event);
         if (!code) return;
@@ -305,7 +315,11 @@ export class InputHandler {
         if (typed) {
             const char = event.key.toUpperCase();
             this.singlePressActions[`key_${char}`] = true;
-            this.charQueue.push(char);
+            // Bounded, and only while something reads it (the username prompt)
+            if (this.textEntry) {
+                this.charQueue.push(char);
+                if (this.charQueue.length > CHAR_QUEUE_LIMIT) this.charQueue.shift();
+            }
         }
     }
 
@@ -616,6 +630,21 @@ export class InputHandler {
             s.padHeld = new Set();
             s.padStick = INACTIVE_STICK;
         }
+    }
+
+    // A text consumer (the username prompt) is active: typed characters are queued
+    setTextEntry(on) {
+        this.textEntry = !!on;
+        if (!this.textEntry) this.charQueue.length = 0;
+    }
+
+    // Release every key hold (Meta pressed/released; keys held with it get no keyup)
+    releaseKeys() {
+        for (const [code, holds] of this.codeHolds) {
+            for (const h of holds) this._unhold(h.seat, h.action, `key:${code}`);
+        }
+        this.codeHolds.clear();
+        this.downCodes.clear();
     }
 
     // Release everything (window blur, tab hidden, state changes)
