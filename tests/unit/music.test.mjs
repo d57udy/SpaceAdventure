@@ -543,6 +543,7 @@ test('playPreview plays a short phrase of the chosen tune and ducks the sequence
     assert.equal(engine.playPreview('nope'), 0);
     // A second preview replaces the first one (old output fades)
     const first = engine.preview.out;
+    ctx.currentTime += 1;
     engine.playPreview('ambient');
     assert.equal(first.gain.ramps().at(-1).v, 0);
     engine.setVolume(0);
@@ -611,4 +612,32 @@ test('ramps fall back to cancel + set + ramp without cancelAndHoldAtTime (or whe
     q.cancelAndHoldAtTime = () => { throw new RangeError('not supported'); };
     engine._ramp(q, 1, 1, 0.5);
     assert.deepEqual(q.events.map(e => e.type), ['cancel', 'set', 'linear']);
+});
+
+test('previews are rate-limited (the last pick plays) and their nodes are disconnected', () => {
+    const { ctx, engine } = makeEngine('synthwave', 'menu');
+    run(engine, ctx, 1);
+    assert.ok(engine.playPreview('chiptune') > 0);
+    const first = engine.preview;
+    // Cycling fast through tunes: nothing new is scheduled, the last pick is remembered
+    const before = ctx.starts.length;
+    assert.equal(engine.playPreview('ambient'), 0);
+    assert.equal(engine.playPreview('synthwave'), 0);
+    assert.equal(ctx.starts.length, before);
+    assert.equal(engine.preview, first);
+    // Once the interval has passed, update() plays the last pick and retires the old preview
+    ctx.currentTime += 0.5;
+    engine.update();
+    assert.equal(engine.preview.tuneId, 'synthwave');
+    assert.ok(first.out.outputs.length > 0, 'fading, still connected');
+    ctx.currentTime += 0.3;
+    engine.update();
+    assert.equal(first.out.outputs.length, 0, 'the replaced preview is disconnected');
+    // A finished preview is disconnected after its tail
+    const second = engine.preview;
+    ctx.currentTime = second.until + 2;
+    engine.update();
+    assert.equal(engine.preview, null);
+    assert.equal(second.out.outputs.length, 0);
+    assert.ok(second.nodes.length > 0 && second.nodes.every((n) => n.outputs.length === 0));
 });

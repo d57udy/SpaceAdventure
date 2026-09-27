@@ -13,6 +13,8 @@ export const PAUSE_CUTOFF = 800; // Hz, filter closed while paused
 export const OPEN_CUTOFF = 18000;
 export const MASTER_LEVEL = 0.8; // gain at volume 10 (volume curve is v^2)
 export const MAX_STEPS_PER_UPDATE = 64;
+export const PREVIEW_MIN_INTERVAL = 0.3; // s between previews; faster cycling plays only the last pick
+export const PREVIEW_TAIL = 1.5; // s after a preview's phrase ends before its nodes are disconnected
 
 // Which mood the game is in. state uses main.js GameState ids.
 export function selectMood({ state, bossActive = false, lives = 3, tutorialActive = false, paused = false } = {}) {
@@ -168,6 +170,8 @@ export class MusicEngine {
         this.fadeUntil = Object.fromEntries(LAYERS.map(l => [l, 0]));
         this.phraseUntil = 0;
         this.preview = null;
+        this.pendingPreview = null; // tune picked while previews were rate-limited
+        this.retiredPreviews = []; // faded previews waiting to be disconnected
         this.graph = null;
         this.noise = null;
         this.stats = { events: 0, nodes: 0, resyncs: 0 };
@@ -447,6 +451,7 @@ export class MusicEngine {
     // Call every frame. Schedules notes up to LOOKAHEAD seconds ahead on the audio clock.
     // Returns the number of note events scheduled.
     update() {
+        this._updatePreviews();
         if (!this.ctx || !this.scheduling) return 0;
         if (!this.running) {
             this.needsResync = true;
@@ -596,14 +601,16 @@ export class MusicEngine {
     }
 
     // Temporary per-voice chain (gain -> filter) for one-shot phrases outside the sequencer.
-    _oneShotLayers(tune, dest, gains) {
+    _oneShotLayers(tune, dest, gains, nodes = null) {
         const out = {};
         for (const name of LAYERS) {
             const v = tune.voices[name];
             if (!v || !(gains[name] > 0)) continue;
             const g = this._gain(gains[name]);
+            if (nodes) nodes.push(g);
             if (v.filter) {
                 const f = this._filter(v.filter.type, this._layerCutoff(tune, name, 'calm'), v.filter.q);
+                if (nodes) nodes.push(f);
                 g.connect(f);
                 f.connect(dest);
             } else {
@@ -614,16 +621,50 @@ export class MusicEngine {
         return out;
     }
 
+    // Previews: start a rate-limited pick once allowed, disconnect finished/faded previews
+    // (their gain chains otherwise stay attached to the bus for the whole session).
+    _updatePreviews() {
+        if (!this.ctx) return;
+        const now = this.now;
+        if (this.preview && now > this.preview.until + PREVIEW_TAIL) {
+            this._disconnectPreview(this.preview);
+            this.preview = null;
+        }
+        this.retiredPreviews = this.retiredPreviews.filter((p) => {
+            if (now < p.retireAt) return true;
+            this._disconnectPreview(p);
+            return false;
+        });
+        if (this.pendingPreview && (!this.preview || now >= this.preview.startedAt + PREVIEW_MIN_INTERVAL)) {
+            const id = this.pendingPreview;
+            this.pendingPreview = null;
+            this.playPreview(id);
+        }
+    }
+
+    _disconnectPreview(p) {
+        for (const node of [p.out, ...(p.nodes || [])]) {
+            try { node.disconnect(); } catch (e) { /* already disconnected */ }
+        }
+    }
+
     // Short phrase of a tune for the Settings screen. Ducks the running music meanwhile.
-    // Returns the phrase length in seconds (0 when nothing plays).
+    // Returns the phrase length in seconds (0 when nothing plays, or when rate-limited: the
+    // pick then plays from update() once PREVIEW_MIN_INTERVAL has passed).
     playPreview(tuneId) {
         const tune = this.tunes[tuneId];
         if (!tune || !this.running || this.volume === 0) return 0;
+        if (this.preview && this.now < this.preview.startedAt + PREVIEW_MIN_INTERVAL) {
+            this.pendingPreview = tuneId;
+            return 0;
+        }
+        this.pendingPreview = null;
         this._build();
         const t0 = this.now + 0.05;
         const g = this.graph;
         if (this.preview) {
             this._ramp(this.preview.out.gain, 0, this.now, 0.08);
+            this.retiredPreviews.push({ ...this.preview, retireAt: this.now + 0.2 });
             this.preview = null;
         }
         const stepDur = 60 / tune.bpm / 4;
@@ -638,7 +679,8 @@ export class MusicEngine {
         const out = this._gain(1);
         out.connect(g.busFilter);
         const gains = layerGains(tune, 'calm');
-        const chains = this._oneShotLayers(tune, out, gains);
+        const nodes = [];
+        const chains = this._oneShotLayers(tune, out, gains, nodes);
         const layers = new Set(Object.keys(chains));
         for (let b = 0; b < bars; b++) {
             for (let s = 0; s < STEPS_PER_BAR; s++) {
@@ -652,7 +694,7 @@ export class MusicEngine {
         }
         out.gain.setValueAtTime(1, t0 + len);
         out.gain.linearRampToValueAtTime(0, t0 + len + 1.2);
-        this.preview = { tuneId, out, until: t0 + len };
+        this.preview = { tuneId, out, nodes, startedAt: this.now, until: t0 + len };
         return len;
     }
 
