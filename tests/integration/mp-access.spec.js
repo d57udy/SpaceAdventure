@@ -245,7 +245,7 @@ async function joinBothTouch(page) {
   await tapPad(page, 'b', 1, (c) => !!c && c.source === 'touch:b');
   await tapPad(page, 'a', 0, (c) => c.ready);
   await tapPad(page, 'b', 1, (c) => c.ready);
-  await waitForState(page, 'playing', 6000);
+  await waitForState(page, 'playing', 10000); // 3 s countdown; slow CI WebKit draws ~3 fps
 }
 
 test.describe('MP-7 touch', () => {

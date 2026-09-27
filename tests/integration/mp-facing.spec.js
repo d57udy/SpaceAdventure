@@ -35,7 +35,7 @@ async function joinBoth(page) {
   await tapPad(page, 'b', 1, (c) => !!c && c.source === 'touch:b');
   await tapPad(page, 'a', 0, (c) => c.ready);
   await tapPad(page, 'b', 1, (c) => c.ready);
-  await waitForState(page, 'playing', 6000);
+  await waitForState(page, 'playing', 10000); // 3 s countdown; slow CI WebKit draws ~3 fps
   await skipRoundIntro(page); // controls card (MP-7): both fire buttons
   await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
 }
@@ -232,7 +232,7 @@ test.describe('facing layout (iPad)', () => {
     await expect.poll(async () => (await card(page, 1))?.source).toBe('pad:0');
     await tapPad(page, 'a', 0, (c) => c.ready);
     await padTap(page, PAD.A);
-    await waitForState(page, 'playing', 6000);
+    await waitForState(page, 'playing', 10000); // 3 s countdown; slow CI WebKit draws ~3 fps
     // Controls card (MP-7) in both halves: the fire button (P1) and Ⓐ (P2) start it
     await expect.poll(() => hook(page, 'mp.intro.viewers')).toBe(2);
     await skipRoundIntro(page);

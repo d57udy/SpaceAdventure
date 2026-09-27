@@ -108,7 +108,8 @@ test.describe('hidpi: canvas sizing', () => {
     await page.setViewportSize({ width: vp.height, height: Math.round(Math.min(vp.width, vp.height) * 0.8) });
     await expect.poll(async () => (await hook(page, 'view')).width).not.toBe(before.width);
     await frames(page, 3);
-    await expectSharpCanvas(page);
+    // (a slow machine may already have lowered the render scale cap while playing)
+    await expectSharpCanvas(page, (await hook(page, 'view')).scaleCap);
     const world = await hook(page, 'world');
     const view = await hook(page, 'view');
     expect(world).toEqual({ width: view.width * 1.5, height: view.height * 1.5 });

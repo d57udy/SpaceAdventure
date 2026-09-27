@@ -1187,7 +1187,7 @@ function handleLobbyInput(deltaTime) {
     // Lobby options (not bound to a seat): O steps the mode's option, L the tablet layout
     if (inputHandler.consumeAction('key_O')) changeLobbyOption(1);
     if (inputHandler.consumeAction('key_L')) settings.cycle('mpLayout', 1);
-    if (tickLobby(lobby, deltaTime) === 'start') startFromLobby();
+    if (tickLobby(lobby, clockDeltaTime) === 'start') startFromLobby(); // wall clock, see gameLoop
 }
 // Start the round with the lobby's players (in seat order)
 function startFromLobby() {
@@ -2976,16 +2976,29 @@ function watchDevicePixelRatio() {
 
 // Adaptive render-scale fallback: if frames are slow while playing (average over 22 ms for
 // 3 s), lower the backing-store cap to 1.5, then 1, for the rest of the session.
+// A frame over 0.25 s is a hitch (garbage collection, a busy moment) and is left out of the
+// average, unless SLOW_FRAME_STREAK of them come in a row: a device that is always that slow
+// is exactly the one that needs the fallback. A gap over 2 s (tab hidden) restarts the window.
 const SLOW_FRAME_MS = 22;
 const SLOW_FRAME_WINDOW_S = 3;
+const SLOW_FRAME_HITCH_S = 0.25;
+const SLOW_FRAME_GAP_S = 2;
+const SLOW_FRAME_STREAK = 3;
 const RENDER_SCALE_STEPS = [MAX_RENDER_SCALE, 1.5, 1];
-const renderPerf = { windowTime: 0, windowFrames: 0, lastAvgMs: 0, downgrades: 0 };
+const renderPerf = { windowTime: 0, windowFrames: 0, lastAvgMs: 0, downgrades: 0, hitchStreak: 0 };
 function trackRenderPerformance(rawDeltaTime) {
-    if (currentGameState !== GameState.PLAYING || !(rawDeltaTime > 0) || rawDeltaTime > 0.25) {
-        // Only measure steady gameplay; a paused tab or long hitch restarts the window
+    if (currentGameState !== GameState.PLAYING || !(rawDeltaTime > 0) || rawDeltaTime > SLOW_FRAME_GAP_S) {
+        // Only measure steady gameplay; a paused or hidden tab restarts the window
         renderPerf.windowTime = 0;
         renderPerf.windowFrames = 0;
+        renderPerf.hitchStreak = 0;
         return;
+    }
+    if (rawDeltaTime > SLOW_FRAME_HITCH_S) {
+        renderPerf.hitchStreak++;
+        if (renderPerf.hitchStreak < SLOW_FRAME_STREAK) return; // a lone hitch: skip it
+    } else {
+        renderPerf.hitchStreak = 0;
     }
     renderPerf.windowTime += rawDeltaTime;
     renderPerf.windowFrames++;
@@ -4251,6 +4264,11 @@ function drawCenterText(line1, line2 = null) {
 
 // The Main Game Loop
 let lastTime = 0;
+// Wall-clock seconds of this frame for screen timers (the lobby countdown), clamped like a
+// hitch: deltaTime is capped at 1/20 s for the physics, which on a very slow device (a few
+// frames a second) would stretch a 3 s countdown to many times that.
+const CLOCK_DT_MAX = 0.25;
+let clockDeltaTime = 0;
 let loopErrorCount = 0;
 const frameErrors = new FrameErrorGuard(30); // 30 failing frames in a row: pause and say so
 function logFrameError(where, error) {
@@ -4262,6 +4280,7 @@ function gameLoop(timestamp = 0) {
     requestAnimationFrame(gameLoop);
     const rawDeltaTime = (timestamp - lastTime) / 1000;
     const deltaTime = Math.min(rawDeltaTime, 1 / 20);
+    clockDeltaTime = rawDeltaTime > 0 ? Math.min(rawDeltaTime, CLOCK_DT_MAX) : 0;
     lastTime = timestamp;
     // Update and render fail separately: a drawing bug must not stop the game logic (and
     // input, e.g. pausing) from running, nor the other way round

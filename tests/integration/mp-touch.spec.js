@@ -44,7 +44,7 @@ async function startTouchCoop(page, opts = {}) {
   await tapPad(page, 'b', 1, (c) => !!c && c.source === 'touch:b');
   await tapPad(page, 'a', 0, (c) => c.ready);
   await tapPad(page, 'b', 1, (c) => c.ready);
-  await waitForState(page, 'playing', 6000);
+  await waitForState(page, 'playing', 10000); // 3 s countdown; slow CI WebKit draws ~3 fps
   await skipRoundIntro(page); // controls card (MP-7): both fire buttons
   await expect.poll(() => hook(page, 'players.1.ship.isAlive')).toBe(true);
   await expect(page.locator('#touch-fire-btn-b')).toBeVisible();
@@ -79,7 +79,7 @@ test.describe('co-op side by side (touch)', () => {
     await expect.poll(async () => (await hook(page, 'lobby.cards')).some((c) => !!c && c.source === 'pad:0')).toBe(true);
     await tapPad(page, 'a', 0, (c) => c.ready);
     await padTap(page, PAD.A);
-    await waitForState(page, 'playing', 6000);
+    await waitForState(page, 'playing', 10000); // 3 s countdown; slow CI WebKit draws ~3 fps
     await skipRoundIntro(page);
     // The controller is now the last input
     await padTap(page, PAD.A);
@@ -271,7 +271,7 @@ test.describe('co-op side by side (touch)', () => {
     await tapPad(page, 'a', 0, (c) => c.ready);
     await page.screenshot({ path: `tests/screenshots/${name}-coop-lobby.png` });
     await tapPad(page, 'b', 1, (c) => c.ready);
-    await waitForState(page, 'playing', 6000);
+    await waitForState(page, 'playing', 10000); // 3 s countdown; slow CI WebKit draws ~3 fps
     await page.screenshot({ path: `tests/screenshots/${name}-coop-intro.png` });
     await skipRoundIntro(page);
     await page.waitForTimeout(3200); // past the LEVEL banner
