@@ -285,7 +285,10 @@ test.describe('controllers in multiplayer', () => {
       const list = await onScreen();
       return list.length >= 2 && list.every((s) => s.ok) ? 'all on screen' : JSON.stringify(list);
     }, { timeout: 4000 }).toBe('all on screen');
-    expect(await hook(page, 'camera.zoom')).toBeLessThan(1);
+    // Still zoomed out while all four fly; a ship lost to an asteroid (25 of them) leaves
+    // fewer to frame, and the camera may rightly glide back to 1
+    const flying = (await hook(page, 'players')).filter((p) => p.ship && p.ship.isAlive && p.respawnTimer <= 0);
+    if (flying.length === 4) expect(await hook(page, 'camera.zoom')).toBeLessThan(1);
     expect(await hook(page, 'camera.zoom')).toBeGreaterThanOrEqual(0.75);
     // Radar numbers and edge arrows use each player's number
     const texts = await drawnTexts(page);

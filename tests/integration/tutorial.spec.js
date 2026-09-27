@@ -489,7 +489,8 @@ test.describe('tutorial: touch', () => {
     // Drag further out: thrust
     await fingers.downAt(2, start);
     await fingers.moveBy(2, 0, -58);
-    await expect.poll(() => hook(page, 'tutorial.step'), { timeout: 5000 }).toBe('collect');
+    // 0.6 s of game-time thrust is 12+ frames, which a CI WebKit without a GPU needs seconds for
+    await expect.poll(() => hook(page, 'tutorial.step'), { timeout: 10000 }).toBe('collect');
     await fingers.releaseAll();
     await expect(page.locator('#joystick-base')).not.toHaveClass(/tutorial-highlight/);
     await expect.poll(() => hook(page, 'tutorial.target.type')).toBe('green');

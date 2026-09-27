@@ -367,6 +367,8 @@ const angDist = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)))
 // The game ignores aim changes below 0.1 rad (short drags) / 0.04 rad (long drags) to
 // filter finger tremor, so the ship may settle a few degrees off the exact drag angle.
 const ROT_TOL = 0.12;
+// Rotation polls allow 5 s: the ship turns at most 18 degrees per frame (game time is capped at
+// 1/20 s a frame) and a CI WebKit without a GPU draws only a few frames a second.
 
 /** A point inside the joystick zone, as fractions of the zone box. */
 async function zonePoint(page, fx = 0.5, fy = 0.6) {
@@ -488,7 +490,7 @@ test.describe('touch: joystick steering', () => {
     const j = await hook(page, 'joystick');
     expect(angDist(j.angle, 0)).toBeLessThan(0.05);
     expect(j.magnitude).toBeCloseTo(50 / 60, 1);
-    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), 0), { timeout: 2000 }).toBeLessThan(ROT_TOL);
+    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), 0), { timeout: 5000 }).toBeLessThan(ROT_TOL);
     await expect.poll(() => hook(page, 'ship.isThrusting')).toBe(true);
     await expect.poll(() => hook(page, 'ship.velX')).toBeGreaterThan(0.5);
     const s = await hook(page, 'ship');
@@ -503,7 +505,7 @@ test.describe('touch: joystick steering', () => {
     // First turn left with a medium drag (magnitude ~0.33: steers, but below the thrust threshold)
     await f.downAt(1, p);
     await f.moveBy(1, -20, 0);
-    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), Math.PI), { timeout: 2000 }).toBeLessThan(ROT_TOL);
+    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), Math.PI), { timeout: 5000 }).toBeLessThan(ROT_TOL);
     let s = await hook(page, 'ship');
     expect(s.isThrusting).toBe(false);
     expect(Math.hypot(s.velX, s.velY)).toBeLessThan(0.01);
@@ -514,7 +516,7 @@ test.describe('touch: joystick steering', () => {
     await f.moveBy(2, 0, -50);
     const j = await hook(page, 'joystick');
     expect(angDist(j.angle, -Math.PI / 2)).toBeLessThan(0.05);
-    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), -Math.PI / 2), { timeout: 2000 }).toBeLessThan(ROT_TOL);
+    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), -Math.PI / 2), { timeout: 5000 }).toBeLessThan(ROT_TOL);
     const rot = await hook(page, 'ship.rotation');
     expect((((rot % TAU) + TAU) % TAU)).toBeCloseTo(1.5 * Math.PI, 1);
     await expect.poll(() => hook(page, 'ship.velY')).toBeLessThan(-0.5);
@@ -584,7 +586,7 @@ test.describe('touch: joystick steering', () => {
     const j = await hook(page, 'joystick');
     expect(j.active).toBe(true);
     expect(angDist(j.angle, 0)).toBeLessThan(0.05);
-    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), 0), { timeout: 2000 }).toBeLessThan(ROT_TOL);
+    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), 0), { timeout: 5000 }).toBeLessThan(ROT_TOL);
     // Lift fire: the stick stays held
     await f.up(2);
     await expect.poll(() => isPressed(page, 'fire')).toBe(false);
@@ -609,7 +611,7 @@ test.describe('touch: joystick steering', () => {
     expect(angDist(j.angle, 0)).toBeLessThan(0.05);
     expect(j.magnitude).toBeCloseTo(40 / 60, 1);
     expect(await base.evaluate((el) => el.style.left)).toBe(left0);
-    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), 0), { timeout: 2000 }).toBeLessThan(ROT_TOL);
+    await expect.poll(async () => angDist(await hook(page, 'ship.rotation'), 0), { timeout: 5000 }).toBeLessThan(ROT_TOL);
 
     // Lifting the second finger does not release the stick
     await f.up(2);
