@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     MAX_SEATS, MAX_TOUCH_SEATS, KEY_PROFILES, MERGED_EXTRA, SHARED_CODES, lookupCode, lookupShared,
-    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat, hideTouchForGamepad,
+    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat, hideTouchForGamepad, rumblePads,
 } from '../../js/seats.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `expected ${b}, got ${a}`);
@@ -305,4 +305,24 @@ test('T skips the tutorial; it is no flying key, and Enter is not a skip key', (
     assert.deepEqual(lookupCode('KeyT', true), []);
     assert.deepEqual(lookupCode('KeyT', false), []);
     assert.ok(!lookupShared('Enter').includes('skipTutorial'));
+});
+
+test('rumblePads: single-player uses the last controller; multiplayer the player\'s own', () => {
+    const t = new SeatTable();
+    assert.deepEqual(rumblePads(t, 0), [null]); // merged
+    assert.deepEqual(rumblePads(null, 2), [null]);
+    t.setMerged(false);
+    t.join('pad:1'); // seat 0
+    t.join('kbLeft'); // seat 1
+    t.join('pad:0'); // seat 2
+    t.join('touch:a'); // seat 3
+    assert.deepEqual(rumblePads(t, 0), [1]);
+    assert.deepEqual(rumblePads(t, 2), [0]);
+    assert.deepEqual(rumblePads(t, 1), []); // keyboard player: nobody else's pad
+    assert.deepEqual(rumblePads(t, 3), []);
+    assert.deepEqual(rumblePads(t, null), [1, 0]); // a round event: every seated controller
+    // A reserved seat (controller unplugged) has no pad to rumble
+    t.reserve(0, { id: 'x' });
+    assert.deepEqual(rumblePads(t, 0), []);
+    assert.deepEqual(rumblePads(t.snapshot(), 2), [0]);
 });

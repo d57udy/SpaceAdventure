@@ -20,7 +20,7 @@ import { Haptics } from './haptics.js';
 import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
-import { hideTouchForGamepad } from './seats.js';
+import { hideTouchForGamepad, rumblePads } from './seats.js';
 import { stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP } from './menuLayout.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
@@ -552,18 +552,25 @@ const haptics = new Haptics({ enabled: () => settings.get('haptics') });
 const RUMBLE_FOR_HAPTIC = {
     collect: 'collect', lifeLost: 'death', gameOver: 'death', bossWeakPoint: 'bossHit', bossDefeated: 'bossDefeated',
 };
-function vibrate(name) {
+// p: the player the event belongs to (null: everyone), so the rumble reaches their own pad
+function vibrate(name, p = null) {
     try { haptics.play(name); } catch (e) { /* never let haptics break the game */ }
-    if (RUMBLE_FOR_HAPTIC[name]) rumble(RUMBLE_FOR_HAPTIC[name]);
+    if (RUMBLE_FOR_HAPTIC[name]) rumble(RUMBLE_FOR_HAPTIC[name], p);
 }
-// Rumble the most recently used controller ('Controller rumble' setting; no-op without one).
-const rumbleStats = { calls: 0, last: null };
-function rumble(kind) {
+// Rumble ('Controller rumble' setting; no-op without a controller). Single-player: the most
+// recently used controller. Multiplayer: the player's own controller (seat -> source -> pad
+// index), or every seated controller for an event of the whole round.
+const rumbleStats = { calls: 0, last: null, pads: [] };
+function rumble(kind, p = null) {
     if (!inputHandler || !settings.get('rumble') || !gamepadSeen) return;
     try {
-        if (inputHandler.gamepad.rumbleEvent(kind)) {
-            rumbleStats.calls++;
-            rumbleStats.last = kind;
+        const seat = p && p.input && Number.isInteger(p.input.seat) ? p.input.seat : null;
+        for (const pad of rumblePads(inputHandler.seats, seat)) {
+            if (inputHandler.gamepad.rumbleEvent(kind, pad)) {
+                rumbleStats.calls++;
+                rumbleStats.last = kind;
+                rumbleStats.pads = [...rumbleStats.pads.slice(-7), pad];
+            }
         }
     } catch (e) { /* never let rumble break the game */ }
 }
@@ -2369,7 +2376,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get gamepad() {
             const info = inputHandler.gamepadInfo();
             return { connected: info.connected, id: info.id, family: info.family, mapping: info.mapping,
-                count: info.count, seen: gamepadSeen, rumbles: rumbleStats.calls, lastRumble: rumbleStats.last };
+                count: info.count, seen: gamepadSeen, rumbles: rumbleStats.calls, lastRumble: rumbleStats.last, rumblePads: rumbleStats.pads.slice() };
         },
         get toasts() { return toasts.map(t => t.text); },
         // Floating texts on screen now (e.g. 'DENIED' in the shooter's colour)
@@ -4232,14 +4239,14 @@ function checkShipCollisions(p) {
                     asteroid.destroy();
                     Particles.collect(asteroid.x, asteroid.y, palette.collect);
                     if (audioManager) audioManager.play('collectGreen');
-                    vibrate('collect');
+                    vibrate('collect', p);
                     queueTutorial(tutorial.notify('collectedGreen'));
                 } else if (greenRule && !greenRule.points) {
                     // No points (e.g. Duel: a green gives shield time instead)
                     asteroid.destroy();
                     Particles.collect(asteroid.x, asteroid.y, palette.collect);
                     if (audioManager) audioManager.play('collectGreen');
-                    vibrate('collect');
+                    vibrate('collect', p);
                     p.stats.greens++;
                     if (greenRule.shieldSeconds) {
                         p.powerUps.shield = Math.min(greenRule.shieldCap ?? Infinity, p.powerUps.shield + greenRule.shieldSeconds);
@@ -4289,7 +4296,7 @@ function checkShipCollisions(p) {
                     if (audioManager) {
                         audioManager.play('collectGreen');
                     }
-                    vibrate('collect');
+                    vibrate('collect', p);
                     trackAchievement(p, 'trackAsteroidCollected');
                     if (mode.ddaEnabled) DynamicDifficulty.trackGreenCollected(p.combo.count);
                     if (greenRule.endRound) round.overtimeWinner = greenRule.winner; // e.g. Harvest overtime
@@ -4394,7 +4401,7 @@ function checkCollisions() {
                     // Training: the red target is gone; no power-ups, achievements or DDA
                     Particles.shatter(asteroid.x, asteroid.y, palette.hazard);
                     asteroid.split(asteroids, audioManager);
-                    rumble('redDestroyed');
+                    rumble('redDestroyed', shooter);
                     queueTutorial(tutorial.notify('destroyedRed'));
                 } else {
                     // Shooting red asteroids: Good! They split but no points
@@ -4406,7 +4413,7 @@ function checkCollisions() {
                     trackAchievement(shooter, 'trackAsteroidDestroyed');
                     if (shooter) shooter.stats.redsShot++;
                     DynamicDifficulty.trackRedDestroyed();
-                    rumble('redDestroyed');
+                    rumble('redDestroyed', shooter);
                 }
                 bulletHit = true;
                 break;
@@ -4488,7 +4495,7 @@ function checkCollisions() {
                     Particles.explode(bullet.x, bullet.y, '#FF00FF', 25);
                     ScreenShake.trigger(10, 0.3);
                     awardPoints(shooter, 200, 20); // 20 credits for a weak point
-                    vibrate('bossWeakPoint');
+                    vibrate('bossWeakPoint', shooter);
                 }
 
                 if (bossDefeated) {
@@ -4612,19 +4619,19 @@ function handlePlayerDeath(p, forced = false, killer = null) {
             if (end && end.ended) {
                 endRound(end); // plays the game-over vibration
             } else {
-                vibrate('lifeLost');
+                vibrate('lifeLost', p);
                 p.ship = null; // out until revived or the round ends
                 if (decision.beacon) p.beacon = createBeacon(p, shipX, shipY); // co-op: revive beacon
                 if (handOver) beginHandover(decision.nextIndex); // Take Turns: the next player's turn
             }
         } else if (handOver) {
             // Take Turns: a life lost hands the device to the next player with lives left
-            vibrate('lifeLost');
+            vibrate('lifeLost', p);
             p.ship = null;
             p.respawnTimer = 0;
             beginHandover(decision.nextIndex);
         } else {
-            vibrate('lifeLost');
+            vibrate('lifeLost', p);
             const delay = mode.respawn.delay ?? RESPAWN_DELAY;
             console.log(`Starting respawn timer (${delay}s)`);
             p.respawnTimer = delay;

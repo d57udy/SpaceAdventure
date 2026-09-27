@@ -112,6 +112,28 @@ export function hideTouchForGamepad(lastInputSource, table) {
 }
 
 /**
+ * Which controllers rumble for a game event. Pure.
+ *   merged (single-player): [null] = the most recently used controller (unchanged).
+ *   seat mode, event of one seat: that seat's own controller, or none when it plays with
+ *   keys or touch (never somebody else's pad).
+ *   seat mode, shared event (seat null, e.g. boss defeated, game over): every seated controller.
+ * @param {{merged:boolean, seats:Array<{source:string|null}|null>}|null} table
+ * @param {number|null} [seat]
+ * @returns {Array<number|null>} controller indices (Gamepad.index)
+ */
+export function rumblePads(table, seat = null) {
+    if (!table || table.merged) return [null];
+    const padIndex = (s) => {
+        const m = s && typeof s.source === 'string' ? /^pad:(\d+)$/.exec(s.source) : null;
+        return m ? Number(m[1]) : null;
+    };
+    const seats = table.seats || [];
+    if (seat === null || seat === undefined) return seats.map(padIndex).filter((i) => i !== null);
+    const i = padIndex(seats[seat]);
+    return i === null ? [] : [i];
+}
+
+/**
  * Rotate a vector by `deg` degrees (screen coordinates, clockwise for positive
  * angles since y points down). Exact for multiples of 90.
  */
