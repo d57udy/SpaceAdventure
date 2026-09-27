@@ -82,7 +82,8 @@ async function expectP2DragDown(page, browserName) {
   const j = await page.evaluate(() => window.__spaceAdventure.joystickFor(1));
   expect(angDist(j.angle, Math.PI / 2)).toBeLessThan(0.05);
   expect(await page.evaluate(() => window.__spaceAdventure.joystickFor(0).active)).toBe(false);
-  await expect.poll(async () => angDist(await hook(page, 'players.1.ship.rotation'), Math.PI / 2), { timeout: 3000 })
+  // The turn advances π/10 per capped frame: slow CI WebKit (~3 fps or less) needs a few seconds
+  await expect.poll(async () => angDist(await hook(page, 'players.1.ship.rotation'), Math.PI / 2), { timeout: 8000 })
     .toBeLessThan(0.15);
   // And P2 fires with their own (rotated) fire button
   await f.down(2, '#touch-fire-btn-b');
@@ -160,10 +161,12 @@ test.describe('facing layout (iPad)', () => {
   test('portrait: results in both halves; the rotated Main menu button works', async ({ page }) => {
     test.skip(isLandscape(page), 'portrait');
     test.setTimeout(90000);
-    await openTouchLobby(page, 'harvest', { url: '/?roundSeconds=3' });
+    // Round clocks run on capped game time (1/20 s per frame): at ~3 fps a game second takes
+    // ~7 s, so keep the round and the tie's overtime at 1 s each (plus the 2 s round-end banner)
+    await openTouchLobby(page, 'harvest', { url: '/?roundSeconds=1&overtimeSeconds=1' });
     await joinBoth(page);
-    await waitForState(page, 'results', 40000); // 3 s, plus 20 s of overtime on a tie
-    await expect.poll(() => hook(page, 'results.inputDelay')).toBe(0);
+    await waitForState(page, 'results', 50000);
+    await expect.poll(() => hook(page, 'results.inputDelay'), { timeout: 15000 }).toBe(0);
     const canvas = await page.locator('#gameCanvas').boundingBox();
     const up = await regionPoint(page, 'results:Main menu', false);
     const rot = await regionPoint(page, 'results:Main menu', true);

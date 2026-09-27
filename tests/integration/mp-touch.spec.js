@@ -263,7 +263,7 @@ test.describe('co-op side by side (touch)', () => {
   });
 
   test('screenshots: lobby, in game with a beacon, results (side by side)', async ({ page, browserName }) => {
-    test.setTimeout(90000);
+    test.setTimeout(150000); // respawns and banners run on capped game time: slow on CI WebKit
     const name = test.info().project.name;
     await openCoopTouchLobby(page, { hard: true });
     await tapPad(page, 'a', 0, (c) => !!c);
@@ -299,20 +299,21 @@ test.describe('co-op side by side (touch)', () => {
         const p = (await hook(page, 'players'))[i];
         if (p.lives === before && p.ship && p.ship.isAlive) await selfDestructTap(sel);
         expect(await hook(page, `players.${i}.lives`)).toBe(before - 1);
-      }).toPass({ timeout: 15000, intervals: [500] });
+      }).toPass({ timeout: 25000, intervals: [500] });
     };
+    // The 2 s respawn delay is game time (1/20 s per frame): ~13 s at ~3 fps on CI WebKit
     // P1 to 1 life (can't revive), then P2 out
     await loseLifeBy(0, '#touch-hyper-btn');
     for (let k = 0; k < 2; k++) {
-      await expect.poll(() => hook(page, 'players.1.ship.isAlive'), { timeout: 8000 }).toBe(true);
+      await expect.poll(() => hook(page, 'players.1.ship.isAlive'), { timeout: 25000 }).toBe(true);
       await loseLifeBy(1, '#touch-hyper-btn-b');
     }
     await page.waitForTimeout(400);
     await page.screenshot({ path: `tests/screenshots/${name}-coop-beacon.png` });
-    await expect.poll(() => hook(page, 'players.0.ship.isAlive'), { timeout: 8000 }).toBe(true);
+    await expect.poll(() => hook(page, 'players.0.ship.isAlive'), { timeout: 25000 }).toBe(true);
     await loseLifeBy(0, '#touch-hyper-btn');
-    await waitForState(page, 'results', 8000);
-    await expect.poll(() => hook(page, 'results.inputDelay')).toBe(0);
+    await waitForState(page, 'results', 25000); // 2 s round-end banner
+    await expect.poll(() => hook(page, 'results.inputDelay'), { timeout: 15000 }).toBe(0);
     await page.screenshot({ path: `tests/screenshots/${name}-coop-results.png` });
     expect(await hook(page, 'results.kind')).toBe('coop');
   });

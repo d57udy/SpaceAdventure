@@ -435,7 +435,9 @@ test.describe('keyboard: gameplay', () => {
     const before = await snap(page);
     await page.keyboard.press('p');
     await waitForState(page, 'paused');
+    // One press per frame: a one-shot is a flag, so two presses in the same frame count once
     await page.keyboard.press('ArrowDown');
+    await expect.poll(() => hook(page, 'pauseIndex')).toBe(1);
     await page.keyboard.press('ArrowDown');
     await expect.poll(() => hook(page, 'pauseIndex')).toBe(2);
     await page.keyboard.press('Enter'); // Main Menu
@@ -478,7 +480,9 @@ test.describe('keyboard: gameplay', () => {
   test('upgrades cannot be bought while a game is paused', async ({ page }) => {
     await page.keyboard.press('p');
     await waitForState(page, 'paused');
+    // One press per frame: a one-shot is a flag, so two presses in the same frame count once
     await page.keyboard.press('ArrowDown');
+    await expect.poll(() => hook(page, 'pauseIndex')).toBe(1);
     await page.keyboard.press('ArrowDown');
     await expect.poll(() => hook(page, 'pauseIndex')).toBe(2);
     await page.keyboard.press('Enter');

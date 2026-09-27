@@ -4969,7 +4969,7 @@ function updateRound(deltaTime) {
     } else if (end.startPhase) {
         // Tie at time up: Harvest overtime (next green wins), Duel sudden death (next kill wins)
         round.phase = end.startPhase;
-        round.overtimeLeft = end.duration ?? null;
+        round.overtimeLeft = Number.isFinite(end.duration) ? (debugRoundSeconds(mode, 'overtimeSeconds') ?? end.duration) : null;
         noteRoundPhase();
     }
 }
@@ -6131,12 +6131,13 @@ function resetVersus() {
     versus.lastPhase = 'normal';
 }
 
-// Test and tuning aid: `?roundSeconds=N` on localhost shortens versus rounds (1-600 s)
-function debugRoundSeconds(m) {
+// Test and tuning aids on localhost: `?roundSeconds=N` shortens versus rounds and
+// `?overtimeSeconds=N` a timed overtime (1-600 s)
+function debugRoundSeconds(m, param = 'roundSeconds') {
     if (!m || m.kind !== 'versus' || typeof location === 'undefined') return null;
     try {
         if (!isLocalhost(location.hostname)) return null;
-        const raw = new URLSearchParams(location.search).get('roundSeconds');
+        const raw = new URLSearchParams(location.search).get(param);
         if (raw === null) return null;
         const v = Number(raw);
         return Number.isFinite(v) && v >= 1 && v <= 600 ? v : null;
