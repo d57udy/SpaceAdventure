@@ -292,14 +292,44 @@ test.describe('keyboard: menu', () => {
     await expect(page.locator('#username-input')).toHaveValue('');
   });
 
-  test('Reset Data asks for confirmation (dismiss keeps the menu)', async ({ page }) => {
-    let dialogMessage = null;
-    page.on('dialog', async (d) => { dialogMessage = d.message(); await d.dismiss(); });
+  test('Reset Data asks in the canvas (Cancel is the default; Esc and Enter on Cancel keep the data)', async ({ page }) => {
+    let nativeDialog = false;
+    page.on('dialog', async (d) => { nativeDialog = true; await d.dismiss(); });
     await selectMenuIndex(page, MENU.RESET);
     await page.keyboard.press('Enter');
-    await expect.poll(() => dialogMessage).toContain('MENUTEST');
+    await expect.poll(() => hook(page, 'resetConfirm')).toEqual({ index: 1, user: 'MENUTEST' });
+    const regions = await hook(page, 'tapRegions');
+    expect(regions.map((r) => r.id)).toEqual([null, 'confirm:reset', 'confirm:cancel']);
+    // The menu underneath ignores arrows while the confirmation is up
+    const menuIndex = await hook(page, 'menuIndex');
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => hook(page, 'resetConfirm.index')).toBe(0);
+    expect(await hook(page, 'menuIndex')).toBe(menuIndex);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => hook(page, 'resetConfirm')).toBeNull();
     expect(await hook(page, 'state')).toBe('menu');
     expect(await hook(page, 'user')).toBe('MENUTEST');
+    // Enter on the default (Cancel) keeps everything too
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hook(page, 'resetConfirm.index')).toBe(1);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hook(page, 'resetConfirm')).toBeNull();
+    expect(await hook(page, 'user')).toBe('MENUTEST');
+    expect(nativeDialog).toBe(false);
+  });
+
+  test('Reset Data: choosing Reset clears the profile and stays signed in (mouse)', async ({ page }) => {
+    await selectMenuIndex(page, MENU.RESET);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hook(page, 'resetConfirm')).not.toBeNull();
+    const regions = await hook(page, 'tapRegions');
+    const reset = regions.find((r) => r.id === 'confirm:reset');
+    const p = await tapRegionCenter(page, regions.indexOf(reset));
+    await page.mouse.click(p.x, p.y);
+    await expect.poll(() => hook(page, 'resetConfirm')).toBeNull();
+    expect(await hook(page, 'state')).toBe('menu');
+    expect(await hook(page, 'user')).toBe('MENUTEST');
+    await expect(page.locator('#credits')).toHaveText('Credits: 0');
   });
 });
 

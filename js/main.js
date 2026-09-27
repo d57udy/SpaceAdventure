@@ -710,6 +710,7 @@ function cycleDifficulty(dir) {
 }
 
 function returnToMenu() {
+    resetConfirm = null;
     currentGameState = GameState.MENU;
     menuSelectionIndex = 0;
 }
@@ -1765,19 +1766,80 @@ function openHighScores() {
     currentGameState = GameState.HIGH_SCORES;
 }
 
+// Reset Data asks first with an in-canvas confirmation on the menu (keyboard, touch and
+// controller all work; native confirm()/alert() blocked the loop and swallowed keyups).
+// index: 0 = Reset, 1 = Cancel (the default, so a stray Enter never wipes anything).
+let resetConfirm = null;
+const RESET_CONFIRM_BUTTONS = ['Reset', 'Cancel'];
 function resetUserData() {
-    if (currentUser && confirm(`Are you sure you want to reset all data for user '${currentUser}'?`)) {
-        console.log(`Resetting data for user: ${currentUser}`);
-        persistenceManager.resetUserData(currentUser);
-        persistenceManager.setCurrentUser(currentUser); // Stay signed in after the reset
-        highScores = [];
-        achievementManager.loadUserAchievements(currentUser);
-        ShipUpgrades.reset();
-        alert("User data reset.");
+    if (!currentUser) return;
+    resetConfirm = { index: 1, user: currentUser };
+}
+function closeResetConfirm(confirmed) {
+    const user = resetConfirm && resetConfirm.user;
+    resetConfirm = null;
+    if (!confirmed || !user || user !== currentUser) return;
+    console.log(`Resetting data for user: ${currentUser}`);
+    persistenceManager.resetUserData(currentUser);
+    persistenceManager.setCurrentUser(currentUser); // Stay signed in after the reset
+    highScores = [];
+    achievementManager.loadUserAchievements(currentUser);
+    ShipUpgrades.reset();
+    showToast('User data reset.');
+}
+// Menu input while the confirmation is up: left/right/up/down choose, Enter/Ⓐ/tap confirm
+// the choice, Esc/Ⓑ cancel
+function handleResetConfirmInput() {
+    if (inputHandler.consumeAction('escape')) {
+        closeResetConfirm(false);
+        return;
     }
-    // The modal dialogs swallow the keyup of the Enter/Space that opened them; forget held
-    // keys so the next press of that key registers (it looked like a repeat before).
-    inputHandler.releaseAll();
+    if (inputHandler.consumeAction('menuUp') || inputHandler.consumeAction('menuLeft') ||
+        inputHandler.consumeAction('menuDown') || inputHandler.consumeAction('menuRight')) {
+        resetConfirm.index = 1 - resetConfirm.index;
+    }
+    if (inputHandler.consumeAction('menuSelect')) closeResetConfirm(resetConfirm.index === 0);
+}
+function drawResetConfirm() {
+    tapRegions = []; // the menu underneath is not tappable while this is up
+    addFullScreenTap(() => {}); // taps outside the buttons do nothing
+    const compact = isCompact(viewHeight);
+    const w = Math.min(420, viewWidth - 24);
+    const h = compact ? 150 : 180;
+    const x = (viewWidth - w) / 2;
+    const y = (viewHeight - h) / 2;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(0, 0, viewWidth, viewHeight);
+    ctx.fillStyle = 'rgba(40, 0, 0, 0.95)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#FF6666';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = compact ? 'bold 18px Arial' : 'bold 22px Arial';
+    ctx.fillText(`Reset all data for ${resetConfirm.user}?`, viewWidth / 2, y + (compact ? 30 : 38), w - 20);
+    ctx.font = compact ? '13px Arial' : '15px Arial';
+    ctx.fillStyle = '#CCCCCC';
+    ctx.fillText('Scores, achievements and upgrades are deleted.', viewWidth / 2, y + (compact ? 52 : 66), w - 20);
+    const gap = 16;
+    const bw = (w - 40 - gap) / 2;
+    const bh = compact ? 40 : 48;
+    const by = y + h - bh - (compact ? 14 : 20);
+    RESET_CONFIRM_BUTTONS.forEach((label, i) => {
+        const bx = x + 20 + i * (bw + gap);
+        drawButtonBox(bx, by, bw, bh, label, i === resetConfirm.index);
+        addTapRegion(bx, by, bw, bh, () => {
+            resetConfirm.index = i;
+            inputHandler.triggerAction('menuSelect');
+        }, `confirm:${label.toLowerCase()}`);
+    });
+    ctx.textAlign = 'center';
+    ctx.font = '13px Arial';
+    ctx.fillStyle = '#AAAAAA';
+    ctx.fillText(inputHint('LEFT/RIGHT to choose, ENTER to confirm, ESC to cancel', 'Tap Reset or Cancel',
+        () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Cancel`), viewWidth / 2, by - 8, w - 20);
 }
 
 function changeUser() {
@@ -2372,6 +2434,7 @@ document.addEventListener('DOMContentLoaded', () => {
         get isMuted() { return audioManager.isMuted; },
         get isTouchDevice() { return isTouchDevice; },
         get loopErrors() { return loopErrorCount; },
+        get resetConfirm() { return resetConfirm ? { index: resetConfirm.index, user: resetConfirm.user } : null; },
         get frameErrorsTripped() { return frameErrors.tripped; },
         get controlMode() { return controlMode.id; },
         get settings() { return settings.all(); },
@@ -3081,6 +3144,10 @@ function handleInput(deltaTime) {
     switch (currentGameState) {
         case GameState.MENU:
             currentMenuOptions = visibleRows(mainMenuItems);
+            if (resetConfirm) {
+                handleResetConfirmInput();
+                break;
+            }
             navigateRows(currentMenuOptions, () => menuSelectionIndex, (i) => { menuSelectionIndex = i; });
             break;
 
@@ -3808,6 +3875,7 @@ function renderGame() {
                     ctx.fillText('Tap or press a key to enable sound', viewWidth / 2, menuStartY - 32);
                 }
             }
+            if (resetConfirm) drawResetConfirm();
             break;
 
         case GameState.TUTORIAL_ASK:

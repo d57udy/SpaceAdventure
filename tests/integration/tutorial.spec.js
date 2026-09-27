@@ -376,7 +376,6 @@ test.describe('tutorial: training (keyboard)', () => {
   });
 
   test('Reset Data brings the question back', async ({ page }) => {
-    page.on('dialog', (d) => d.accept());
     await openFresh(page, { tutorial: true });
     await loginWithKeyboard(page, 'RESETME');
     await startToAsk(page);
@@ -385,6 +384,11 @@ test.describe('tutorial: training (keyboard)', () => {
     expect(await hook(page, 'tutorial.asked')).toBe(true);
     await reloadToMenu(page);
     await selectMenuIndex(page, MENU.RESET);
+    await page.keyboard.press('Enter');
+    // In-canvas confirmation: choose Reset (Cancel is preselected), then Enter
+    await expect.poll(() => hook(page, 'resetConfirm.index')).toBe(1);
+    await page.keyboard.press('ArrowLeft');
+    await expect.poll(() => hook(page, 'resetConfirm.index')).toBe(0);
     await page.keyboard.press('Enter');
     await expect.poll(() => hook(page, 'tutorial.asked')).toBe(false);
     expect(await page.evaluate((k) => localStorage.getItem(k), TUTORIAL_KEY('RESETME'))).toBeNull();
