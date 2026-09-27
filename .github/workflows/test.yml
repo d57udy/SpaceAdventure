@@ -7,9 +7,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      PW_WORKERS: 4   # GitHub runners are dedicated; local runs stay at 2
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,8 +18,19 @@ jobs:
       - run: npx playwright install --with-deps chromium webkit
       - name: Service worker version is up to date
         run: npm run sw:check
-      - run: npm run test:unit
-      - run: npx playwright test
+      - id: unit
+        run: npm run test:unit
+      # Chromium and WebKit run as separate steps: CI WebKit has no GPU and draws ~3 fps,
+      # so it gets fewer workers. Each step keeps its own results folder.
+      - name: Playwright (Chromium)
+        env:
+          PW_WORKERS: 4   # GitHub runners are dedicated; local runs stay at 2
+        run: npx playwright test --project=desktop-chromium --project=ipad-chromium-touch --project=pwa-chromium --project=pwa-subpath --output=test-results/chromium
+      - name: Playwright (WebKit)
+        if: ${{ !cancelled() && steps.unit.outcome == 'success' }}
+        env:
+          PW_WORKERS: 2
+        run: npx playwright test --project=ipad-webkit --project=ipad-webkit-landscape --output=test-results/webkit
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
