@@ -502,7 +502,7 @@ function createRound(m, options = {}) {
     const timer = m.timer ? (debugRoundSeconds(m) ?? options.roundSeconds ?? m.timer.default) : null;
     return {
         elapsed: 0, timeLeft: timer, phase: 'normal', overtimeLeft: null, overtimeWinner: null,
-        difficulty: selectedDifficulty.id, target: options.target ?? null,
+        difficulty: gameDifficulty().id, target: options.target ?? null,
     };
 }
 // Numbers for this mode, player count and level (single-player: today's constants)
@@ -511,7 +511,7 @@ function currentScaling() {
 }
 // Starting lives: the mode's fixed count, else the difficulty's plus the Starting Lives upgrade
 function startingLivesFor(upgrades) {
-    return mode.lives.count ?? (selectedDifficulty.startingLives + upgrades.getExtraStartingLives());
+    return mode.lives.count ?? (gameDifficulty().startingLives + upgrades.getExtraStartingLives());
 }
 // Input seam: `p.input` is anything with isPressed/consumeAction/getJoystick. Single-player
 // uses the shared InputHandler (every source drives seat 0); a lobby seat gets this view of it.
@@ -525,7 +525,14 @@ function seatInput(seat) {
 }
 let level = 1;
 let currentGameState = GameState.PROMPT_USER;
-let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty
+let selectedDifficulty = Difficulty.MEDIUM; // Default difficulty (menu choice for the next game)
+// The difficulty the current run started with: menu or Time Attack changes while a game is
+// paused never alter it (snapshot in startGame)
+let runDifficulty = null;
+function gameDifficulty() { return runDifficulty || selectedDifficulty; }
+// A paused single-player game keeps its difficulty and ship: the menu locks both until it ends
+function upgradesLocked() { return pausedGameExists; }
+const PAUSED_LOCK_NOTE = 'Locked until your paused game ends';
 let menuSelectionIndex = 0; // Index into the visible main menu rows
 
 // Touch control schemes. Keyboard always works regardless of the choice.
@@ -699,7 +706,8 @@ const mainMenuItems = [
     { id: 'settings', label: () => 'Settings', select: () => { settingsIndex = 0; currentGameState = GameState.SETTINGS; } },
     { id: 'reset', label: () => 'Reset Data', select: () => resetUserData() },
     { id: 'changeUser', label: () => 'Change User', select: () => changeUser() },
-    { id: 'difficulty', label: () => 'Difficulty', value: () => selectedDifficulty.name, change: (dir) => cycleDifficulty(dir) },
+    { id: 'difficulty', label: () => 'Difficulty', value: () => selectedDifficulty.name,
+        change: (dir) => (pausedGameExists ? showToast(PAUSED_LOCK_NOTE) : cycleDifficulty(dir)) },
 ];
 
 // Settings screen rows. Adding a setting is one line here (plus its entry in settings.js).
@@ -1050,7 +1058,7 @@ function syncSeatMode() {
 
 // --- Mode select ---
 function openModeSelect() {
-    pausedGameExists = false; // a paused single-player game is abandoned
+    // A paused single-player game survives until a new game actually starts (startGame)
     mpModeIndex = 0;
     currentGameState = GameState.MP_MODE_SELECT;
 }
@@ -1097,7 +1105,6 @@ function openLobby(modeId, { kind = null, lineup = null } = {}) {
     }
     lobbyIndex = 0;
     lobbyExitNotice = 0;
-    pausedGameExists = false;
     currentGameState = GameState.LOBBY;
 }
 function reopenLobby() {
@@ -1299,7 +1306,7 @@ function finishMultiplayerRound(result) {
     });
     lastResults = buildResults({
         mode, result, players, duration: round ? round.elapsed : 0,
-        level: turn ? null : level, difficulty: selectedDifficulty.id,
+        level: turn ? null : level, difficulty: gameDifficulty().id,
     });
     if (saucer) decorateSaucerResults(lastResults, result); // why the round ended, the target
     if (isTimeAttack()) finishTimeAttackRun(lastResults); // saves the ghost if it is a new best
@@ -2333,6 +2340,9 @@ document.addEventListener('DOMContentLoaded', () => {
         get menuIndex() { return menuSelectionIndex; },
         get menuOptions() { return currentMenuOptions.map(o => o.label()); },
         get difficulty() { return selectedDifficulty.id; },
+        get runDifficulty() { return runDifficulty ? runDifficulty.id : null; }, // the running game's (snapshot)
+        get pausedGameExists() { return pausedGameExists; },
+        get upgradesLocked() { return upgradesLocked(); },
         get pauseIndex() { return pauseMenuSelectionIndex; },
         get upgradeIndex() { return upgradeMenuIndex; },
         get isMuted() { return audioManager.isMuted; },
@@ -2575,6 +2585,7 @@ function startGame(modeId = 'solo', lobby = null, { tutorial: withTutorial = fal
         ? { index: 0, worlds: [], started: [], handover: null, readyDelay: TURN_READY_DELAY, needsWorld: false }
         : null;
     if (mode.id !== 'solo') withTutorial = false;
+    runDifficulty = selectedDifficulty; // this run keeps it, whatever the menu shows later
     console.log(`Starting New Game (User: ${currentUser}, Mode: ${mode.id}, Difficulty: ${selectedDifficulty.name})`);
     // Fresh player records (score 0, extra-life threshold reset); upgrade: extra starting lives
     players = buildPlayers(lobby);
@@ -3170,10 +3181,13 @@ function handleInput(deltaTime) {
                     } else {
                         // Try to purchase upgrade
                         const key = upgradeKeys[upgradeMenuIndex];
-                        if (ShipUpgrades.purchase(key, persistenceManager, currentUser)) {
+                        if (upgradesLocked()) {
+                            showToast(PAUSED_LOCK_NOTE);
+                        } else if (ShipUpgrades.purchase(key, persistenceManager, currentUser)) {
                             console.log(`Purchased upgrade: ${key}`);
-                            FloatingTexts.spawn(viewWidth / 2, viewHeight / 2,
-                                'Upgrade Purchased!', '#00FF00', 28);
+                            // A toast: fades on its own and at most 3 stack (a floating text
+                            // here never updated, so it stayed and piled up)
+                            showToast('Upgrade purchased!');
                         }
                     }
                 }
@@ -3334,8 +3348,8 @@ function updateGame(deltaTime) {
     let visibleUfoExists = false;
     // Create effective difficulty with DDA modifiers applied
     const effectiveDifficulty = {
-        ...selectedDifficulty,
-        ufoAccuracy: Math.min(1, selectedDifficulty.ufoAccuracy * DynamicDifficulty.ufoAccuracyMod)
+        ...gameDifficulty(),
+        ufoAccuracy: Math.min(1, gameDifficulty().ufoAccuracy * DynamicDifficulty.ufoAccuracyMod)
     };
     ufos.forEach(ufo => {
         if(ufo.isAlive) {
@@ -3878,7 +3892,6 @@ function renderGame() {
 
         case GameState.UPGRADES:
             drawUpgradesMenu();
-            FloatingTexts.draw(ctx);
             break;
 
         case GameState.SETTINGS:
@@ -4149,7 +4162,7 @@ function updateMusic() {
 // --- Helper Functions ---
 
 function createLevelAsteroids(isBossLevel = false) {
-    console.log(`Creating asteroids for level ${level} (Difficulty: ${selectedDifficulty.name})${isBossLevel ? ' [BOSS LEVEL]' : ''}`);
+    console.log(`Creating asteroids for level ${level} (Difficulty: ${gameDifficulty().name})${isBossLevel ? ' [BOSS LEVEL]' : ''}`);
     asteroids = [];
 
     // Calculate number of asteroids for this level (fewer during boss battles)
@@ -4163,7 +4176,7 @@ function createLevelAsteroids(isBossLevel = false) {
     const avoid = ships.length ? ships : [{ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 }];
 
     // Apply DDA modifiers
-    const speedMod = selectedDifficulty.asteroidSpeedMultiplier * DynamicDifficulty.asteroidSpeedMod;
+    const speedMod = gameDifficulty().asteroidSpeedMultiplier * DynamicDifficulty.asteroidSpeedMod;
     // Base green probability is 60%, modified by DDA
     const greenProbability = Math.min(0.85, Math.max(0.4, 0.6 * DynamicDifficulty.greenRatioMod));
 
@@ -4238,7 +4251,7 @@ function checkShipCollisions(p) {
                     console.log("Collision: Ship <-> Green Asteroid (Collected!)");
 
                     // Calculate base score
-                    let scoreGained = Math.round(asteroid.scoreValue * selectedDifficulty.scoreMultiplier);
+                    let scoreGained = Math.round(asteroid.scoreValue * gameDifficulty().scoreMultiplier);
 
                     // Apply score multiplier power-up
                     if (p.powerUps.score_multiplier > 0) {
@@ -4411,7 +4424,7 @@ function checkCollisions() {
                 DynamicDifficulty.trackShotHit(); // Track bullet hit
                 if (shooter) shooter.stats.hits++;
                 const scoreGained = ufo.controlled ? saucerKillPoints(ufo, shooter) // Saucer: a flat +200
-                    : Math.round(ufo.scoreValue * selectedDifficulty.scoreMultiplier);
+                    : Math.round(ufo.scoreValue * gameDifficulty().scoreMultiplier);
                 // Points and credits for the UFO kill (10% of score) go to the shooter
                 awardPoints(shooter, scoreGained);
                 if (shooter) shooter.stats.ufos++;
@@ -4832,7 +4845,7 @@ function resetUfoSpawnTimer() {
         return;
     }
     let interval = UFO_SPAWN_BASE_INTERVAL * currentScaling().ufoIntervalMult; // x1 in single-player
-    interval *= selectedDifficulty.ufoSpawnMultiplier;
+    interval *= gameDifficulty().ufoSpawnMultiplier;
     interval *= DynamicDifficulty.ufoSpawnMod; // Apply DDA modifier
     interval *= Math.max(0.5, 1 - (level * 0.05));
     ufoSpawnTimer = interval * randomRange(0.75, 1.25, worldRng());
@@ -5066,6 +5079,13 @@ function drawUpgradesMenu() {
     ctx.font = compact ? '18px Arial' : '24px Arial';
     ctx.fillStyle = '#FFD700';
     ctx.fillText(`Credits: ${ShipUpgrades.currency}`, viewWidth / 2, titleY + (compact ? 26 : 40));
+    // A paused game keeps the ship it started with: no purchases until it ends
+    const locked = upgradesLocked();
+    if (locked) {
+        ctx.font = compact ? '12px Arial' : '15px Arial';
+        ctx.fillStyle = '#FF9F1C';
+        ctx.fillText('Finish or quit your paused game to buy upgrades', viewWidth / 2, titleY + (compact ? 42 : 62), viewWidth - 16);
+    }
 
     ctx.font = '18px Arial';
     ctx.textAlign = 'left';
@@ -5100,6 +5120,7 @@ function drawUpgradesMenu() {
             ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
             ctx.fillRect(nameX - 10, rowTop, viewWidth * 0.8 + 20, rowH);
         }
+        if (locked) ctx.globalAlpha = 0.5;
 
         // Upgrade name
         ctx.fillStyle = isSelected ? '#FFFF00' : '#FFFFFF';
@@ -5135,6 +5156,7 @@ function drawUpgradesMenu() {
             ctx.font = '14px Arial';
             ctx.fillText(upgrade.description, nameX, yPos + 22, viewWidth * 0.8);
         }
+        ctx.globalAlpha = 1;
     });
 
     // Back option (pinned inside the screen)
@@ -5994,7 +6016,7 @@ function spawnFieldAsteroid(type, avoid, fade) {
     const pt = findFieldSpawn(avoid, WORLD_WIDTH, WORLD_HEIGHT, f.minSpawnDistance);
     if (!pt) return null;
     const size = type === 'red' && f.redSize === 'large' ? AsteroidSize.LARGE : randomFieldSize();
-    const a = new Asteroid(pt.x, pt.y, size, null, selectedDifficulty.asteroidSpeedMultiplier,
+    const a = new Asteroid(pt.x, pt.y, size, null, gameDifficulty().asteroidSpeedMultiplier,
         type === 'green' ? AsteroidType.GREEN : AsteroidType.RED);
     if (fade > 0) a.fadeIn(fade);
     asteroids.push(a);
@@ -6672,7 +6694,6 @@ function refreshTimeAttackSetup(force = false) {
 }
 
 function openTimeAttackSetup() {
-    pausedGameExists = false;
     taSetup.index = 0;
     refreshTimeAttackSetup(true);
     currentGameState = GameState.TA_SETUP;
@@ -6779,7 +6800,7 @@ function setupTimeAttackRun() {
     timeAttackRun = null;
     if (!isTimeAttack()) return;
     const course = taSetup.course;
-    const difficulty = selectedDifficulty.id;
+    const difficulty = gameDifficulty().id;
     seededWorld = createSeededWorld(course, difficulty);
     round.course = course;
     const { best, own } = loadCourseGhosts(course, difficulty);

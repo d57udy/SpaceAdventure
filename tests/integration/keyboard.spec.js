@@ -400,6 +400,67 @@ test.describe('keyboard: gameplay', () => {
     expect(after.counts.asteroids).toBeGreaterThan(0);
   });
 
+  test('a paused game survives Multiplayer and Time Attack menus and keeps its difficulty', async ({ page }) => {
+    expect(await hook(page, 'runDifficulty')).toBe('medium');
+    const before = await snap(page);
+    await page.keyboard.press('p');
+    await waitForState(page, 'paused');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => hook(page, 'pauseIndex')).toBe(2);
+    await page.keyboard.press('Enter'); // Main Menu
+    await waitForState(page, 'menu');
+    expect(await hook(page, 'pausedGameExists')).toBe(true);
+    // Multiplayer -> Time Attack setup: Hard -> Back -> Back
+    await selectMenuIndex(page, MENU.MULTIPLAYER);
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'mp_mode_select');
+    const rows = await hook(page, 'mp.modeSelect.rows');
+    for (let i = 0; i < 10 && (await hook(page, 'mp.modeSelect.index')) !== rows.indexOf('timeattack'); i++) {
+      await page.keyboard.press('ArrowDown');
+      await frames(page, 2);
+    }
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'ta_setup');
+    await page.keyboard.press('ArrowDown'); // Difficulty
+    await expect.poll(() => hook(page, 'timeAttack.setup.index')).toBe(1);
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
+    await page.keyboard.press('Escape');
+    await waitForState(page, 'mp_mode_select');
+    await page.keyboard.press('Escape');
+    await waitForState(page, 'menu');
+    // Still resumable; the menu Difficulty row is locked while the game is paused
+    expect(await hook(page, 'pausedGameExists')).toBe(true);
+    expect((await hook(page, 'menuOptions'))[0]).toBe('Resume');
+    await selectMenuIndex(page, MENU.DIFFICULTY);
+    await page.keyboard.press('ArrowRight');
+    await frames(page, 3);
+    expect(await hook(page, 'difficulty')).toBe('hard');
+    await selectMenuIndex(page, MENU.START);
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'playing');
+    const after = await snap(page);
+    expect(after.level).toBe(before.level);
+    expect(await hook(page, 'runDifficulty')).toBe('medium'); // not the Hard picked meanwhile
+  });
+
+  test('upgrades cannot be bought while a game is paused', async ({ page }) => {
+    await page.keyboard.press('p');
+    await waitForState(page, 'paused');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => hook(page, 'pauseIndex')).toBe(2);
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'menu');
+    await selectMenuIndex(page, MENU.UPGRADES);
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'upgrades');
+    await expect.poll(() => hook(page, 'upgradesLocked')).toBe(true);
+    await page.keyboard.press('Escape');
+    await waitForState(page, 'menu');
+  });
+
   test('pause -> Restart starts a fresh game', async ({ page }) => {
     await page.keyboard.down('ArrowUp');
     await expect.poll(() => hook(page, 'ship.velY')).toBeLessThan(-0.5);
