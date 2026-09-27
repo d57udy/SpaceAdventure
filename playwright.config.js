@@ -37,8 +37,9 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     headless: true,
-    // Never play game sounds through the speakers during tests
-    launchOptions: { args: ['--mute-audio'] },
+    // Never play game sounds through the speakers during tests: Chromium-only flag
+    // (WebKit rejects unknown args); tests/integration/helpers.js silences WebKit's audio.
+    launchOptions: { args: [] },
     baseURL: `http://localhost:${PORT}`,
     trace: 'retain-on-failure',
   },
@@ -64,7 +65,7 @@ export default defineConfig({
       name: 'desktop-chromium',
       testMatch: KEYBOARD_SPECS,
       use: {
-        browserName: 'chromium',
+        browserName: 'chromium', launchOptions: { args: ['--mute-audio'] },
         viewport: { width: 1280, height: 800 },
         hasTouch: false,
         isMobile: false,
@@ -85,7 +86,7 @@ export default defineConfig({
       name: 'ipad-chromium-touch',
       testMatch: TOUCH_SPECS,
       use: {
-        browserName: 'chromium',
+        browserName: 'chromium', launchOptions: { args: ['--mute-audio'] },
         viewport: { width: 1024, height: 768 },
         hasTouch: true,
         isMobile: false,
@@ -96,7 +97,7 @@ export default defineConfig({
       name: 'pwa-chromium',
       testMatch: PWA_SPECS,
       use: {
-        browserName: 'chromium',
+        browserName: 'chromium', launchOptions: { args: ['--mute-audio'] },
         viewport: { width: 1280, height: 800 },
         serviceWorkers: 'allow',
       },
@@ -105,7 +106,7 @@ export default defineConfig({
       name: 'pwa-subpath',
       testMatch: PWA_SPECS,
       use: {
-        browserName: 'chromium',
+        browserName: 'chromium', launchOptions: { args: ['--mute-audio'] },
         viewport: { width: 1280, height: 800 },
         serviceWorkers: 'allow',
         baseURL: `http://localhost:${SUBPATH_PORT}/SpaceAdventure/`,
