@@ -165,17 +165,30 @@ test('fetch serves precached files from the cache without touching the network',
     assert.equal(sw.calls.fetch.length, 0);
 });
 
-test('navigations are answered with the cached ./ (any path or query)', async () => {
+test('navigations to the app root or index.html are answered with the cached ./ (any query)', async () => {
     const sw = load();
     await sw.dispatchExtendable('install');
     const cache = sw.caches.map.get(sw.CACHE_NAME);
     await cache.put(SCOPE, { source: 'cache-root' });
     sw.calls.fetch.length = 0;
-    for (const u of [SCOPE, SCOPE + 'index.html', SCOPE + '?sw=1', SCOPE + 'some/deep/link']) {
+    for (const u of [SCOPE, SCOPE + 'index.html', SCOPE + '?sw=1', SCOPE + 'index.html?x=1']) {
         const res = await sw.dispatchFetch(new FakeRequest(u, { mode: 'navigate' }));
         assert.equal(res.source, 'cache-root', u);
     }
     assert.equal(sw.calls.fetch.length, 0);
+});
+
+test('other navigations in scope are not answered with the game', async () => {
+    const sw = load();
+    await sw.dispatchExtendable('install');
+    const cache = sw.caches.map.get(sw.CACHE_NAME);
+    await cache.put(SCOPE, { source: 'cache-root' });
+    sw.calls.fetch.length = 0;
+    for (const u of [SCOPE + 'some/deep/link', SCOPE + 'docs/plans/README.md', SCOPE + 'index.htmlx']) {
+        const res = await sw.dispatchFetch(new FakeRequest(u, { mode: 'navigate' }));
+        assert.notEqual(res.source, 'cache-root', u);
+    }
+    assert.equal(sw.calls.fetch.length, 3);
 });
 
 test('cache miss goes to the network', async () => {

@@ -124,9 +124,21 @@ self.addEventListener('message', (event) => {
     }
 });
 
+// A navigation to the app itself (the scope root or index.html, any query): answered with
+// the cached './'. Other navigations in scope (e.g. docs/...) are looked up as themselves
+// and otherwise go to the network, instead of silently showing the game.
+function isAppShellNavigation(request) {
+    if (request.mode !== 'navigate') return false;
+    const path = new URL(request.url).pathname;
+    const root = new URL(scopeUrl('./')).pathname;
+    if (!path.startsWith(root)) return false;
+    const rest = path.slice(root.length);
+    return rest === '' || rest === 'index.html';
+}
+
 async function respond(request) {
     const cache = await caches.open(CACHE_NAME);
-    const cached = request.mode === 'navigate'
+    const cached = isAppShellNavigation(request)
         ? await cache.match(scopeUrl('./'))
         : await cache.match(request);
     if (cached) return cached;
