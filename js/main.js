@@ -161,7 +161,9 @@ let powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
 
 // Dynamic Difficulty Adjustment System
 const DynamicDifficulty = {
-    // Performance tracking
+    // Performance tracking. Times are game time (ms of play, advanced by tick): pause,
+    // menus and a backgrounded tab do not count as playing time.
+    gameTimeMs: 0,
     sessionStartTime: 0,
     deaths: 0,
     shotsFired: 0,
@@ -188,8 +190,18 @@ const DynamicDifficulty = {
     evaluationInterval: 15, // Seconds between performance evaluations (faster response)
     adjustmentSpeed: 0.3, // How fast adjustments change (0-1) - more responsive
 
+    // Advance the game clock by one frame of play (seconds)
+    tick(deltaTime) {
+        if (Number.isFinite(deltaTime) && deltaTime > 0) this.gameTimeMs += deltaTime * 1000;
+    },
+
+    now() {
+        return this.gameTimeMs;
+    },
+
     reset() {
-        this.sessionStartTime = Date.now();
+        this.gameTimeMs = 0;
+        this.sessionStartTime = this.now();
         this.deaths = 0;
         this.shotsFired = 0;
         this.shotsHit = 0;
@@ -197,7 +209,7 @@ const DynamicDifficulty = {
         this.greenAsteroidsSpawned = 0;
         this.redAsteroidsDestroyed = 0;
         this.scoreAtLastCheck = 0;
-        this.lastCheckTime = Date.now();
+        this.lastCheckTime = this.now();
         this.recentScoreRate = 0;
         this.performanceScore = 0;
         this.asteroidSpeedMod = 1.0;
@@ -251,14 +263,14 @@ const DynamicDifficulty = {
 
     // Calculate deaths per minute
     getDeathRate() {
-        const sessionMinutes = (Date.now() - this.sessionStartTime) / 60000;
+        const sessionMinutes = (this.now() - this.sessionStartTime) / 60000;
         if (sessionMinutes < 0.5) return 0; // Not enough data
         return this.deaths / sessionMinutes;
     },
 
     // Evaluate performance and update adjustments
     evaluate(currentScore) {
-        const now = Date.now();
+        const now = this.now();
         const timeSinceLastCheck = (now - this.lastCheckTime) / 1000;
 
         if (timeSinceLastCheck < this.evaluationInterval) return;
@@ -3421,6 +3433,7 @@ function updateGame(deltaTime) {
         for (const p of activePlayers()) checkPlayerAchievements(p);
 
         // Evaluate performance (team-wide; Take Turns: the active player's world) and adjust difficulty
+        if (mode.ddaEnabled) DynamicDifficulty.tick(deltaTime);
         if (mode.ddaEnabled) DynamicDifficulty.evaluate(teamScore(activePlayers()) / activePlayers().length);
 
         // Time Attack: record this frame and advance the ghost (game time only)
