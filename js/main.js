@@ -4554,11 +4554,13 @@ function checkCollisions() {
                     FloatingTexts.spawn(viewWidth / 2, viewHeight / 3,
                         `BOSS DEFEATED! +${currentBoss.scoreValue}`, '#FFD700', 36, 3);
                     // Big credit bonus for defeating boss (20% of boss score); with more
-                    // players the bonus is split equally
+                    // players the bonus is split equally among those still in the round
+                    // (a dropped player neither gets a share nor shrinks the others')
                     const bossCredits = Math.ceil(currentBoss.scoreValue * 0.2);
-                    for (const p of players) {
-                        awardPoints(p, Math.round(currentBoss.scoreValue / players.length),
-                            Math.ceil(bossCredits / players.length));
+                    const sharers = players.filter(p => !p.dropped);
+                    for (const p of sharers) {
+                        awardPoints(p, Math.round(currentBoss.scoreValue / sharers.length),
+                            Math.ceil(bossCredits / sharers.length));
                     }
                     FloatingTexts.spawn(viewWidth / 2, viewHeight / 3 + 50,
                         `+${bossCredits} CREDITS!`, '#FFD700', 24, 3);
