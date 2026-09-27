@@ -20,6 +20,7 @@ import { Haptics } from './haptics.js';
 import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
+import { hideTouchForGamepad } from './seats.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
 import { createCamera, frameTargets } from './camera.js';
@@ -787,7 +788,8 @@ function pollControllers() {
 // body.input-gamepad hides the touch controls while a controller is in use (until a touch)
 let inputSourceClass = null;
 function syncInputSourceClass() {
-    const pad = usingGamepad();
+    // Not while a touch player has joined a seat round (mixed touch + controller multiplayer)
+    const pad = !!inputHandler && hideTouchForGamepad(inputHandler.lastInputSource, inputHandler.seats);
     if (pad === inputSourceClass) return;
     inputSourceClass = pad;
     document.body.classList.toggle('input-gamepad', pad);

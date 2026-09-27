@@ -4,7 +4,7 @@
 import { test, expect } from '@playwright/test';
 import {
   MENU, openFresh, hook, waitForState, frames, loginWithTouch, tapAt, menuItemCenter, tapRegionCenter,
-  tapRegionPoint, centerOf, rectsOverlap, Fingers, skipRoundIntro,
+  tapRegionPoint, centerOf, rectsOverlap, Fingers, skipRoundIntro, padTap, PAD,
 } from './helpers.js';
 
 const angDist = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -65,6 +65,29 @@ test.describe('co-op side by side (touch)', () => {
   test.skip(({ hasTouch }) => !hasTouch, 'touch devices');
   test.beforeEach(({ page }) => {
     test.skip(!isLandscape(page), 'side by side is landscape only');
+  });
+
+  test('touch + controller in one round: a controller press does not hide the touch player\'s controls', async ({ page }) => {
+    const errors = await openFresh(page, { gamepads: [{}] });
+    await loginWithTouch(page, 'TOUCHY');
+    await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
+    await waitForState(page, 'mp_mode_select');
+    await tapAt(page, await tapRegionCenter(page, 1)); // Co-op
+    await waitForState(page, 'lobby');
+    await tapPad(page, 'a', 0, (c) => !!c && c.source === 'touch:a');
+    await padTap(page, PAD.A);
+    await expect.poll(async () => (await hook(page, 'lobby.cards')).some((c) => !!c && c.source === 'pad:0')).toBe(true);
+    await tapPad(page, 'a', 0, (c) => c.ready);
+    await padTap(page, PAD.A);
+    await waitForState(page, 'playing', 6000);
+    await skipRoundIntro(page);
+    // The controller is now the last input
+    await padTap(page, PAD.A);
+    await expect.poll(() => hook(page, 'lastInputSource')).toBe('gamepad');
+    await frames(page, 3);
+    await expect(page.locator('body')).not.toHaveClass(/input-gamepad/);
+    await expect(page.locator('#touch-fire-btn')).toBeVisible();
+    expect(errors).toEqual([]);
   });
 
   test('join pads: tap to join and ready, hold to leave; layout and lobby notes', async ({ page }) => {

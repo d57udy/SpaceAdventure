@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     MAX_SEATS, MAX_TOUCH_SEATS, KEY_PROFILES, MERGED_EXTRA, SHARED_CODES, lookupCode, lookupShared,
-    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat,
+    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat, hideTouchForGamepad,
 } from '../../js/seats.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `expected ${b}, got ${a}`);
@@ -276,4 +276,26 @@ test('reserve remembers the controller; rejoin takes the matching seat back', ()
     // Merged mode never rejoins
     t.setMerged(true);
     assert.equal(t.rejoin('pad:0'), null);
+});
+
+test('hideTouchForGamepad: only when merged or no touch seat has joined', () => {
+    const t = new SeatTable();
+    // Not a controller: never hide
+    assert.equal(hideTouchForGamepad('touch', t), false);
+    assert.equal(hideTouchForGamepad('keyboard', t), false);
+    assert.equal(hideTouchForGamepad(null, t), false);
+    // Single player (merged): a controller hides the touch controls
+    assert.equal(hideTouchForGamepad('gamepad', t), true);
+    assert.equal(hideTouchForGamepad('gamepad', null), true);
+    // Seat mode with only controllers/keyboard: hide
+    t.setMerged(false);
+    t.join('pad:0');
+    t.join('kbLeft');
+    assert.equal(hideTouchForGamepad('gamepad', t), true);
+    // A touch player joins: keep their controls even when the last input is a controller
+    t.join('touch:a');
+    assert.equal(hideTouchForGamepad('gamepad', t), false);
+    assert.equal(hideTouchForGamepad('gamepad', t.snapshot()), false);
+    t.leave('touch:a');
+    assert.equal(hideTouchForGamepad('gamepad', t), true);
 });

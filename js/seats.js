@@ -97,6 +97,19 @@ export function sourceKind(source) {
 }
 
 /**
+ * Hide the on-screen touch controls because a controller is the last input? Only when every
+ * input drives one ship (merged mode) or no touch seat has joined: in a mixed round a touch
+ * player keeps their controls while someone else plays with a controller. Pure.
+ * @param {string|null} lastInputSource 'keyboard' | 'touch' | 'mouse' | 'gamepad' | null
+ * @param {{merged:boolean, seats:Array<{source:string|null}|null>}|null} table SeatTable.snapshot()-like
+ */
+export function hideTouchForGamepad(lastInputSource, table) {
+    if (lastInputSource !== 'gamepad') return false;
+    if (!table || table.merged) return true;
+    return !(table.seats || []).some((s) => s && sourceKind(s.source) === 'touch');
+}
+
+/**
  * Rotate a vector by `deg` degrees (screen coordinates, clockwise for positive
  * angles since y points down). Exact for multiples of 90.
  */
