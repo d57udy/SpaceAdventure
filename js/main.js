@@ -2843,13 +2843,39 @@ function resizeCanvas() {
             (oldWorldWidth !== WORLD_WIDTH || oldWorldHeight !== WORLD_HEIGHT)) {
             const sx = WORLD_WIDTH / oldWorldWidth;
             const sy = WORLD_HEIGHT / oldWorldHeight;
-            const entities = [...players.map(p => p.ship), currentBoss, ...asteroids, ...bullets, ...ufos, ...powerUps];
-            entities.forEach(entity => {
+            const scaleEntity = (entity) => {
                 if (!entity) return;
                 entity.x *= sx;
                 entity.y *= sy;
                 wrapWorldPosition(entity);
-            });
+            };
+            const entities = [...players.map(p => p.ship), currentBoss, ...asteroids, ...bullets, ...ufos, ...powerUps];
+            entities.forEach(scaleEntity);
+            // Per-player points: respawn targets (copied: they may be shared grid points) and
+            // co-op revive beacons
+            for (const p of players) {
+                if (p.respawnAt) {
+                    p.respawnAt = { ...p.respawnAt, x: p.respawnAt.x * sx, y: p.respawnAt.y * sy };
+                    wrapWorldPosition(p.respawnAt);
+                }
+                scaleEntity(p.beacon);
+            }
+            // Take Turns: the parked worlds of the players who are waiting
+            if (turn && Array.isArray(turn.worlds)) {
+                for (const w of turn.worlds) {
+                    if (!w) continue;
+                    [...(w.asteroids || []), ...(w.ufos || []), ...(w.powerUps || []), w.boss].forEach(scaleEntity);
+                }
+            }
+            // Time Attack: recorder and ghost store positions as fractions of the world size
+            if (timeAttackRun) {
+                timeAttackRun.recorder.worldWidth = WORLD_WIDTH;
+                timeAttackRun.recorder.worldHeight = WORLD_HEIGHT;
+                if (timeAttackRun.ghost && timeAttackRun.ghost.player) {
+                    timeAttackRun.ghost.player.worldWidth = WORLD_WIDTH;
+                    timeAttackRun.ghost.player.worldHeight = WORLD_HEIGHT;
+                }
+            }
             // Re-centre on a ship (the next frame re-frames several ships)
             const ship = players.map(p => p.ship).find(Boolean);
             if (ship) camera.reset(ship.x, ship.y, cameraView());
