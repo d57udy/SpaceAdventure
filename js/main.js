@@ -3088,10 +3088,8 @@ function handleInput(deltaTime) {
             }
             if (resumeCountdown > 0) break; // multiplayer resume: 3, 2, 1
             if (roundIntro) { handleRoundIntroInput(); break; } // controls card: fire = ready
-            // Training: Enter or controller View skips it
-            const skipByEnter = inputHandler.consumeAction('enter');
-            const skipByPad = inputHandler.consumeAction('skipTutorial');
-            if ((skipByEnter || skipByPad) && tutorial.active) {
+            // Training: T or controller View skips it (not Enter: that is also a fire key)
+            if (inputHandler.consumeAction('skipTutorial') && tutorial.active) {
                 skipTutorial();
                 break;
             }
@@ -4063,7 +4061,7 @@ function drawTutorialOverlay() {
     ctx.fillText('Skip \u25B8', sx + skipW / 2, sy + skipH / 2);
     ctx.font = '11px Arial';
     ctx.fillStyle = '#AAAAAA';
-    const skipKey = inputHint('Enter', '', () => padGlyph(GP.VIEW));
+    const skipKey = inputHint('T', '', () => padGlyph(GP.VIEW));
     if (skipKey) ctx.fillText(skipKey, sx + skipW / 2, sy + skipH + 9);
     addTapRegion(sx - 6, sy - 6, skipW + 12, skipH + 12, () => skipTutorial());
     ctx.restore();

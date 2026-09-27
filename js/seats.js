@@ -44,6 +44,8 @@ export const SHARED_CODES = Object.freeze({
     menuSelect: ['Enter', 'NumpadEnter', 'Space'],
     enter: ['Enter', 'NumpadEnter'],
     backspace: ['Backspace'],
+    // T: never a flying key (Enter is kbRight's fire and would skip training with the first shot)
+    skipTutorial: ['KeyT'],
 });
 
 // Precomputed code → [{source, action}] tables

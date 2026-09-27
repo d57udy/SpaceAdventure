@@ -277,7 +277,7 @@ export class Tutorial {
         this._push({ type: 'finish', skipped });
     }
 
-    // Skip button, Enter, controller View, or the pause-menu item. Returns requests.
+    // Skip button, T, controller View, or the pause-menu item. Returns requests.
     skip() {
         if (!this.active) return [];
         this._finish(true);

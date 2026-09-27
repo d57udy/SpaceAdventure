@@ -333,11 +333,15 @@ test.describe('tutorial: training (keyboard)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('Enter skips training into Level 1; no tutorial after reload', async ({ page }) => {
-    await openFresh(page, { tutorial: true });
+  test('Enter fires (it is a fire key) and does not skip; T skips training into Level 1; no tutorial after reload', async ({ page }) => {
+    await openFresh(page, { tutorial: true, recordText: true });
     await loginWithKeyboard(page, 'SKIPPER');
     await startTraining(page);
+    expect(await drawnTexts(page)).toContain('T'); // the key hint under the Skip button
     await page.keyboard.press('Enter');
+    await frames(page, 5);
+    expect(await hook(page, 'tutorial.active')).toBe(true);
+    await page.keyboard.press('t');
     await expect.poll(() => hook(page, 'tutorial.active')).toBe(false);
     expect(await hook(page, 'level')).toBe(1);
     expect(await hook(page, 'score')).toBe(0);
@@ -393,7 +397,7 @@ test.describe('tutorial: training (keyboard)', () => {
     await openFresh(page, { tutorial: true, recordText: true });
     await loginWithKeyboard(page, 'REPLAYER');
     await startTraining(page);
-    await page.keyboard.press('Enter'); // skip -> done
+    await page.keyboard.press('t'); // skip -> done
     await expect.poll(() => hook(page, 'tutorial.done')).toBe(true);
     await page.keyboard.press('p');
     await waitForState(page, 'paused');

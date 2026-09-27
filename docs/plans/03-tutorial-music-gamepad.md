@@ -27,7 +27,7 @@ New players, especially children on an iPad, don't know the unusual rule: fly **
 
 - **Placement:** targets appear only when their step starts, in front of the ship: a stationary medium green about 180 px ahead; a small red about 260 px ahead drifting slowly sideways. Easy for beginners and repeatable for automated tests.
 - **Gentle mistakes:** shooting a green shows "Don't shoot green, fly into it!" and spawns a new one; crashing into red respawns at once with 3 s of invulnerability and no life lost; a target drifting more than 600 px away respawns ahead; after 20 s without progress the Skip button becomes more prominent and the hint repeats.
-- **Skip:** the Skip button, Enter, controller View/Select, or a "Skip Tutorial" item at the end of the pause menu during training. Skipping marks it done.
+- **Skip:** the Skip button, T (not Enter: Enter is also a fire key), controller View/Select, or a "Skip Tutorial" item at the end of the pause menu during training. Skipping marks it done.
 - **Replay:** "Replay tutorial" on the Settings screen and on the Help screen (or the T key / controller Y). Replay continues into Level 1.
 - **No side effects:** no UFOs, random power-ups, level-up, achievements or difficulty adjustment during training; no credits earned; everything is reset when Level 1 starts.
 
@@ -36,7 +36,7 @@ New players, especially children on an iPad, don't know the unusual rule: fly **
 - **`js/persistence.js`:** `loadTutorialState(user)` / `saveTutorialState(user, { done, version, skipped })`, per-user key, removed by "Reset Data" so the tutorial comes back.
 - **`js/main.js`:**
   - `startGame({ tutorial })`: training sets level 0 and starts with no asteroids. Menu Start decides via `shouldRunTutorial()`; pause-menu Restart keeps the current mode.
-  - PLAYING input feeds rotation and thrust to the tutorial; Enter skips.
+  - PLAYING input feeds rotation and thrust to the tutorial; T skips.
   - `updateGame` skips UFO spawning, random power-ups, the level-up check, achievements and difficulty evaluation during training, and spawns tutorial targets on request.
   - Collisions notify the tutorial; no credits in training.
   - `handlePlayerDeath` during training: no life lost, immediate respawn with invulnerability.

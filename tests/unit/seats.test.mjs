@@ -299,3 +299,10 @@ test('hideTouchForGamepad: only when merged or no touch seat has joined', () => 
     t.leave('touch:a');
     assert.equal(hideTouchForGamepad('gamepad', t), true);
 });
+
+test('T skips the tutorial; it is no flying key, and Enter is not a skip key', () => {
+    assert.deepEqual(lookupShared('KeyT'), ['skipTutorial']);
+    assert.deepEqual(lookupCode('KeyT', true), []);
+    assert.deepEqual(lookupCode('KeyT', false), []);
+    assert.ok(!lookupShared('Enter').includes('skipTutorial'));
+});
