@@ -88,8 +88,22 @@ export class AudioManager {
     // iOS/Safari only allow starting audio from inside a user gesture handler.
     // Resume the context (and play a silent buffer for older iOS) on the first
     // touch/click/key, and keep listening until the context is actually running.
+    // If the context later leaves 'running' (iOS interruptions: a call, Siri, another app's
+    // audio; a suspend while hidden that the browser won't undo without a gesture), the
+    // handlers are armed again so the next touch or key brings the sound back.
     installUnlockHandlers() {
         const events = ['touchstart', 'touchend', 'pointerdown', 'mousedown', 'keydown'];
+        this.unlockArmed = false;
+        const arm = () => {
+            if (this.unlockArmed) return;
+            this.unlockArmed = true;
+            events.forEach(evt => document.addEventListener(evt, unlock, true));
+        };
+        const disarm = () => {
+            if (!this.unlockArmed) return;
+            this.unlockArmed = false;
+            events.forEach(evt => document.removeEventListener(evt, unlock, true));
+        };
         const unlock = () => {
             if (!this.audioContext) return;
             this.resumeContext();
@@ -102,11 +116,21 @@ export class AudioManager {
             } catch (e) {
                 // Ignore - silent unlock buffer is best-effort
             }
-            if (this.audioContext.state === 'running') {
-                events.forEach(evt => document.removeEventListener(evt, unlock, true));
-            }
+            if (this.audioContext.state === 'running') disarm();
         };
-        events.forEach(evt => document.addEventListener(evt, unlock, true));
+        arm();
+        const onStateChange = () => {
+            if (!this.audioContext) return;
+            if (this.audioContext.state === 'running') disarm();
+            else if (this.audioContext.state !== 'closed') arm();
+        };
+        try {
+            if (typeof this.audioContext.addEventListener === 'function') {
+                this.audioContext.addEventListener('statechange', onStateChange);
+            } else {
+                this.audioContext.onstatechange = onStateChange;
+            }
+        } catch (e) { /* statechange unsupported: the first unlock still works */ }
     }
 
     // Looping sources (thrust, UFO hum) keep playing when the tab is hidden because

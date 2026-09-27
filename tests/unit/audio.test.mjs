@@ -223,3 +223,34 @@ test('without StereoPannerNode, pan is ignored (feature-detected)', () => {
     am.setThrustPan(0.6);
     assert.ok(!am.audioContext.created.some(n => n.kind === 'panner'));
 });
+
+test('unlock listeners are re-armed when the context leaves running (iOS interruption)', () => {
+    const listeners = new Map();
+    globalThis.document = {
+        hidden: false,
+        addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); },
+        removeEventListener(type, fn) { listeners.get(type)?.delete(fn); },
+    };
+    const stateListeners = [];
+    class Ctx extends FakeCtx {
+        constructor() { super(); this.state = 'suspended'; }
+        addEventListener(type, fn) { if (type === 'statechange') stateListeners.push(fn); }
+        setState(s) { this.state = s; stateListeners.forEach((fn) => fn()); }
+        resume() { this.setState('running'); return Promise.resolve(); }
+    }
+    globalThis.window = { AudioContext: Ctx };
+    const am = quiet(() => new AudioManager());
+    const armed = () => (listeners.get('keydown')?.size || 0) > 0;
+    assert.equal(armed(), true, 'armed until the first gesture');
+    [...listeners.get('keydown')][0]();
+    assert.equal(am.audioContext.state, 'running');
+    assert.equal(armed(), false, 'removed once running');
+    am.audioContext.setState('interrupted'); // e.g. a phone call on iOS
+    assert.equal(armed(), true, 're-armed');
+    assert.equal(listeners.get('keydown').size, 1, 'armed once, not stacked');
+    am.audioContext.setState('suspended');
+    assert.equal(listeners.get('keydown').size, 1);
+    [...listeners.get('touchend')][0]();
+    assert.equal(am.audioContext.state, 'running');
+    assert.equal(armed(), false);
+});
