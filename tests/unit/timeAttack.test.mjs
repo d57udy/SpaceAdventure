@@ -261,3 +261,18 @@ test('summarizeRun: banner and lines for new best, ghost beaten and no ghost', (
     assert.match(lost.lines.join(' '), /short by 80.*was 500/);
     assert.equal(TA.TIME_ATTACK.runSeconds, 180);
 });
+
+test('isGhostRecord rejects wrongly typed optional fields; pickBestGhost never throws on odd owners', () => {
+    const r = recordRun(500, { owner: 'BOB', date: 5 });
+    assert.equal(TA.isGhostRecord({ ...r, owner: 123 }), false);
+    assert.equal(TA.isGhostRecord({ ...r, owner: { x: 1 } }), false);
+    assert.equal(TA.isGhostRecord({ ...r, date: 'yesterday' }), false);
+    assert.equal(TA.isGhostRecord({ ...r, difficulty: 7 }), false);
+    assert.equal(TA.isGhostRecord({ ...r, course: '3' }), false);
+    assert.equal(TA.isGhostRecord({ ...r, owner: undefined }), true); // owner comes from the key then
+    const bad = { key: ghostStorageKey('EVE', 3, 'medium'), record: { ...recordRun(900), owner: 42 } };
+    const good = { key: ghostStorageKey('BOB', 3, 'medium'), record: r };
+    assert.equal(TA.pickBestGhost([bad, good]).owner, 'BOB');
+    const noOwner = { key: ghostStorageKey('ZED', 3, 'medium'), record: { ...recordRun(950), owner: undefined } };
+    assert.equal(TA.pickBestGhost([noOwner, good]).owner, 'ZED');
+});

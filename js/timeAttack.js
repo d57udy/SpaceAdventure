@@ -66,10 +66,17 @@ export function ghostKeysForCourse(keys, course, difficulty) {
     });
 }
 
-/** Loose check of a stored record (decodeGhost does the real validation). */
+/**
+ * Loose check of a stored record (decodeGhost does the real validation). Optional fields
+ * must have the right type when present: localStorage can hold anything.
+ */
 export function isGhostRecord(v) {
-    return !!v && typeof v === 'object' && !Array.isArray(v) && v.v === GHOST_VERSION &&
-        typeof v.data === 'string' && Number.isFinite(v.score) && v.score >= 0;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const optional = (x, type) => x === undefined || x === null || typeof x === type;
+    return v.v === GHOST_VERSION && typeof v.data === 'string' && Number.isFinite(v.score) && v.score >= 0 &&
+        optional(v.owner, 'string') && optional(v.difficulty, 'string') &&
+        (v.date === undefined || v.date === null || Number.isFinite(v.date)) &&
+        (v.course === undefined || v.course === null || Number.isFinite(v.course));
 }
 
 /** The encoded ghost plus who flew it, on which course, and when. */
@@ -99,7 +106,7 @@ export function pickBestGhost(entries) {
     for (const e of Array.isArray(entries) ? entries : []) {
         if (!e || !isGhostRecord(e.record)) continue;
         const parsed = parseGhostKey(e.key);
-        const owner = (e.record.owner || (parsed && parsed.owner) || '').toUpperCase();
+        const owner = String(e.record.owner || (parsed && parsed.owner) || '').toUpperCase();
         if (!best || e.record.score > best.record.score ||
             (e.record.score === best.record.score && (e.record.date || 0) < (best.record.date || 0))) {
             best = { key: e.key, owner, record: e.record };
