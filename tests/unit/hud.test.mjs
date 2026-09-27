@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatSeatHud, SeatHudView, POWER_UP_INFO } from '../../js/hud.js';
+import { formatSeatHud, SeatHudView, POWER_UP_INFO, CachedDomWriter } from '../../js/hud.js';
 
 // ---- minimal fake DOM ----
 function makeDoc() {
@@ -152,4 +152,24 @@ test('unlimited lives show ∞; scoreText replaces the score (Duel kills)', () =
     assert.equal(h.lives, '▲ ∞');
     assert.equal(h.score, '3 KILLS');
     assert.equal(formatSeatHud({ score: 250, scoreText: '' }).score, '250');
+});
+
+test('CachedDomWriter writes text and styles only when they change', () => {
+    const doc = makeDoc();
+    const score = makeEl('span', doc);
+    const user = makeEl('span', doc);
+    const w = new CachedDomWriter({ score, user, missing: null });
+    assert.equal(w.text('score', 'Score: 0'), true);
+    assert.equal(score.textContent, 'Score: 0');
+    for (let i = 0; i < 60; i++) w.text('score', 'Score: 0'); // a second of identical frames
+    assert.equal(score.textWrites, 1);
+    assert.equal(w.text('score', 'Score: 10'), true);
+    assert.equal(score.textWrites, 2);
+    assert.equal(w.style('user', 'display', 'block'), true);
+    assert.equal(w.style('user', 'display', 'block'), false);
+    assert.equal(user.style.display, 'block');
+    assert.equal(w.style('user', 'display', 'none'), true);
+    assert.equal(user.style.display, 'none');
+    assert.equal(w.text('missing', 'x'), false); // no element: nothing, no throw
+    assert.equal(w.writes, 4);
 });

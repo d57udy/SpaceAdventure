@@ -39,7 +39,7 @@ import {
 } from './saucer.js';
 import { buildResults, resultBanner, historyEntry } from './mpResults.js';
 import { MP_KEYS, addHistory, addToBoard, recordRivalry, rivalryKey, isHistory, isBoard, isRivalry } from './mpRecords.js';
-import { formatSeatHud, SeatHudView } from './hud.js';
+import { formatSeatHud, SeatHudView, CachedDomWriter } from './hud.js';
 import {
     hullMarkFor, touchLayout, hudMode, hudSide, compactHudCorner, edgeArrow, respawnFraction, isIpad,
     touchPointsWarning, layoutKey, hudColumn, joinPadTitle, rotateRect180, viewerRegions, MP_LAYOUT_SETTINGS,
@@ -2913,24 +2913,27 @@ function lowerRenderScaleCap() {
     return true;
 }
 
+// HUD line elements, looked up once; written only when a value changed (runs every frame)
+let hudLine = null;
 function updateUI() {
-    const scoreElement = document.getElementById('score');
-    const livesElement = document.getElementById('lives');
-    const levelElement = document.getElementById('level');
-    const creditsElement = document.getElementById('credits');
-    const userElement = document.getElementById('user-display'); // Get user display element
-
-    const hp = hudPlayer(); // player 1, or whoever's turn it is (Take Turns)
-    if (scoreElement) scoreElement.textContent = `Score: ${hp.score}`;
-    if (livesElement) livesElement.textContent = `Lives: ${hp.lives}`;
-    if (levelElement) levelElement.textContent = `Level: ${tutorial.active ? 'Training' : level}`;
-    const credits = hp !== p1() && hp.upgrades ? hp.upgrades.currency : ShipUpgrades.currency;
-    if (creditsElement) creditsElement.textContent = `Credits: ${credits}`;
-    // Update user display, show placeholder if no user
-    if (userElement) {
-        userElement.textContent = `User: ${hp !== p1() ? hp.name : (currentUser || '---')}`;
-        userElement.style.display = (currentGameState === GameState.PROMPT_USER) ? 'none' : 'block'; // Hide in prompt state
+    if (!hudLine) {
+        hudLine = new CachedDomWriter({
+            score: document.getElementById('score'),
+            lives: document.getElementById('lives'),
+            level: document.getElementById('level'),
+            credits: document.getElementById('credits'),
+            user: document.getElementById('user-display'),
+        });
     }
+    const hp = hudPlayer(); // player 1, or whoever's turn it is (Take Turns)
+    hudLine.text('score', `Score: ${hp.score}`);
+    hudLine.text('lives', `Lives: ${hp.lives}`);
+    hudLine.text('level', `Level: ${tutorial.active ? 'Training' : level}`);
+    const credits = hp !== p1() && hp.upgrades ? hp.upgrades.currency : ShipUpgrades.currency;
+    hudLine.text('credits', `Credits: ${credits}`);
+    // User display (placeholder if no user); hidden in the prompt state
+    hudLine.text('user', `User: ${hp !== p1() ? hp.name : (currentUser || '---')}`);
+    hudLine.style('user', 'display', (currentGameState === GameState.PROMPT_USER) ? 'none' : 'block');
 }
 
 // Clickable/tappable screen regions, rebuilt every frame by the render functions

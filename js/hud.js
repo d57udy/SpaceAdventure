@@ -189,3 +189,40 @@ export class SeatHudView {
         }
     }
 }
+
+/**
+ * The single-player HUD line (#score, #lives, ...): keeps its elements and writes a text or
+ * style only when it changed. updateUI runs every frame; rewriting unchanged DOM each frame
+ * costs layout work on older devices.
+ */
+export class CachedDomWriter {
+    /** @param {Object<string, {textContent:string, style?:object}|null>} elements */
+    constructor(elements = {}) {
+        this.el = { ...elements };
+        this.last = {};
+        this.writes = 0;
+    }
+
+    text(key, value) {
+        const v = String(value);
+        const cacheKey = `text:${key}`;
+        if (this.last[cacheKey] === v) return false;
+        const el = this.el[key];
+        if (!el) return false;
+        this.last[cacheKey] = v;
+        el.textContent = v;
+        this.writes++;
+        return true;
+    }
+
+    style(key, prop, value) {
+        const cacheKey = `style:${key}:${prop}`;
+        if (this.last[cacheKey] === value) return false;
+        const el = this.el[key];
+        if (!el || !el.style) return false;
+        this.last[cacheKey] = value;
+        el.style[prop] = value;
+        this.writes++;
+        return true;
+    }
+}
