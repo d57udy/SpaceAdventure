@@ -7,6 +7,7 @@ import { defineConfig, devices } from '@playwright/test';
 //   ipad-webkit            iPad (gen 7) portrait, WebKit, DPR 2  -> smoke + hidpi + touch specs
 //   ipad-webkit-landscape  iPad (gen 7) landscape, WebKit, DPR 2 -> smoke + hidpi + touch specs
 //   ipad-chromium-touch    Chromium, hasTouch, 1024x768, DPR 1 -> smoke + hidpi + touch specs
+//   (phone.spec.js in the touch list overrides the viewport to a 390x844 phone)
 //   pwa-chromium           service worker, offline, install, full screen at /       -> pwa spec
 //   pwa-subpath            the same served under /SpaceAdventure/ like GitHub Pages -> pwa spec
 //
@@ -22,7 +23,7 @@ const SUBPATH_PORT = Number(process.env.PW_SUBPATH_PORT) || 8083;
 
 const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js'];
 const PWA_SPECS = ['pwa.spec.js'];
-const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js'];
+const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js'];
 
 export default defineConfig({
   testDir: './tests/integration',

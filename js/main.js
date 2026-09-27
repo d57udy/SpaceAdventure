@@ -21,6 +21,7 @@ import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { hideTouchForGamepad } from './seats.js';
+import { stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP } from './menuLayout.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
 import { createCamera, frameTargets } from './camera.js';
@@ -672,7 +673,7 @@ function addRowTapRegion(x, y, w, h, row, index, setIndex) {
         } else {
             inputHandler.triggerAction('menuSelect');
         }
-    });
+    }, row && row.id ? `row:${row.id}` : null); // id: the test hook finds exit rows ('row:back')
 }
 
 function cycleDifficulty(dir) {
@@ -2904,8 +2905,8 @@ function updateUI() {
 
 // Clickable/tappable screen regions, rebuilt every frame by the render functions
 let tapRegions = [];
-function addTapRegion(x, y, w, h, onTap) {
-    tapRegions.push({ x, y, w, h, onTap });
+function addTapRegion(x, y, w, h, onTap, id = null) {
+    tapRegions.push({ x, y, w, h, onTap, id });
 }
 function addFullScreenTap(onTap) {
     addTapRegion(0, 0, viewWidth, viewHeight, onTap);
@@ -3952,7 +3953,8 @@ function drawTutorialAsk() {
     const w = Math.min(460, viewWidth - 40);
     const h = 270;
     const x = (viewWidth - w) / 2;
-    const y = Math.max(viewHeight / 6 + 30, (viewHeight - h) / 2);
+    // On a phone-sized canvas the box moves up so it (and Skip) stays on screen
+    const y = Math.max(4, Math.min(Math.max(viewHeight / 6 + 30, (viewHeight - h) / 2), viewHeight - h - 4));
     ctx.fillStyle = 'rgba(0, 20, 40, 0.9)';
     ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = '#66CCFF';
@@ -3975,7 +3977,7 @@ function drawTutorialAsk() {
         addTapRegion(x + 30, by, bw, bh, () => {
             tutorialAskIndex = i;
             inputHandler.triggerAction('menuSelect');
-        });
+        }, i === 0 ? 'tutorialAsk:play' : 'tutorialAsk:skip');
     });
 
     ctx.textAlign = 'center';
@@ -4897,13 +4899,15 @@ function updateUfoSpawning(deltaTime) {
 function drawHighScores(scoresToDisplay, achievementsMap) {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '36px Arial';
-    const titleY = viewHeight / 6;
-    ctx.fillText("HIGH SCORES (ALL USERS)", viewWidth / 2, titleY);
+    const compact = isCompact(viewHeight);
+    ctx.font = compact ? '24px Arial' : '36px Arial';
+    const titleY = compact ? viewHeight * 0.1 : viewHeight / 6;
+    ctx.fillText("HIGH SCORES (ALL USERS)", viewWidth / 2, titleY, viewWidth - 16);
 
-    ctx.font = '20px Arial';
-    const listStartY = titleY + 60;
-    const listLineHeight = 30;
+    const listStartY = titleY + (compact ? 34 : 60);
+    // The list fits above the "return" hint on a short screen
+    const listLineHeight = Math.min(30, (viewHeight - 64 - listStartY) / Math.max(1, MAX_HIGH_SCORES - 1));
+    ctx.font = listLineHeight < 24 ? '16px Arial' : '20px Arial';
     const rankX = viewWidth / 6;
     const nameX = viewWidth / 3;
     const scoreX = viewWidth * 4 / 5;
@@ -4946,29 +4950,33 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
 function drawAchievements() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '36px Arial';
-    const titleY = viewHeight / 8;
+    const compact = isCompact(viewHeight);
+    ctx.font = compact ? '26px Arial' : '36px Arial';
+    const titleY = compact ? viewHeight * 0.1 : viewHeight / 8;
     ctx.fillText("ACHIEVEMENTS", viewWidth / 2, titleY);
 
     ctx.font = '18px Arial';
     ctx.textAlign = 'left';
-    const listStartY = titleY + 50;
-    const listLineHeight = 45;
-    const nameX = viewWidth / 8;
-    const descX = viewWidth / 8;
-    const statusX = viewWidth * 7 / 8;
+    const listStartY = titleY + (compact ? 30 : 50);
+    const nameX = viewWidth / (compact ? 16 : 8);
+    const descX = nameX;
 
     const allAchievements = achievementManager.getAllAchievementsStatus();
+    // Fit the list above the "return" hint; short rows drop the description line
+    const listLineHeight = Math.min(45, (viewHeight - 62 - listStartY) / Math.max(1, allAchievements.length - 1));
+    const withDescription = listLineHeight >= 36;
 
     allAchievements.forEach((ach, index) => {
         const yPos = listStartY + index * listLineHeight;
         ctx.fillStyle = ach.unlocked ? 'gold' : 'gray';
-        ctx.font = 'bold 18px Arial';
-        ctx.fillText(ach.name, nameX, yPos);
+        ctx.font = withDescription ? 'bold 18px Arial' : `bold ${Math.max(11, Math.min(16, Math.floor(listLineHeight - 3)))}px Arial`;
+        ctx.fillText(ach.name, nameX, yPos, viewWidth - nameX * 2);
 
-        ctx.fillStyle = ach.unlocked ? 'white' : '#aaa';
-        ctx.font = '16px Arial';
-        ctx.fillText(ach.description, descX, yPos + 20);
+        if (withDescription) {
+            ctx.fillStyle = ach.unlocked ? 'white' : '#aaa';
+            ctx.font = '16px Arial';
+            ctx.fillText(ach.description, descX, yPos + 20, viewWidth - descX * 2);
+        }
     });
 
     ctx.textAlign = 'center';
@@ -4992,33 +5000,39 @@ function drawIconLine(type, text, centerX, y, color, font = '14px Arial', iconR 
 // Settings screen: one row per setting, like the Upgrades screen. Tap the left/right part of
 // a row (or press left/right) to change it; Enter or a centre tap steps forward.
 function drawSettingsScreen() {
+    const compact = isCompact(viewHeight);
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '36px Arial';
-    const titleY = viewHeight * 0.14; // below the DOM HUD line
-    ctx.fillText(settingsPage === 'mp' ? 'MULTIPLAYER SETTINGS' : 'SETTINGS', viewWidth / 2, titleY);
+    ctx.font = compact ? '26px Arial' : '36px Arial';
+    const titleY = viewHeight * (compact ? 0.1 : 0.14); // below the DOM HUD line
+    ctx.fillText(settingsPage === 'mp' ? 'MULTIPLAYER SETTINGS' : 'SETTINGS', viewWidth / 2, titleY, viewWidth - 16);
 
     const rows = visibleRows(currentSettingsRows());
     if (settingsIndex >= rows.length) settingsIndex = 0;
-    const listStartY = titleY + 70;
-    const lineHeight = Math.min(55, (viewHeight - 90 - listStartY) / rows.length);
+    const listStartY = titleY + (compact ? 34 : 70);
+    // Rows share the height above the hint line; Back keeps a tappable height on a phone
+    const layout = stackRows({
+        count: rows.length, top: listStartY - 55 * 0.62, bottom: compact ? viewHeight - 38 : viewHeight - 90 + 55 * 0.62,
+        maxStep: 55, lastMin: MIN_EXIT_TAP + 5,
+    });
     const x = viewWidth * 0.1;
     const w = viewWidth * 0.8;
 
     rows.forEach((row, index) => {
         const isSelected = index === settingsIndex;
-        const y = listStartY + index * lineHeight;
-        const top = y - lineHeight * 0.62;
+        const lineHeight = layout.rows[index].h;
+        const top = layout.rows[index].y;
         const h = lineHeight - 5;
+        const y = top + h / 2 + (lineHeight < 30 ? 5 : 7); // text baseline, centred in the row
         if (isSelected) {
             ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
             ctx.fillRect(x, top, w, h);
         }
         ctx.fillStyle = isSelected ? '#FFFF00' : '#FFFFFF';
-        ctx.font = 'bold 20px Arial';
+        ctx.font = h < 24 ? 'bold 14px Arial' : compact ? 'bold 16px Arial' : 'bold 20px Arial';
         if (rowHasValue(row)) {
             ctx.textAlign = 'left';
-            ctx.fillText(row.label(), x + 15, y);
+            ctx.fillText(row.label(), x + 15, y, w * 0.5);
             ctx.textAlign = 'right';
             ctx.fillText(`◂  ${rowValue(row)}  ▸`, x + w - 15, y);
         } else {
@@ -5041,23 +5055,28 @@ function drawUpgradesMenu() {
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, viewWidth, viewHeight);
 
+    const compact = isCompact(viewHeight);
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '36px Arial';
-    const titleY = viewHeight / 10;
-    ctx.fillText("SHIP UPGRADES", viewWidth / 2, titleY);
+    ctx.font = compact ? '28px Arial' : '36px Arial';
+    const titleY = compact ? Math.round(viewHeight * 0.1) : viewHeight / 10;
+    ctx.fillText("SHIP UPGRADES", viewWidth / 2, titleY, viewWidth - 16);
 
     // Show currency
-    ctx.font = '24px Arial';
+    ctx.font = compact ? '18px Arial' : '24px Arial';
     ctx.fillStyle = '#FFD700';
-    ctx.fillText(`Credits: ${ShipUpgrades.currency}`, viewWidth / 2, titleY + 40);
+    ctx.fillText(`Credits: ${ShipUpgrades.currency}`, viewWidth / 2, titleY + (compact ? 26 : 40));
 
     ctx.font = '18px Arial';
     ctx.textAlign = 'left';
-    const listStartY = titleY + 90;
-    const listLineHeight = 55;
-
     const upgradeKeys = Object.keys(ShipUpgrades.upgrades);
+    // Rows (upgrades, then Back) fit above the two hint lines; Back stays on screen on a phone
+    const layout = stackRows({
+        count: upgradeKeys.length + 1, top: titleY + (compact ? 48 : 70), bottom: viewHeight - 64,
+        maxStep: 55, lastMin: MIN_EXIT_TAP + 5, lastMax: 45,
+    });
+    const listLineHeight = layout.step;
+    const tall = listLineHeight >= 45; // room for the description line
 
     upgradeKeys.forEach((key, index) => {
         const upgrade = ShipUpgrades.upgrades[key];
@@ -5067,32 +5086,35 @@ function drawUpgradesMenu() {
         const canAfford = !isMaxed && ShipUpgrades.currency >= cost;
         const isSelected = index === upgradeMenuIndex;
 
-        const yPos = listStartY + index * listLineHeight;
+        const rowTop = layout.rows[index].y;
+        const rowH = listLineHeight - 5;
+        const yPos = tall ? rowTop + 20 : rowTop + rowH / 2 + 6;
         const nameX = viewWidth * 0.1;
-        addTapRegion(nameX - 10, yPos - 20, viewWidth * 0.8 + 20, listLineHeight - 5, () => {
+        addTapRegion(nameX - 10, rowTop, viewWidth * 0.8 + 20, rowH, () => {
             upgradeMenuIndex = index;
             inputHandler.triggerAction('menuSelect');
-        });
+        }, `upgrade:${key}`);
 
         // Selection indicator
         if (isSelected) {
             ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
-            ctx.fillRect(nameX - 10, yPos - 20, viewWidth * 0.8 + 20, listLineHeight - 5);
+            ctx.fillRect(nameX - 10, rowTop, viewWidth * 0.8 + 20, rowH);
         }
 
         // Upgrade name
         ctx.fillStyle = isSelected ? '#FFFF00' : '#FFFFFF';
-        ctx.font = 'bold 20px Arial';
-        ctx.fillText(upgrade.name, nameX, yPos);
+        ctx.font = compact ? 'bold 15px Arial' : 'bold 20px Arial';
+        ctx.fillText(upgrade.name, nameX, yPos, viewWidth * 0.45);
 
-        // Level indicators
-        ctx.font = '16px Arial';
+        // Level indicators (under the name on a narrow screen)
+        ctx.font = compact ? '12px Arial' : '16px Arial';
         let levelText = '';
         for (let i = 0; i < upgrade.maxLevel; i++) {
             levelText += i < currentLevel ? '[*]' : '[ ]';
         }
         ctx.fillStyle = '#00FF00';
-        ctx.fillText(levelText, nameX + 200, yPos);
+        if (viewWidth >= 600) ctx.fillText(levelText, nameX + 200, yPos);
+        else ctx.fillText(levelText, viewWidth * 0.52, yPos);
 
         // Cost
         ctx.textAlign = 'right';
@@ -5102,27 +5124,33 @@ function drawUpgradesMenu() {
         } else {
             // Text cue as well as colour: unaffordable rows say how much is missing
             ctx.fillStyle = canAfford ? '#00FF00' : '#FF4444';
-            ctx.fillText(canAfford ? `Cost: ${cost}` : `Cost: ${cost} (need ${cost - ShipUpgrades.currency})`, viewWidth * 0.9, yPos);
+            const costText = canAfford || viewWidth < 600 ? `Cost: ${cost}` : `Cost: ${cost} (need ${cost - ShipUpgrades.currency})`;
+            ctx.fillText(tall ? costText : String(cost), viewWidth * 0.9, yPos);
         }
         ctx.textAlign = 'left';
 
-        // Description
-        ctx.fillStyle = '#AAAAAA';
-        ctx.font = '14px Arial';
-        ctx.fillText(upgrade.description, nameX, yPos + 22);
+        // Description (when the row has room for a second line)
+        if (tall) {
+            ctx.fillStyle = '#AAAAAA';
+            ctx.font = '14px Arial';
+            ctx.fillText(upgrade.description, nameX, yPos + 22, viewWidth * 0.8);
+        }
     });
 
-    // Back option
-    const backY = listStartY + upgradeKeys.length * listLineHeight;
+    // Back option (pinned inside the screen)
+    const back = layout.rows[upgradeKeys.length];
+    const backH = back.h - 5;
     const isBackSelected = upgradeMenuIndex === upgradeKeys.length;
     ctx.fillStyle = isBackSelected ? '#FFFF00' : '#FFFFFF';
-    ctx.font = 'bold 20px Arial';
+    ctx.font = compact ? 'bold 17px Arial' : 'bold 20px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('< Back to Menu >', viewWidth / 2, backY);
-    addTapRegion(viewWidth * 0.25, backY - 25, viewWidth * 0.5, 40, () => {
+    ctx.textBaseline = 'middle';
+    ctx.fillText('< Back to Menu >', viewWidth / 2, back.y + backH / 2);
+    ctx.textBaseline = 'alphabetic';
+    addTapRegion(viewWidth * 0.2, back.y, viewWidth * 0.6, backH, () => {
         upgradeMenuIndex = upgradeKeys.length;
         inputHandler.triggerAction('menuSelect');
-    });
+    }, 'row:back');
 
     ctx.fillStyle = '#888888';
     ctx.font = '14px Arial';
@@ -5202,24 +5230,27 @@ function drawPauseMenuFacing() {
     drawForViewers((region, tap) => {
         const w = Math.min(420, viewWidth * 0.8);
         const x = (viewWidth - w) / 2;
-        const lineH = Math.min(40, (region.h - 110) / options.length);
-        const h = 76 + options.length * lineH + 24;
-        const y = region.y + Math.max(8, (region.h - h) / 2);
+        // Short halves (a phone): a smaller header leaves the rows more room
+        const compact = region.h < 300;
+        const head = compact ? (byName ? 48 : 34) : 76;
+        const lineH = Math.min(40, (region.h - head - (compact ? 16 : 34)) / options.length);
+        const h = head + options.length * lineH + (compact ? 6 : 24);
+        const y = region.y + Math.max(compact ? 4 : 8, (region.h - h) / 2);
         ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
         ctx.fillRect(x, y, w, h);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = 'white';
-        ctx.font = 'bold 30px Arial';
-        ctx.fillText('PAUSED', viewWidth / 2, y + 36);
+        ctx.font = compact ? 'bold 22px Arial' : 'bold 30px Arial';
+        ctx.fillText('PAUSED', viewWidth / 2, y + (compact ? 24 : 36));
         if (byName) {
-            ctx.font = '15px Arial';
+            ctx.font = compact ? '13px Arial' : '15px Arial';
             ctx.fillStyle = '#AAAAAA';
-            ctx.fillText(`by ${byName}`, viewWidth / 2, y + 56);
+            ctx.fillText(`by ${byName}`, viewWidth / 2, y + (compact ? 40 : 56));
         }
         options.forEach((option, index) => {
-            const iy = y + 76 + index * lineH;
-            ctx.font = '22px Arial';
+            const iy = y + head + index * lineH;
+            ctx.font = lineH < 30 ? '17px Arial' : '22px Arial';
             ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
             ctx.textBaseline = 'middle';
             ctx.fillText(option, viewWidth / 2, iy + lineH / 2);
@@ -5237,41 +5268,58 @@ function drawPauseMenu() {
         drawPauseMenuFacing();
         return;
     }
+    const options = getPauseMenuOptions();
+    const byName = isMultiplayer() ? pausedByName() : null;
+    // The box is the middle half of the screen while its rows fit (40 px each); with more rows
+    // (Skip Tutorial, Drop Pn) or on a phone it grows so every row stays inside the screen
+    const compact = isCompact(viewHeight);
+    const header = (compact ? 40 : 60) + (byName ? 16 : 0);
+    const footer = compact && isTouchDevice && !usingGamepad() ? 8 : 34;
+    const natural = header + options.length * 40 + footer;
+    const boxH = Math.min(viewHeight - 8, Math.max(viewHeight * 0.5, natural + (compact ? 0 : 36)));
+    const boxY = (viewHeight - boxH) / 2;
+    const boxW = Math.min(viewWidth - 16, Math.max(viewWidth * 0.5, 300));
+    const boxX = (viewWidth - boxW) / 2;
     ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-    ctx.fillRect(viewWidth * 0.25, viewHeight * 0.25, viewWidth * 0.5, viewHeight * 0.5);
+    ctx.fillRect(boxX, boxY, boxW, boxH);
 
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '36px Arial';
-    const titleY = viewHeight * 0.35;
+    ctx.font = compact ? '28px Arial' : '36px Arial';
+    const titleY = boxY + (compact ? 30 : Math.min(viewHeight * 0.1, 36 + (boxH - natural) / 2));
     ctx.fillText("PAUSED", viewWidth / 2, titleY);
-    const byName = isMultiplayer() ? pausedByName() : null;
     if (byName) {
         ctx.font = '16px Arial';
         ctx.fillStyle = '#AAAAAA';
-        ctx.fillText(`by ${byName}`, viewWidth / 2, titleY + 24);
+        ctx.fillText(`by ${byName}`, viewWidth / 2, titleY + 22);
         ctx.fillStyle = 'white';
     }
 
-    ctx.font = '24px Arial';
-    const pauseStartY = titleY + 60;
-    const pauseLineHeight = 40;
-    getPauseMenuOptions().forEach((option, index) => {
+    ctx.font = compact ? '20px Arial' : '24px Arial';
+    const layout = stackRows({
+        count: options.length, top: titleY + header - (compact ? 30 : 36), bottom: boxY + boxH - footer,
+        maxStep: 40, lastMin: MIN_EXIT_TAP,
+    });
+    options.forEach((option, index) => {
         ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
         // Resume waits while a disconnected controller's seat is reserved (MP-5)
         if (option === 'Resume' && reservedSeatList().length) ctx.fillStyle = index === pauseMenuSelectionIndex ? '#8C8C3C' : '#777777';
-        const itemY = pauseStartY + index * pauseLineHeight;
-        ctx.fillText(option, viewWidth / 2, itemY);
-        addTapRegion(viewWidth * 0.25, itemY - pauseLineHeight * 0.7, viewWidth * 0.5, pauseLineHeight, () => {
+        const r = layout.rows[index];
+        ctx.textBaseline = 'middle';
+        ctx.fillText(option, viewWidth / 2, r.y + r.h / 2);
+        ctx.textBaseline = 'alphabetic';
+        addTapRegion(boxX, r.y, boxW, r.h, () => {
             pauseMenuSelectionIndex = index;
             inputHandler.triggerAction('menuSelect');
-        });
+        }, `pause:${option}`);
     });
 
     ctx.font = '16px Arial';
     ctx.fillStyle = 'lightgray';
-    ctx.fillText(inputHint("(Press P or Esc to Resume)", "(Tap an option)",
-        () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Resume`), viewWidth / 2, viewHeight * 0.75 - 20);
+    if (footer > 8) {
+        ctx.fillText(inputHint("(Press P or Esc to Resume)", "(Tap an option)",
+            () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Resume`), viewWidth / 2, boxY + boxH - 12);
+    }
     drawDisconnectNotice(); // "P2's controller disconnected ..." (MP-5)
 }
 
@@ -5299,18 +5347,18 @@ function drawShipIcon(x, y, size, colour, rotation = -Math.PI / 2) {
 }
 
 function drawScreenTitle(title, subtitle = null) {
+    const t = screenTitleLayout(viewHeight, !!subtitle); // smaller on a phone-sized canvas
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
-    ctx.font = '36px Arial';
-    const y = viewHeight * 0.12;
-    ctx.fillText(title, viewWidth / 2, y);
+    ctx.font = t.titleFont;
+    ctx.fillText(title, viewWidth / 2, t.titleY, viewWidth - 16);
     if (subtitle) {
-        ctx.font = '16px Arial';
+        ctx.font = t.subtitleFont;
         ctx.fillStyle = '#AAAAAA';
-        ctx.fillText(subtitle, viewWidth / 2, y + 28);
+        ctx.fillText(subtitle, viewWidth / 2, t.subtitleY, viewWidth - 16);
     }
-    return y + (subtitle ? 50 : 30);
+    return t.contentTop;
 }
 
 function drawHintLine(text, y = viewHeight - 20) {
@@ -5328,24 +5376,29 @@ function drawModeSelect() {
     if (mpModeIndex >= rows.length) mpModeIndex = 0;
     const w = Math.min(520, viewWidth - 60);
     const x = (viewWidth - w) / 2;
-    let y = top + 10;
-    // Mode boxes share the height left above the hint line (96 px at most)
-    const gap = 8;
-    const modeCount = rows.filter(r => r.id !== 'back').length;
+    // Mode boxes share the height left above the hint line (96 px at most); Back (last) keeps
+    // a tappable height and always stays on screen, even on a phone
+    const compact = isCompact(viewHeight);
+    const gap = compact ? 4 : 8;
     const backH = 44;
-    const modeH = Math.max(40, Math.min(96, (viewHeight - 34 - y - backH - gap * modeCount) / Math.max(1, modeCount)));
+    const layout = stackRows({
+        count: rows.length, top: top + (compact ? 4 : 10), bottom: viewHeight - 34 + gap,
+        maxStep: 96 + gap, lastMin: MIN_EXIT_TAP + gap, lastMax: backH + gap,
+    });
+    const modeH = layout.step - gap;
     const infoLines = modeH >= 76 ? 2 : modeH >= 58 ? 1 : 0;
     rows.forEach((row, i) => {
         const selected = i === mpModeIndex;
         const isMode = row.id !== 'back';
-        const h = isMode ? modeH : backH;
+        const y = layout.rows[i].y;
+        const h = layout.rows[i].h - gap;
         drawButtonBox(x, y, w, h, '', selected);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
-        ctx.font = 'bold 22px Arial';
+        ctx.font = h < 36 ? 'bold 17px Arial' : 'bold 22px Arial';
         if (isMode) {
-            const titleY = infoLines ? y + Math.min(32, h * 0.38) : y + h / 2 + 8;
+            const titleY = infoLines ? y + Math.min(32, h * 0.38) : y + h / 2 + (h < 36 ? 6 : 8);
             ctx.fillText(row.label(), x + w / 2, titleY);
             ctx.font = '15px Arial';
             ctx.fillStyle = '#CCCCCC';
@@ -5356,7 +5409,6 @@ function drawModeSelect() {
             ctx.fillText(row.label(), x + w / 2, y + h / 2 + 7);
         }
         addRowTapRegion(x, y, w, h, row, i, (k) => { mpModeIndex = k; });
-        y += h + gap;
     });
     drawHintLine(inputHint('UP/DOWN to choose, ENTER to select, ESC to go back', 'Tap a mode',
         () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`));
@@ -5470,7 +5522,7 @@ function drawSeatLobby() {
         // No Escape key on a tablet: a Back button (asks first when players have joined)
         const backW = Math.min(160, bw);
         drawButtonBox((viewWidth - backW) / 2, by, backW, 36, '◂ Back', false, 'bold 16px Arial');
-        addTapRegion((viewWidth - backW) / 2, by, backW, 36, () => requestLobbyExit());
+        addTapRegion((viewWidth - backW) / 2, by, backW, 36, () => requestLobbyExit(), 'lobby:back');
     }
     if (touchLobby) {
         drawHintLine('Tap your pad: join / ready   Hold it: leave   Keys and controllers can join too', viewHeight - 30);
@@ -5549,21 +5601,28 @@ function drawCountLobby() {
     const top = drawScreenTitle(m ? m.name.toUpperCase() : 'LOBBY', 'How many players? Pass the device when it says GET READY');
     const rows = countLobbyRows();
     if (lobbyIndex >= rows.length) lobbyIndex = 0;
+    const compact = isCompact(viewHeight);
     const listStartY = top + 30;
-    const lineHeight = Math.min(52, (viewHeight - 70 - listStartY) / rows.length);
-    const x = viewWidth * 0.12;
-    const w = viewWidth * 0.76;
+    // Rows fit above the hint line; Back (last) keeps a tappable height on a phone
+    const layout = stackRows({
+        count: rows.length, top: compact ? top + 2 : listStartY - 52 * 0.62,
+        bottom: compact ? viewHeight - 36 : viewHeight - 70 + 52 * 0.38,
+        maxStep: 52, lastMin: MIN_EXIT_TAP + 6,
+    });
+    const x = viewWidth * (compact ? 0.06 : 0.12);
+    const w = viewWidth * (compact ? 0.88 : 0.76);
     rows.forEach((row, index) => {
         const selected = index === lobbyIndex;
-        const y = listStartY + index * lineHeight;
-        const rowTop = y - lineHeight * 0.62;
+        const lineHeight = layout.rows[index].h;
+        const rowTop = layout.rows[index].y;
         const h = lineHeight - 6;
+        const y = rowTop + h / 2 + (h < 26 ? 5 : 7);
         if (selected) {
             ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
             ctx.fillRect(x, rowTop, w, h);
         }
         ctx.textBaseline = 'alphabetic';
-        ctx.font = 'bold 20px Arial';
+        ctx.font = h < 26 ? 'bold 15px Arial' : 'bold 20px Arial';
         const nameRow = /^name\d$/.test(row.id);
         const colour = nameRow ? seatColour(Number(row.id.slice(4)) - 1) : null;
         ctx.fillStyle = selected ? '#FFFF00' : (colour || '#FFFFFF');
@@ -5809,7 +5868,7 @@ function drawResults() {
         addTapRegion(bx, by, bw, bh, () => {
             resultsIndex = i;
             inputHandler.triggerAction('menuSelect');
-        });
+        }, `results:${label}`);
     });
     drawHintLine(inputHint('LEFT/RIGHT to choose, ENTER to select', 'Tap a button',
         () => `◂ ▸ Choose   ${padGlyph(GP.A)} Select`), viewHeight - 18);
@@ -6650,10 +6709,21 @@ function drawTimeAttackSetup() {
     if (taSetup.index >= rows.length) taSetup.index = 0;
     const w = Math.min(460, viewWidth - 60);
     const x = (viewWidth - w) / 2;
-    const h = 50;
-    let y = top + 10;
+    // Rows fit above the hint line with the ghost info under Difficulty; Back stays on screen
+    const compact = isCompact(viewHeight);
+    const gap = compact ? 6 : 12;
+    const infoLines = timeAttackGhostLines();
+    const infoPitch = compact ? 18 : 22;
+    const infoH = infoLines.length * infoPitch + 8;
+    const layout = stackRows({
+        count: rows.length, top: top + (compact ? 4 : 10), bottom: viewHeight - 34 + gap - infoH,
+        maxStep: 50 + gap, lastMin: MIN_EXIT_TAP + gap,
+    });
+    let shift = 0;
     rows.forEach((row, i) => {
         const selected = i === taSetup.index;
+        const y = layout.rows[i].y + shift;
+        const h = layout.rows[i].h - gap;
         if (rowHasValue(row)) {
             drawButtonBox(x, y, w, h, '', selected);
             ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
@@ -6668,15 +6738,17 @@ function drawTimeAttackSetup() {
             drawButtonBox(x, y, w, h, row.label(), selected);
         }
         addRowTapRegion(x, y, w, h, row, i, (k) => { taSetup.index = k; });
-        y += h + 12;
-        if (row.id === 'difficulty') y += drawTimeAttackGhostInfo(y) + 8;
+        if (row.id === 'difficulty') {
+            drawTimeAttackGhostInfo(y + h + gap - (compact ? 4 : 0), infoLines, infoPitch);
+            shift += infoH;
+        }
     });
     drawHintLine(inputHint('UP/DOWN to choose, LEFT/RIGHT to change, ENTER to select, ESC to go back',
         'Tap the left or right side of a row to change it',
         () => `◂ ▸ Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`));
 }
-// Whose ghost waits on the chosen course; returns the height used
-function drawTimeAttackGhostInfo(y) {
+// Whose ghost waits on the chosen course: lines for drawTimeAttackGhostInfo
+function timeAttackGhostLines() {
     const lines = [];
     const best = taSetup.best;
     if (best) {
@@ -6688,14 +6760,16 @@ function drawTimeAttackGhostInfo(y) {
         lines.push({ text: 'No ghost yet: your first run sets it', colour: '#AAAAAA' });
     }
     lines.push({ text: taSetup.own ? `Your best here: ${taSetup.own.score}` : 'You have no run on this course yet', colour: '#AAAAAA' });
+    return lines;
+}
+function drawTimeAttackGhostInfo(y, lines, pitch = 22) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     lines.forEach((l, i) => {
-        ctx.font = i === 0 ? 'bold 17px Arial' : '15px Arial';
+        ctx.font = i === 0 ? `bold ${pitch < 22 ? 14 : 17}px Arial` : `${pitch < 22 ? 13 : 15}px Arial`;
         ctx.fillStyle = l.colour;
-        ctx.fillText(l.text, viewWidth / 2, y + 16 + i * 22, viewWidth - 30);
+        ctx.fillText(l.text, viewWidth / 2, y + 16 + i * pitch, viewWidth - 30);
     });
-    return lines.length * 22;
 }
 
 // Called by startGame right after the round is created: seeds the world, loads the ghost and
