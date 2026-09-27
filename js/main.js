@@ -3429,13 +3429,14 @@ function updateGame(deltaTime) {
         return;
     }
     if (resumeCountdown > 0) {
-        // Multiplayer resume: the world waits for 3, 2, 1
-        resumeCountdown = Math.max(0, resumeCountdown - deltaTime);
+        // Multiplayer resume: the world waits for 3, 2, 1 (wall clock, like the lobby countdown,
+        // so a slow device doesn't stretch it)
+        resumeCountdown = Math.max(0, resumeCountdown - clockDeltaTime);
         return;
     }
     if (roundIntro) {
         // Controls card: the world waits until everyone pressed fire (or the card times out)
-        updateRoundIntro(deltaTime);
+        updateRoundIntro(clockDeltaTime); // UI timer: wall clock
         return;
     }
 
