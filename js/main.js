@@ -1946,6 +1946,7 @@ function drawEntityWrapped(entity, ctx) {
 // Draw level up notification
 function drawLevelUpNotification() {
     if (levelUpNotificationTimer <= 0) return;
+    if (roundIntro) return; // the controls intro card has the screen; the banner shows after it
 
     // Fade out effect
     const alpha = Math.min(1, levelUpNotificationTimer / (LEVEL_UP_NOTIFICATION_DURATION * 0.3));
@@ -3686,6 +3687,7 @@ function drawOffscreenArrow(x, y, colour, text, pulse = false) {
 }
 
 function drawMpWorldOverlays() {
+    const placedTags = []; // seat tags drawn this frame (avoid overlaps)
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -3750,10 +3752,15 @@ function drawMpWorldOverlays() {
             // Round start (5 s) and after a respawn (2 s): whose ship and which keys, e.g.
             // "P1 · WASD + SPACE", under the ship in the player's colour
             if (p.tagTimer > 0) {
-                const ty = pos.y < 40 ? y + 18 : pos.y + 30;
+                let ty = pos.y < 40 ? y + 18 : pos.y + 30;
                 const tag = seatTag(p.label, p.bindingId);
-                ctx.globalAlpha = Math.min(1, p.tagTimer / 0.5);
                 ctx.font = 'bold 13px Arial';
+                // Ships often start side by side: move this tag down until it clears the others
+                const w = ctx.measureText(tag).width;
+                const overlaps = (r) => Math.abs(r.x - pos.x) < (r.w + w) / 2 + 6 && Math.abs(r.y - ty) < 16;
+                for (let guard = 0; guard < 4 && placedTags.some(overlaps); guard++) ty += 16;
+                placedTags.push({ x: pos.x, y: ty, w });
+                ctx.globalAlpha = Math.min(1, p.tagTimer / 0.5);
                 ctx.fillStyle = 'black';
                 ctx.fillText(tag, pos.x + 1, ty + 1);
                 ctx.fillStyle = p.colour;
