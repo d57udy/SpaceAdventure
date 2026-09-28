@@ -15,28 +15,47 @@ test.describe('smoke', () => {
     expect(errors).toEqual([]);
   });
 
-  test('canvas is square, visible and fits the viewport', async ({ page }) => {
+  test('canvas fills the viewport (any aspect ratio), visible, no page scroll', async ({ page }) => {
     await openFresh(page);
     const canvas = page.locator('#gameCanvas');
     await expect(canvas).toBeVisible();
     const box = await canvas.boundingBox();
     const vp = page.viewportSize();
-    expect(box.width).toBeGreaterThan(300);
-    expect(Math.abs(box.width - box.height)).toBeLessThanOrEqual(1);
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.y).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(vp.width);
-    expect(box.y + box.height).toBeLessThanOrEqual(vp.height);
+    // No safe-area insets in the test browsers: the whole viewport, width and height
+    expect(box.width).toBeGreaterThanOrEqual(vp.width - 1);
+    expect(box.height).toBeGreaterThanOrEqual(vp.height - 1);
+    expect(box.x).toBeGreaterThanOrEqual(-0.5);
+    expect(box.y).toBeGreaterThanOrEqual(-0.5);
+    expect(box.x + box.width).toBeLessThanOrEqual(vp.width + 0.5);
+    expect(box.y + box.height).toBeLessThanOrEqual(vp.height + 0.5);
+    const v = await hook(page, 'view');
+    expect(v.width).toBe(Math.floor(vp.width));
+    expect(v.height).toBe(Math.floor(vp.height));
+    const scroll = await page.evaluate(() => ({
+      sw: document.documentElement.scrollWidth, sh: document.documentElement.scrollHeight,
+      iw: window.innerWidth, ih: window.innerHeight,
+    }));
+    expect(scroll.sw).toBeLessThanOrEqual(scroll.iw);
+    expect(scroll.sh).toBeLessThanOrEqual(scroll.ih);
   });
 
-  test('HUD overlay and username prompt are shown on first load', async ({ page }) => {
+  test('username prompt on first load; the HUD line appears only in play', async ({ page }) => {
     await openFresh(page);
     await expect(page.locator('#score')).toHaveText('Score: 0');
-    await expect(page.locator('#lives')).toBeVisible();
     await expect(page.locator('#level')).toHaveText('Level: 1');
+    // Menus draw their own titles where the HUD line would sit
+    await expect(page.locator('.ui-overlay')).toBeHidden();
     await expect(page.locator('#user-prompt')).toBeVisible();
     await expect(page.locator('#username-input')).toBeVisible();
     await expect(page.locator('#username-submit')).toBeVisible();
+    await page.locator('#username-input').fill('HUDLINE');
+    await page.locator('#username-submit').click();
+    await waitForState(page, 'menu');
+    await expect(page.locator('.ui-overlay')).toBeHidden();
+    await page.keyboard.press('Enter'); // Start
+    await waitForState(page, 'playing');
+    await expect(page.locator('#lives')).toBeVisible();
+    await expect(page.locator('#score')).toBeVisible();
   });
 
   test('touch detection matches the device type', async ({ page }, testInfo) => {

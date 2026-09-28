@@ -1,6 +1,6 @@
-// Phone-size screen (390 x 844, like an iPhone 12-15): the canvas is only ~351 px square, so
-// every menu screen must fit its rows and keep its exit (Back / Resume / "tap to return")
-// tappable inside the canvas. A touch player has no Escape key: an exit drawn below the
+// Phone-size screen (390 x 844, like an iPhone 12-15): the canvas fills the tall, narrow
+// screen, and every menu screen must fit its rows into the 390 px wide column and keep its exit
+// (Back / Resume / "tap to return") tappable (44 px) inside the canvas. A touch player has no Escape key: an exit drawn below the
 // canvas leaves them stuck. Runs in the touch projects (hasTouch) with a phone viewport.
 import { test, expect } from '@playwright/test';
 import {
@@ -10,7 +10,7 @@ import {
 
 test.use({ viewport: { width: 390, height: 844 } });
 
-const MIN_H = 30;
+const MIN_H = 44; // js/menuLayout.js MIN_TAP
 
 /** The tap region matching `pick`, checked to lie inside the canvas and be >= 30 px tall. */
 async function exitRegion(page, pick, label) {
@@ -39,11 +39,20 @@ const fullScreen = (r) => r.x === 0 && r.y === 0 && r.w > 300 && r.h > 300;
 test.describe('phone-size screen: every menu exit is inside the canvas and tappable', () => {
   test.skip(({ hasTouch }) => !hasTouch, 'touch devices');
 
-  test('the canvas is phone-sized', async ({ page }) => {
+  test('the canvas fills the phone screen, not a square in the middle', async ({ page }) => {
     await openFresh(page);
     await loginWithTouch(page, 'PHONE');
     const v = await hook(page, 'view');
-    expect(v.height).toBeLessThan(400);
+    expect(v.width).toBe(390);
+    expect(v.height).toBe(844);
+    // Main menu rows are finger-sized and inside the canvas
+    const regions = (await hook(page, 'tapRegions')).filter((r) => r.id && r.id.startsWith('row:'));
+    expect(regions.length).toBeGreaterThan(5);
+    for (const r of regions) {
+      expect(r.h, r.id).toBeGreaterThanOrEqual(MIN_H);
+      expect(r.x + r.w, r.id).toBeLessThanOrEqual(v.width + 0.5);
+      expect(r.y + r.h, r.id).toBeLessThanOrEqual(v.height + 0.5);
+    }
   });
 
   test('Upgrades, Settings, High Scores, Achievements and Help can be left by tapping', async ({ page }) => {

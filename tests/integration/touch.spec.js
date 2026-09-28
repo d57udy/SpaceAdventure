@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 import {
   openFresh, snap, hook, isPressed, waitForState, loginWithTouch, tapMenuItem,
   tapRegionCenter, tapRegionPoint, tapAt, Fingers, rectsOverlap, CONTROL_MODE_KEY, MENU,
-  settingsRowIndex,
+  settingsRowIndex, canvasToPage,
 } from './helpers.js';
 
 /** From the menu: open Settings, tap the centre of a row (cycles it), then tap Back. */
@@ -284,9 +284,8 @@ for (const mode of ['buttons', 'joystick']) {
       await startByTap(page);
     });
 
-    test('buttons do not overlap each other or the canvas and are inside the viewport', async ({ page }) => {
+    test('buttons overlay the canvas edges without overlapping each other, the HUD line or the radar', async ({ page }) => {
       const vp = page.viewportSize();
-      const canvas = await page.locator('#gameCanvas').boundingBox();
       const boxes = {};
       for (const [action, sel] of Object.entries(visibleButtons(mode))) {
         const b = await page.locator(sel).boundingBox();
@@ -306,10 +305,29 @@ for (const mode of ['buttons', 'joystick']) {
       }
       // Allow a few px of bounding-box overlap (buttons are circles, so the box corner is empty)
       const TOL = 6;
-      const inset = { x: canvas.x + TOL, y: canvas.y + TOL, width: canvas.width - 2 * TOL, height: canvas.height - 2 * TOL };
-      const covering = names.filter((n) => rectsOverlap(boxes[n], inset))
-        .map((n) => `${n}: button ${JSON.stringify(boxes[n])} canvas ${JSON.stringify(canvas)}`);
-      expect(covering, 'touch buttons covering the play area').toEqual([]);
+      const shrink = (b) => ({ x: b.x + TOL, y: b.y + TOL, width: b.width - 2 * TOL, height: b.height - 2 * TOL });
+      // The HUD line (score, lives, ...) stays clear of the buttons (pause / mute top right)
+      const covering = [];
+      for (const sel of ['#user-display', '#score', '#credits', '#lives', '#level']) {
+        const h = await page.locator(sel).boundingBox();
+        if (!h) continue;
+        for (const n of names) if (rectsOverlap(shrink(boxes[n]), h)) covering.push(`${n} covers ${sel}`);
+      }
+      for (const sel of ['#touch-pause-btn', '#touch-mute-btn']) {
+        const b = await page.locator(sel).boundingBox();
+        for (const hsel of ['#score', '#lives', '#level']) {
+          const h = await page.locator(hsel).boundingBox();
+          if (b && h && rectsOverlap(shrink(b), h)) covering.push(`${sel} covers ${hsel}`);
+        }
+      }
+      // The radar moved to the bottom centre, between the corner clusters
+      const radar = (await hook(page, 'view')).hudLayout.radar;
+      expect(radar).toBeTruthy();
+      const r0 = await canvasToPage(page, radar.x, radar.y);
+      const r1 = await canvasToPage(page, radar.x + radar.size, radar.y + radar.size);
+      const radarBox = { x: r0.x, y: r0.y, width: r1.x - r0.x, height: r1.y - r0.y };
+      for (const n of names) if (rectsOverlap(shrink(boxes[n]), radarBox)) covering.push(`${n} covers the radar`);
+      expect(covering, 'touch buttons covering the HUD').toEqual([]);
     });
 
     test('buttons hit-test to themselves (nothing on top of them)', async ({ page }) => {
@@ -705,7 +723,7 @@ test.describe('touch: joystick and viewport changes', () => {
 });
 
 test.describe('touch: joystick and toolbar resizes', () => {
-  test('a resize that keeps the canvas size and orientation (toolbar collapse) keeps the stick', async ({ page, browserName }) => {
+  test('a small resize that keeps the orientation (toolbar collapse) keeps the stick', async ({ page, browserName }) => {
     await openFresh(page);
     await loginWithTouch(page);
     await startByTap(page);
@@ -715,12 +733,15 @@ test.describe('touch: joystick and toolbar resizes', () => {
     await expect.poll(() => hook(page, 'joystick.active')).toBe(true);
     const vp = page.viewportSize();
     const before = await hook(page, 'view');
-    // Grow the longer side a little (like Safari's toolbar collapsing): min side unchanged
+    // Grow the longer side a little (like Safari's toolbar collapsing): the canvas follows the
+    // viewport, but the orientation is the same and the change is small
     const grow = vp.width > vp.height ? { width: vp.width + 40, height: vp.height } : { width: vp.width, height: vp.height + 40 };
     await page.setViewportSize(grow);
-    await page.waitForTimeout(200);
-    const after = await hook(page, 'view');
-    expect([after.width, after.height, after.backingWidth]).toEqual([before.width, before.height, before.backingWidth]);
+    await expect.poll(async () => {
+      const v = await hook(page, 'view');
+      return [v.width, v.height];
+    }).toEqual([Math.floor(grow.width), Math.floor(grow.height)]);
+    expect(before.width * before.height).toBeLessThan(grow.width * grow.height);
     expect(await hook(page, 'joystick.active')).toBe(true);
     await f.releaseAll();
     await expect.poll(() => hook(page, 'joystick.active')).toBe(false);

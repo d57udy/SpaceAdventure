@@ -7,7 +7,11 @@ import { defineConfig, devices } from '@playwright/test';
 //   ipad-webkit            iPad (gen 7) portrait, WebKit, DPR 2  -> smoke + hidpi + touch specs
 //   ipad-webkit-landscape  iPad (gen 7) landscape, WebKit, DPR 2 -> smoke + hidpi + touch specs
 //   ipad-chromium-touch    Chromium, hasTouch, 1024x768, DPR 1 -> smoke + hidpi + touch specs
+//   pixel-chromium         Pixel 7 Pro portrait, Chromium, 412x892, DPR 3.5, mobile + touch
+//                          -> smoke + hidpi + touch + phone + settings + tutorial + layout specs
 //   (phone.spec.js in the touch list overrides the viewport to a 390x844 phone)
+//   layout.spec.js (every non-PWA project): the canvas fills the viewport at any aspect ratio,
+//   menus fit, screenshots per project in tests/screenshots/
 //   pwa-chromium           service worker, offline, install, full screen at /       -> pwa spec
 //   pwa-subpath            the same served under /SpaceAdventure/ like GitHub Pages -> pwa spec
 //
@@ -21,9 +25,11 @@ const PORT = Number(process.env.PW_PORT) || 8082; // PW_PORT lets parallel workt
 // test-only /__admin/override endpoint used by the update-flow test.
 const SUBPATH_PORT = Number(process.env.PW_SUBPATH_PORT) || 8083;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js'];
 const PWA_SPECS = ['pwa.spec.js'];
-const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js'];
+const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js'];
+// A tall phone (the adaptive, non-square canvas on a small screen)
+const PIXEL_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'phone.spec.js', 'settings.spec.js', 'tutorial.spec.js', 'layout.spec.js'];
 
 export default defineConfig({
   testDir: './tests/integration',
@@ -90,6 +96,18 @@ export default defineConfig({
         viewport: { width: 1024, height: 768 },
         hasTouch: true,
         isMobile: false,
+        serviceWorkers: 'block',
+      },
+    },
+    {
+      name: 'pixel-chromium',
+      testMatch: PIXEL_SPECS,
+      use: {
+        browserName: 'chromium', launchOptions: { args: ['--mute-audio'] },
+        viewport: { width: 412, height: 892 },
+        deviceScaleFactor: 3.5,
+        isMobile: true,
+        hasTouch: true,
         serviceWorkers: 'block',
       },
     },

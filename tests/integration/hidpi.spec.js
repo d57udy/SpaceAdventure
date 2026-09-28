@@ -1,11 +1,27 @@
-// HiDPI rendering: the canvas backing store is CSS size x devicePixelRatio (capped at 2),
-// while game logic, world size and taps stay in logical (CSS) pixels. Runs on every project.
+// HiDPI rendering: the canvas backing store is CSS size x devicePixelRatio (capped at 2) on
+// each axis (the canvas fills the viewport, any aspect ratio), while game logic, world size
+// and taps stay in logical (CSS) pixels. Runs on every project.
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, loginWithKeyboard, tapRegionCenter, tapAt, frames,
 } from './helpers.js';
 
 const MAX_SCALE = 2;
+
+/** js/worldSize.js computeWorldSize, repeated here: 1.5 views per axis, >= 480, <= 16:9. */
+function expectedWorld(v) {
+  let width = Math.max(480, v.width * 1.5);
+  let height = Math.max(480, v.height * 1.5);
+  if (width > height * (16 / 9)) height = width / (16 / 9);
+  else if (height > width * (16 / 9)) width = height / (16 / 9);
+  return { width, height };
+}
+
+function expectWorldFor(world, v) {
+  const e = expectedWorld(v);
+  expect(world.width).toBeCloseTo(e.width, 6);
+  expect(world.height).toBeCloseTo(e.height, 6);
+}
 
 /** DOM truth about the canvas: backing store and displayed (CSS) size. */
 function canvasInfo(page) {
@@ -26,6 +42,7 @@ async function expectSharpCanvas(page, cap = MAX_SCALE) {
   expect(v.backingWidth).toBe(c.backingWidth);
   expect(v.backingHeight).toBe(c.backingHeight);
   expect(v.scale).toBeCloseTo(c.backingWidth / v.width, 10);
+  expect(v.scaleY).toBeCloseTo(c.backingHeight / v.height, 10);
   // The CSS size did not grow with the backing store
   expect(Math.abs(c.cssWidth - v.width)).toBeLessThanOrEqual(1);
   expect(Math.abs(c.cssHeight - v.height)).toBeLessThanOrEqual(1);
@@ -46,17 +63,21 @@ async function startGame(page) {
 }
 
 test.describe('hidpi: canvas sizing', () => {
-  test('backing store = round(view width x min(dpr, 2)); CSS size and world use logical pixels', async ({ page }) => {
+  test('backing store = round(view size x min(dpr, 2)) per axis; CSS size and world use logical pixels', async ({ page }) => {
     const errors = await openFresh(page);
     await waitForState(page, 'prompt_user');
     const { v, c } = await expectSharpCanvas(page);
     const vp = page.viewportSize();
-    expect(v.width).toBe(Math.floor(Math.min(vp.width, vp.height) * 0.9));
-    expect(v.height).toBe(v.width);
+    // The canvas fills the viewport (no safe-area insets in the test browsers)
+    expect(v.width).toBe(Math.floor(vp.width));
+    expect(v.height).toBe(Math.floor(vp.height));
     expect(v.scaleCap).toBe(MAX_SCALE);
     // World size comes from the logical size only
-    expect(await hook(page, 'world')).toEqual({ width: v.width * 1.5, height: v.height * 1.5 });
-    if (c.dpr >= 2) expect(c.backingWidth).toBe(v.width * 2);
+    expectWorldFor(await hook(page, 'world'), v);
+    if (c.dpr >= 2) {
+      expect(c.backingWidth).toBe(v.width * 2);
+      expect(c.backingHeight).toBe(v.height * 2);
+    }
     expect(errors).toEqual([]);
   });
 
@@ -95,9 +116,11 @@ test.describe('hidpi: canvas sizing', () => {
     const png = await page.locator('#gameCanvas').screenshot({ scale: 'device' });
     const width = png.readUInt32BE(16); // PNG IHDR width
     expect(Math.abs(width - Math.round(v.width * c.dpr))).toBeLessThanOrEqual(2);
-    // iPad gen 7 portrait: 729 CSS px -> 1458 device px (WebKit may round the element's
-    // fractional page position out by a pixel on each side)
-    if (v.width === 729 && c.dpr === 2) expect(Math.abs(width - 1458)).toBeLessThanOrEqual(2);
+    const height = png.readUInt32BE(20); // PNG IHDR height
+    expect(Math.abs(height - Math.round(v.height * c.dpr))).toBeLessThanOrEqual(2);
+    // iPad gen 7 portrait: 810 x 1080 CSS px -> 1620 x 2160 device px (WebKit may round the
+    // element's page position out by a pixel on each side)
+    if (v.width === 810 && c.dpr === 2) expect(Math.abs(width - 1620)).toBeLessThanOrEqual(2);
   });
 
   test('rotation / resize mid-game keeps the ship in the world and the canvas sharp', async ({ page }) => {
@@ -112,7 +135,7 @@ test.describe('hidpi: canvas sizing', () => {
     await expectSharpCanvas(page, (await hook(page, 'view')).scaleCap);
     const world = await hook(page, 'world');
     const view = await hook(page, 'view');
-    expect(world).toEqual({ width: view.width * 1.5, height: view.height * 1.5 });
+    expectWorldFor(world, view);
     const ship = await hook(page, 'ship');
     expect(ship.x).toBeGreaterThanOrEqual(0);
     expect(ship.x).toBeLessThanOrEqual(world.width);
@@ -146,6 +169,7 @@ test.describe('hidpi: DPR 3 is capped at 2', () => {
     expect(c.dpr).toBe(3);
     expect(v.scale).toBe(2);
     expect(c.backingWidth).toBe(v.width * 2);
+    expect(c.backingHeight).toBe(v.height * 2);
     expect(errors).toEqual([]);
   });
 });
@@ -183,8 +207,10 @@ test.describe('hidpi: DPR change without a resize', () => {
     });
     await expect.poll(async () => (await hook(page, 'view')).dpr).toBe(target);
     await expect.poll(async () => (await hook(page, 'view')).backingWidth).toBe(before.width * target);
+    expect((await hook(page, 'view')).backingHeight).toBe(before.height * target);
     const after = await hook(page, 'view');
     expect(after.width).toBe(before.width);
+    expect(after.height).toBe(before.height);
     await expectSharpCanvas(page);
   });
 });
@@ -213,7 +239,7 @@ test.describe('hidpi: adaptive render-scale fallback', () => {
     expect(v.avgFrameMs).toBeGreaterThan(22);
     await expectSharpCanvas(page, v.scaleCap);
     // Logical sizes are unchanged: the world is the same and taps still land
-    expect(await hook(page, 'world')).toEqual({ width: v.width * 1.5, height: v.height * 1.5 });
+    expectWorldFor(await hook(page, 'world'), v);
     await page.keyboard.press('Escape');
     await waitForState(page, 'paused');
     const resumeAt = await tapRegionCenter(page, 0);
