@@ -3751,7 +3751,7 @@ function drawMpWorldOverlays() {
             ctx.fillText(p.label, pos.x, y);
             // Round start (5 s) and after a respawn (2 s): whose ship and which keys, e.g.
             // "P1 · WASD + SPACE", under the ship in the player's colour
-            if (p.tagTimer > 0) {
+            if (p.tagTimer > 0 && !roundIntro) { // the intro cards already show this
                 let ty = pos.y < 40 ? y + 18 : pos.y + 30;
                 const tag = seatTag(p.label, p.bindingId);
                 ctx.font = 'bold 13px Arial';
