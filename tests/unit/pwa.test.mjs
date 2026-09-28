@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
     initPwa, detectIos, detectDisplayMode, isLocalhost, parseSwFlags,
     IOS_HINT_KEY, CACHE_PREFIX, DEFAULT_UPDATE_SAFE_STATES,
+    installView, INSTALL_TEXT, INSTALLED_KEY, INSTALL_CHECK_MS,
+    pointerVerb, updateToastText, FULLSCREEN_GESTURE_TEXT,
 } from '../../js/pwa.js';
 
 // --- Fakes ------------------------------------------------------------------
@@ -339,6 +341,191 @@ test('canInstall is false when already running installed', () => {
     assert.equal(pwa.canInstall(), false);
 });
 
+// --- Install feedback (Android: "it said installed but I can't find the app") ----
+
+/** A beforeinstallprompt event whose prompt resolves with `outcome`. */
+function promptEvent(outcome = 'accepted') {
+    return {
+        preventDefault() {},
+        prompt() { return Promise.resolve(); },
+        userChoice: Promise.resolve({ outcome }),
+    };
+}
+
+/** makeEnv plus a controllable setTimeout. */
+function envWithTimers(opts) {
+    const env = makeEnv(opts);
+    env.timers = [];
+    env.win.setTimeout = (fn, ms) => { env.timers.push({ fn, ms, cleared: false }); return env.timers.length; };
+    env.win.clearTimeout = (id) => { if (env.timers[id - 1]) env.timers[id - 1].cleared = true; };
+    env.runTimers = () => { for (const t of env.timers) if (!t.cleared) { t.cleared = true; t.fn(); } };
+    return env;
+}
+
+test('installView: pure state table', () => {
+    assert.deepEqual(installView({ standalone: true, canInstall: true, phase: 'installing', knownInstalled: true }),
+        { button: null, notice: null }, 'inside the installed app: nothing');
+    assert.deepEqual(installView({}), { button: null, notice: null }, 'nothing known: nothing');
+    assert.deepEqual(installView({ canInstall: true }), { button: 'install', notice: null });
+    assert.deepEqual(installView({ phase: 'installing', canInstall: true }), { button: null, notice: 'installing' });
+    assert.deepEqual(installView({ phase: 'installed' }), { button: null, notice: 'installed' });
+    assert.deepEqual(installView({ phase: 'check' }), { button: null, notice: 'check' });
+    assert.deepEqual(installView({ phase: 'installed', noticeDismissed: true, knownInstalled: true }), { button: 'open-app', notice: null });
+    assert.deepEqual(installView({ knownInstalled: true }), { button: 'open-app', notice: null });
+    assert.deepEqual(installView({ knownInstalled: true, openAppHint: true }), { button: 'open-app', notice: 'openApp' });
+    assert.deepEqual(installView({ phase: 'dismissed' }), { button: null, notice: 'dismissed' });
+    assert.deepEqual(installView({ phase: 'dismissed', canInstall: true }), { button: 'install', notice: 'dismissed' });
+    assert.deepEqual(installView({ phase: 'dismissed', noticeDismissed: true }), { button: null, notice: null });
+    assert.deepEqual(installView({ knownInstalled: true, canInstall: true }), { button: 'install', notice: null },
+        'the browser offering install wins over a stale memory');
+});
+
+test('install texts say where the app appears and use the full name', () => {
+    assert.match(INSTALL_TEXT.installing, /^Installing…/);
+    assert.match(INSTALL_TEXT.installing, /Space Adventure will appear on your home screen or in your app list/);
+    assert.match(INSTALL_TEXT.installed, /^Installed\. Open Space Adventure from your home screen or app drawer/);
+    for (const k of ['installed', 'check', 'openApp']) assert.match(INSTALL_TEXT[k], /search “Space Adventure”/, k);
+    assert.match(INSTALL_TEXT.dismissed, /browser menu/);
+    for (const t of Object.values(INSTALL_TEXT)) assert.doesNotMatch(t, /Space Adv\b/);
+});
+
+test('accepting the prompt shows "Installing…", then appinstalled shows "Installed" and remembers it', async () => {
+    const env = envWithTimers();
+    const pwa = start(env, { register: false });
+    env.win.dispatch('beforeinstallprompt', promptEvent('accepted'));
+    assert.equal(pwa.installView().button, 'install');
+
+    assert.equal(await pwa.promptInstall(), 'accepted');
+    assert.deepEqual(pwa.installView(), { button: null, notice: 'installing' }, 'never vanish without feedback');
+    assert.equal(pwa.getPwaState().installPhase, 'installing');
+    assert.equal(pwa.getPwaState().installNotice, 'installing');
+    assert.equal(env.store.get(INSTALLED_KEY), '1');
+    assert.equal(env.timers.length, 1);
+    assert.equal(env.timers[0].ms, INSTALL_CHECK_MS);
+
+    env.win.dispatch('appinstalled');
+    assert.deepEqual(pwa.installView(), { button: null, notice: 'installed' });
+    assert.equal(env.timers[0].cleared, true, 'no "check" message once installed');
+    assert.equal(pwa.getPwaState().installedVia, 'appinstalled');
+
+    pwa.dismissInstallNotice();
+    assert.deepEqual(pwa.installView(), { button: 'open-app', notice: null });
+    pwa.toggleOpenAppHint();
+    assert.deepEqual(pwa.installView(), { button: 'open-app', notice: 'openApp' });
+    pwa.toggleOpenAppHint();
+    assert.equal(pwa.installView().notice, null);
+});
+
+test('appinstalled before userChoice resolves keeps "Installed"', async () => {
+    const env = envWithTimers();
+    const pwa = start(env, { register: false });
+    let resolveChoice;
+    const ev = { preventDefault() {}, prompt: () => Promise.resolve(), userChoice: new Promise((r) => { resolveChoice = r; }) };
+    env.win.dispatch('beforeinstallprompt', ev);
+    const p = pwa.promptInstall();
+    env.win.dispatch('appinstalled');
+    resolveChoice({ outcome: 'accepted' });
+    assert.equal(await p, 'accepted');
+    assert.equal(pwa.installView().notice, 'installed');
+    assert.equal(env.timers.length, 0);
+});
+
+test('no appinstalled after accepting: after a while say where to look and what to do', async () => {
+    const env = envWithTimers();
+    const pwa = start(env, { register: false });
+    env.win.dispatch('beforeinstallprompt', promptEvent('accepted'));
+    await pwa.promptInstall();
+    let changes = 0;
+    pwa.onChange(() => changes++);
+    env.runTimers();
+    assert.deepEqual(pwa.installView(), { button: null, notice: 'check' });
+    assert.ok(changes >= 1, 'the UI is told');
+    assert.match(INSTALL_TEXT.check, /Add to home screen/);
+});
+
+test('dismissing the prompt explains how to install later instead of silently hiding the button', async () => {
+    const env = envWithTimers();
+    const pwa = start(env, { register: false });
+    env.win.dispatch('beforeinstallprompt', promptEvent('dismissed'));
+    assert.equal(await pwa.promptInstall(), 'dismissed');
+    assert.deepEqual(pwa.installView(), { button: null, notice: 'dismissed' });
+    assert.equal(env.store.has(INSTALLED_KEY), false);
+    // The browser offers install again later: the button comes back
+    env.win.dispatch('beforeinstallprompt', promptEvent('accepted'));
+    assert.equal(pwa.installView().button, 'install');
+    pwa.dismissInstallNotice();
+    assert.deepEqual(pwa.installView(), { button: 'install', notice: null });
+});
+
+test('running as the installed app (standalone or fullscreen): no install UI, and remembered', () => {
+    for (const q of ['(display-mode: standalone)', '(display-mode: fullscreen)']) {
+        const env = envWithTimers({ media: { [q]: true } });
+        const pwa = start(env, { register: false });
+        env.win.dispatch('beforeinstallprompt', promptEvent('accepted'));
+        assert.deepEqual(pwa.installView(), { button: null, notice: null }, q);
+        env.win.dispatch('appinstalled');
+        assert.deepEqual(pwa.installView(), { button: null, notice: null }, q);
+        assert.equal(env.store.get(INSTALLED_KEY), '1', 'the browser tab later offers "Open the app"');
+    }
+});
+
+test('browser tab of an installed app: remembered install shows "Open the app" guidance', async () => {
+    const env = envWithTimers({ storage: { [INSTALLED_KEY]: '1' } });
+    const pwa = start(env, { register: false });
+    await pwa.installDetected;
+    assert.deepEqual(pwa.installView(), { button: 'open-app', notice: null });
+    assert.equal(pwa.getPwaState().knownInstalled, true);
+    assert.equal(pwa.getPwaState().installButton, 'open-app');
+    // The user removed the app: Chrome offers install again, which clears the memory
+    env.win.dispatch('beforeinstallprompt', promptEvent('accepted'));
+    assert.deepEqual(pwa.installView(), { button: 'install', notice: null });
+    assert.equal(env.store.has(INSTALLED_KEY), false);
+});
+
+test('getInstalledRelatedApps finds the installed web app', async () => {
+    const env = envWithTimers();
+    let asked = 0;
+    env.nav.getInstalledRelatedApps = async () => { asked++; return [{ platform: 'webapp', url: new URL('manifest.webmanifest', env.win.location.href).href }]; };
+    const pwa = start(env, { register: false });
+    assert.equal(await pwa.installDetected, true);
+    assert.equal(asked, 1);
+    assert.deepEqual(pwa.installView(), { button: 'open-app', notice: null });
+    assert.equal(pwa.getPwaState().installedVia, 'related-apps');
+    assert.equal(env.store.get(INSTALLED_KEY), '1');
+});
+
+test('getInstalledRelatedApps: empty, throwing or missing means not known installed', async () => {
+    for (const impl of [async () => [], async () => { throw new Error('nope'); }, undefined]) {
+        const env = envWithTimers();
+        if (impl) env.nav.getInstalledRelatedApps = impl;
+        const pwa = start(env, { register: false });
+        assert.equal(await pwa.installDetected, false);
+        assert.deepEqual(pwa.installView(), { button: null, notice: null });
+    }
+});
+
+test('a throwing localStorage never breaks install feedback', async () => {
+    const env = envWithTimers();
+    env.win.localStorage = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
+    const pwa = start(env, { register: false });
+    env.win.dispatch('beforeinstallprompt', promptEvent('accepted'));
+    assert.equal(await pwa.promptInstall(), 'accepted');
+    assert.equal(pwa.installView().notice, 'installing');
+    env.win.dispatch('appinstalled');
+    assert.equal(pwa.installView().notice, 'installed');
+});
+
+test('pointerVerb and update toast wording match the input device', () => {
+    const w = (media) => ({ matchMedia: (q) => ({ matches: !!media[q] }) });
+    assert.equal(pointerVerb(w({ '(any-pointer: coarse)': true })), 'tap');
+    assert.equal(pointerVerb(w({ '(any-pointer: fine)': true })), 'click');
+    assert.equal(pointerVerb(w({ '(any-pointer: fine)': true, '(any-pointer: coarse)': true })), 'click or tap');
+    assert.equal(pointerVerb(null), 'click or tap');
+    assert.equal(updateToastText('click'), 'New version available: click to update');
+    assert.equal(updateToastText(), 'New version available: click or tap to update');
+    assert.match(FULLSCREEN_GESTURE_TEXT, /click, a tap or the F key/);
+});
+
 // --- iOS hint ---------------------------------------------------------------
 test('iOS hint: shown in the menu on iPhone and iPadOS tabs only', () => {
     let gs = 'menu';
@@ -391,13 +578,13 @@ test('fullscreen button hidden when unsupported (iPhone) or installed', () => {
     assert.equal(start(makeEnv({ webkitOnly: true }), { register: false }).shouldShowFullscreenButton(), true);
 });
 
-test('toggleFullscreen: documentElement with navigationUI hide, locks and unlocks orientation', async () => {
+test('toggleFullscreen: documentElement with navigationUI hide; never locks the orientation', async () => {
     const env = makeEnv();
     const pwa = start(env, { register: false });
     assert.equal(await pwa.toggleFullscreen(), true);
     assert.deepEqual(env.calls.requestFs, [{ navigationUI: 'hide' }]);
     assert.equal(env.doc.fullscreenElement, env.html);
-    assert.deepEqual(env.calls.lock, ['landscape-primary']);
+    assert.deepEqual(env.calls.lock, [], 'rotation stays free (side-by-side multiplayer needs landscape)');
     assert.equal(pwa.isFullscreen(), true);
     assert.equal(pwa.getPwaState().displayMode, 'browser');
 
@@ -456,6 +643,7 @@ test('getPwaState snapshot has the hook fields', async () => {
     const s = pwa.getPwaState();
     for (const k of ['swSupported', 'swStatus', 'swRegistered', 'swControlled', 'swScope', 'updateReady',
         'updateToastVisible', 'displayMode', 'standalone', 'installed', 'canInstall', 'isIos',
+        'installPhase', 'knownInstalled', 'installedVia', 'installButton', 'installNotice',
         'iosHintVisible', 'fullscreenSupported', 'fullscreenButtonVisible', 'fullscreen']) {
         assert.ok(k in s, k);
     }

@@ -152,15 +152,19 @@ Every player has a colour, a hull mark and a number; HUD panel text is at least 
 Space Adventure is an installable web app. After the first visit it also works offline, sounds included.
 
 **Install**
-- **Android (Chrome, Edge, Samsung Internet):** tap **Install** in the top right corner of the menu (or use the browser menu, "Install app"). The installed app opens full screen.
-- **iPad and iPhone (Safari):** tap Share, then **Add to Home Screen**. The menu shows this hint until you dismiss it; the **Add to Home Screen** button in the top right corner shows it again. Note: iOS keeps the installed app's storage separate from Safari, so scores and credits from Safari don't carry over.
-- **Desktop Chrome and Edge:** use the install icon in the address bar.
+- **Android (Chrome, Edge, Samsung Internet):** tap **Install** in the top right corner of the menu (or use the browser menu, **Add to home screen**, then **Install**). The game then says "Installing…": Chrome builds the app in the background, which takes a few seconds up to about a minute. When it is ready the game says "Installed". Look for **Space Adventure** in the app drawer (swipe up on the home screen and search "Space Adventure"); many launchers also put it on the home screen, but some only add it to the app drawer. The installed app opens full screen.
+- **Installed, but playing in a browser tab?** The menu shows **Open the app** instead of Install, with a reminder of where to find it. The browser tab and the installed Android app share scores and credits.
+- **Can't find the app on Android?** Open `chrome://webapks` in Chrome: if Space Adventure is listed, it is installed (search the app drawer). If it is not listed, Chrome could only make a home screen shortcut, or nothing: long-press any shortcut named Space Adventure (or "Space Adv" from older versions) and remove it, then install again from the browser menu. **Settings > Apps > Space Adventure** removes an installed app.
+- **iPad and iPhone (Safari):** tap Share, then **Add to Home Screen**, then **Add**. Space Adventure then appears on the home screen (on the last page if the first one is full); open it from there. The menu shows this hint until you dismiss it; the **Add to Home Screen** button in the top right corner shows it again. Note: iOS keeps the installed app's storage separate from Safari, so scores and credits from Safari don't carry over.
+- **Desktop Chrome and Edge:** use the install icon in the address bar, or the **Install** button in the menu.
 
-**Full screen in a browser tab:** the **Full screen** button (top right in menus, next to mute and pause while playing on touch screens, and in **Settings**) hides the browser's address bar. On a keyboard, press **F** in any menu (during play F fires). It is not offered on iPhone, where Safari does not allow it, or when the game already runs as an installed app.
+The Install, Full screen and update buttons work with the mouse, touch, and the keyboard (Tab to the button, then Enter or Space). A game controller cannot open full screen or the install dialog (browsers only allow them after a click, tap or key press).
+
+**Full screen in a browser tab:** the **Full screen** button (top right in menus, next to mute and pause while playing on touch screens, and in **Settings**) hides the browser's address bar; the screen can still rotate. On a keyboard, press **F** in any menu (during play F fires). It is not offered on iPhone, where Safari does not allow it, or when the game already runs as an installed app.
 
 **Offline:** a service worker stores everything the game needs on the device, so you can play without a connection, even after closing the browser.
 
-**Updates:** when a new version has been downloaded, menus and the pause screen (never a running game) show "New version available: tap to update". Tapping saves your credits and reloads once. If you ignore it, the update applies the next time the game starts.
+**Updates:** when a new version has been downloaded, menus and the pause screen (never a running game) show "New version available: tap to update" ("click to update" with a mouse). Tapping or clicking saves your credits and reloads once. If you ignore it, the update applies the next time the game starts.
 
 **Troubleshooting:** add `?nosw` to the address (for example `https://d57udy.github.io/SpaceAdventure/?nosw`) to remove the service worker and its stored files, then reload without it.
 

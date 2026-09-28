@@ -178,6 +178,22 @@ test('navigations to the app root or index.html are answered with the cached ./ 
     assert.equal(sw.calls.fetch.length, 0);
 });
 
+test('offline launch of the installed app: the manifest start_url is answered from the cache', async () => {
+    const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../manifest.webmanifest', import.meta.url)), 'utf8'));
+    const sw = load();
+    await sw.dispatchExtendable('install');
+    const cache = sw.caches.map.get(sw.CACHE_NAME);
+    await cache.put(SCOPE, { source: 'cache-root' });
+    sw.net.offline = true;
+    sw.calls.fetch.length = 0;
+    const startUrl = new URL(manifest.start_url, SCOPE + 'manifest.webmanifest').href;
+    assert.equal(startUrl, SCOPE);
+    const res = await sw.dispatchFetch(new FakeRequest(startUrl, { mode: 'navigate' }));
+    assert.equal(res.source, 'cache-root');
+    assert.equal(sw.calls.fetch.length, 0);
+    assert.ok(sw.PRECACHE.includes('manifest.webmanifest'));
+});
+
 test('other navigations in scope are not answered with the game', async () => {
     const sw = load();
     await sw.dispatchExtendable('install');

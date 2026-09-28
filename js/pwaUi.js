@@ -1,11 +1,13 @@
-// DOM for the installable app (Item 3): app bar (Full screen, Install, iOS
-// "Add to Home Screen"), the iOS hint, the update toast, the in-game Full screen
+// DOM for the installable app (Item 3): app bar (Full screen, Install, Open the
+// app, iOS "Add to Home Screen"), the install notice, the iOS hint, the update toast, the in-game Full screen
 // toggle, the Settings-row Full screen overlay and the F key.
 //
 // All logic lives in js/pwa.js (unit tested); this module only builds buttons
 // and shows or hides them. Fullscreen and install need a real user gesture, so
 // every button is a DOM `.app-btn` with a `click` listener (never a canvas tap,
 // never a `data-action` touch button: InputHandler cancels those touchstarts).
+
+import { INSTALL_TEXT, pointerVerb, updateToastText, FULLSCREEN_GESTURE_TEXT } from './pwa.js';
 
 const FS_KEY_STATES = new Set([
     'menu', 'paused', 'game_over', 'high_scores', 'achievements', 'upgrades',
@@ -36,8 +38,9 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
     const bar = el('div', { class: 'app-bar', id: 'app-bar' });
     const fsBtn = el('button', { type: 'button', class: 'app-btn', id: 'app-fullscreen-btn' }, 'Full screen');
     const installBtn = el('button', { type: 'button', class: 'app-btn', id: 'app-install-btn' }, 'Install');
+    const openAppBtn = el('button', { type: 'button', class: 'app-btn', id: 'app-open-btn' }, 'Open the app');
     const a2hsBtn = el('button', { type: 'button', class: 'app-btn', id: 'app-a2hs-btn' }, 'Add to Home Screen');
-    bar.append(fsBtn, installBtn, a2hsBtn);
+    bar.append(fsBtn, installBtn, openAppBtn, a2hsBtn);
 
     // --- Bottom notices: iOS hint and update toast ---
     const notices = el('div', { class: 'app-notices', id: 'app-notices' });
@@ -45,7 +48,8 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
     const hintText = el('p', { class: 'ios-hint-text' });
     hintText.append(
         el('strong', {}, 'Install: '),
-        document.createTextNode('tap Share, then ‘Add to Home Screen’.'),
+        document.createTextNode('tap Share, then ‘Add to Home Screen’, then Add. ' +
+            'Space Adventure then appears on your home screen (swipe to the last page if you don’t see it); open it from there.'),
         el('br'),
         el('span', { class: 'ios-hint-note' },
             'Scores and credits don’t carry over from Safari to the installed app (iOS keeps them separate).'),
@@ -53,8 +57,13 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
     const hintClose = el('button', { type: 'button', class: 'app-btn ios-hint-close', id: 'ios-hint-dismiss', 'aria-label': 'Dismiss' }, '✕');
     hint.append(hintText, hintClose);
     const toast = el('button', { type: 'button', class: 'app-btn update-toast', id: 'update-toast' },
-        'New version available: tap to update');
-    notices.append(hint, toast);
+        updateToastText(pointerVerb(window)));
+    // Install progress / where to find the installed app (Android, desktop Chromium)
+    const installNotice = el('div', { class: 'ios-hint install-notice', id: 'install-notice', role: 'status', 'aria-live': 'polite' });
+    const installText = el('p', { class: 'ios-hint-text', id: 'install-notice-text' });
+    const installClose = el('button', { type: 'button', class: 'app-btn ios-hint-close', id: 'install-notice-dismiss', 'aria-label': 'Dismiss' }, '✕');
+    installNotice.append(installText, installClose);
+    notices.append(installNotice, hint, toast);
 
     // --- In-game Full screen toggle, next to mute and pause (touch controls) ---
     const gameFsBtn = el('button', { type: 'button', class: 'app-btn game-fs-btn', id: 'game-fullscreen-btn', 'aria-label': 'Full screen' });
@@ -74,17 +83,28 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
         return pwa.toggleFullscreen();
     }
 
-    fsBtn.addEventListener('click', toggleFullscreen);
-    gameFsBtn.addEventListener('click', toggleFullscreen);
-    settingsFsBtn.addEventListener('click', toggleFullscreen);
-    installBtn.addEventListener('click', () => { pwa.promptInstall().then(sync); });
-    a2hsBtn.addEventListener('click', () => { iosHintOpened = !iosHintOpened; sync(); });
-    hintClose.addEventListener('click', () => {
+    // A button clicked with a mouse or finger gives focus back (event.detail > 0), so Space
+    // and Enter reach the game again; a keyboard user (detail 0) keeps focus on it.
+    function onClick(btn, fn) {
+        btn.addEventListener('click', (e) => {
+            if (e && e.detail > 0 && typeof btn.blur === 'function') btn.blur();
+            fn(e);
+        });
+    }
+
+    onClick(fsBtn, toggleFullscreen);
+    onClick(gameFsBtn, toggleFullscreen);
+    onClick(settingsFsBtn, toggleFullscreen);
+    onClick(installBtn, () => { pwa.promptInstall().then(sync); });
+    onClick(openAppBtn, () => { pwa.toggleOpenAppHint(); sync(); });
+    onClick(installClose, () => { pwa.dismissInstallNotice(); sync(); });
+    onClick(a2hsBtn, () => { iosHintOpened = !iosHintOpened; sync(); });
+    onClick(hintClose, () => {
         iosHintOpened = false;
         pwa.dismissIosHint();
         sync();
     });
-    toast.addEventListener('click', () => {
+    onClick(toast, () => {
         if (pwa.applyUpdate()) toast.textContent = 'Updating…';
         sync();
     });
@@ -106,7 +126,7 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
     function toggleFromGame() {
         const wanted = !pwa.isFullscreen();
         pwa.toggleFullscreen().then((now) => {
-            if (now !== wanted) notify('Press F or click Full screen to switch');
+            if (now !== wanted) notify(FULLSCREEN_GESTURE_TEXT);
         });
     }
 
@@ -141,7 +161,13 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
 
         const iosTab = pwa.isIos() && !pwa.isStandalone();
         show(fsBtn, fsVisible);
-        show(installBtn, pwa.canInstall());
+        const install = pwa.installView();
+        show(installBtn, install.button === 'install');
+        show(openAppBtn, install.button === 'open-app');
+        const noticeText = install.notice ? INSTALL_TEXT[install.notice] : '';
+        if (installText.textContent !== noticeText) installText.textContent = noticeText;
+        installNotice.dataset.kind = install.notice || '';
+        show(installNotice, !!install.notice);
         show(a2hsBtn, iosTab);
         show(gameFsBtn, fsVisible);
         show(settingsFsBtn, fsVisible && state === 'settings');
@@ -163,6 +189,8 @@ export function createPwaUi(pwa, { getState, notify = () => {} }) {
                 appBar: visible(bar),
                 fullscreenButton: visible(fsBtn),
                 installButton: visible(installBtn),
+                openAppButton: visible(openAppBtn),
+                installNotice: visible(installNotice),
                 a2hsButton: visible(a2hsBtn),
                 iosHint: visible(hint),
                 updateToast: visible(toast),

@@ -80,3 +80,31 @@ render 512 icon-512.png
 render 512 icon-maskable-512.png
 render 180 apple-touch-icon-180.png
 render 32  favicon-32.png
+
+# --- Install screenshots (manifest "screenshots", richer install dialog) ---
+# Chrome's rules: PNG or JPEG, each side 320..3840 px, long side <= 2.3x the short
+# side, one aspect ratio per form factor. Not precached (only the install UI uses them).
+SHOTS="$OUT/screenshots"
+mkdir -p "$SHOTS"
+FONT_BOLD="${FONT_BOLD:-/System/Library/Fonts/Supplemental/Arial Bold.ttf}"
+FONT="${FONT:-/System/Library/Fonts/Supplemental/Arial.ttf}"
+[ -f "$FONT_BOLD" ] || FONT_BOLD="DejaVu-Sans-Bold"
+[ -f "$FONT" ] || FONT="DejaVu-Sans"
+TAGLINE="Collect green asteroids. Dodge red ones."
+FEATURES="Play offline and full screen"
+
+magick -size 720x1280 "xc:$BG" \
+  \( "$TMP/master.png" -filter Lanczos -resize 600x600 \) -gravity north -geometry +0+140 -composite \
+  -fill white -font "$FONT_BOLD" -pointsize 64 -gravity north -annotate +0+800 "Space Adventure" \
+  -fill "#BBBBBB" -font "$FONT" -pointsize 30 -annotate +0+900 "$TAGLINE" \
+  -fill "#7FFF7F" -pointsize 28 -annotate +0+960 "$FEATURES" \
+  -alpha off -strip -define png:exclude-chunks=date,time -colors 64 "PNG8:$SHOTS/narrow-720x1280.png"
+echo "wrote icons/screenshots/narrow-720x1280.png"
+
+magick -size 1280x720 "xc:$BG" \
+  \( "$TMP/master.png" -filter Lanczos -resize 520x520 \) -gravity west -geometry +60+0 -composite \
+  -fill white -font "$FONT_BOLD" -pointsize 60 -gravity west -annotate +640-80 "Space Adventure" \
+  -fill "#BBBBBB" -font "$FONT" -pointsize 28 -annotate +644+4 "$TAGLINE" \
+  -fill "#7FFF7F" -pointsize 26 -annotate +644+54 "$FEATURES" \
+  -alpha off -strip -define png:exclude-chunks=date,time -colors 64 "PNG8:$SHOTS/wide-1280x720.png"
+echo "wrote icons/screenshots/wide-1280x720.png"
