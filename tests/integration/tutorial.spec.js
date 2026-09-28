@@ -473,7 +473,8 @@ test.describe('tutorial: touch', () => {
     await expect(body).toHaveClass(/tutorial-joystick/);
     await expect(page.locator('#joystick-base')).toHaveClass(/tutorial-highlight/);
     expect(await animationName(page, '#joystick-base')).toBe('tutorial-pulse');
-    expect(await drawnTexts(page)).toContain('Drag anywhere on the left half to steer');
+    // The hint may wrap on a narrow view: join the drawn lines (in drawing order)
+    expect((await drawnTexts(page)).join(' ')).toContain('Drag anywhere on the left half to steer');
     await page.screenshot({ path: `tests/screenshots/${testInfo.project.name}-tutorial-steer.png` });
 
     // Drag right from a point in the zone: the ship turns from -PI/2 toward 0
@@ -484,7 +485,7 @@ test.describe('tutorial: touch', () => {
     await fingers.moveBy(1, 20, 0);
     await expect.poll(() => hook(page, 'tutorial.step')).toBe('thrust');
     await fingers.releaseAll();
-    expect(await drawnTexts(page)).toContain('Drag further out to fly: past the dashed ring = thrust');
+    expect((await drawnTexts(page)).join(' ')).toContain('Drag further out to fly: past the dashed ring = thrust');
     await expect(page.locator('#joystick-base')).toHaveClass(/tutorial-highlight/);
     // Drag further out: thrust
     await fingers.downAt(2, start);
@@ -507,7 +508,7 @@ test.describe('tutorial: touch', () => {
       await expect(page.locator(sel)).toHaveClass(/tutorial-highlight/);
       expect(await animationName(page, sel)).toBe('tutorial-pulse');
     }
-    expect(await drawnTexts(page)).toContain('Use the arrow buttons to turn');
+    expect((await drawnTexts(page)).join(' ')).toContain('Use the arrow buttons to turn');
     const fingers = new Fingers(page, browserName);
     await fingers.down(1, '#touch-left-btn');
     await expect.poll(() => hook(page, 'tutorial.step')).toBe('thrust');

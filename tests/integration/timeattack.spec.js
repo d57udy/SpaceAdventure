@@ -111,7 +111,9 @@ test.describe('Time Attack vs Ghost (keyboard)', () => {
     const stored = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)), ghostKey('TESTER', 3, 'medium'));
     expect(stored).not.toBeNull();
     const view = await hook(page, 'view');
-    expect(stored).toMatchObject({ v: 1, owner: 'TESTER', course: 3, difficulty: 'medium', viewSize: view.width });
+    // viewSize: the side of a square with the view's area (js/main.js viewSizeMetric)
+    expect(stored).toMatchObject({ v: 1, owner: 'TESTER', course: 3, difficulty: 'medium',
+      viewSize: Math.round(Math.sqrt(view.width * view.height)) });
     expect(stored.durationMs).toBeGreaterThan(1000);
     expect(typeof stored.data).toBe('string');
 

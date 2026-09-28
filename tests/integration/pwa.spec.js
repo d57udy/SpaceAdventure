@@ -232,11 +232,13 @@ test.describe('Full screen', () => {
     expect(await page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
     await expect.poll(() => hook(page, 'pwa.fullscreen')).toBe(true);
     await expect(btn).toHaveText('Exit full screen');
-    // The resize handling keeps the canvas square inside the new viewport
-    await frames(page, 3);
-    const view = await hook(page, 'view');
-    const inner = await page.evaluate(() => Math.min(window.innerWidth, window.innerHeight));
-    expect(view.width).toBe(Math.floor(inner * 0.9));
+    // The resize handling makes the canvas fill the new viewport (any aspect ratio; no
+    // safe-area insets in the test browsers)
+    await expect.poll(async () => {
+      const v = await hook(page, 'view');
+      const inner = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
+      return v.width === Math.floor(inner[0]) && v.height === Math.floor(inner[1]);
+    }).toBe(true);
 
     await page.keyboard.press('Enter');
     await waitForState(page, 'playing');
