@@ -21,7 +21,10 @@ import { Haptics } from './haptics.js';
 import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
-import { hideTouchForGamepad, rumblePads } from './seats.js';
+import { hideTouchForGamepad, hideTouchForKeyboard, touchUiFor, rumblePads } from './seats.js';
+import { sanitizeName, nameLength, nameInitials, NAME_MIN_LENGTH, NAME_MAX_LENGTH } from './names.js';
+import { createBackNav } from './backNav.js';
+import { createWakeLock } from './wakeLock.js';
 import {
     stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP, MIN_TAP, menuColumn, overlayInsets, fitFontPx, menuGrid,
 } from './menuLayout.js';
@@ -830,7 +833,12 @@ function padGlyph(button) {
 // Hint text for the device in use: controller glyphs once a controller was the last input.
 function inputHint(keyboard, touch, gamepad = null) {
     if (gamepad && usingGamepad()) return typeof gamepad === 'function' ? gamepad() : gamepad;
-    return isTouchDevice ? touch : keyboard;
+    return touchUi() ? touch : keyboard;
+}
+// Touch hints and controls: a touch screen whose last input was not a keyboard or mouse
+// (hybrid devices switch to keyboard hints after a key press, back after the next touch)
+function touchUi() {
+    return touchUiFor(isTouchDevice, inputHandler ? inputHandler.lastInputSource : null);
 }
 function inputContextFor(state) {
     if (state === GameState.PLAYING) return 'game';
@@ -859,13 +867,22 @@ function pollControllers() {
     syncInputSourceClass();
 }
 // body.input-gamepad hides the touch controls while a controller is in use (until a touch)
+// body.input-keyboard does the same after a key press or mouse click on a touch-capable device
+// (touch laptops, Chromebooks, an iPad with a keyboard): the next touch shows them again
 let inputSourceClass = null;
+let keyboardSourceClass = null;
 function syncInputSourceClass() {
     // Not while a touch player has joined a seat round (mixed touch + controller multiplayer)
     const pad = !!inputHandler && hideTouchForGamepad(inputHandler.lastInputSource, inputHandler.seats);
-    if (pad === inputSourceClass) return;
-    inputSourceClass = pad;
-    document.body.classList.toggle('input-gamepad', pad);
+    if (pad !== inputSourceClass) {
+        inputSourceClass = pad;
+        document.body.classList.toggle('input-gamepad', pad);
+    }
+    const keys = !!inputHandler && isTouchDevice && hideTouchForKeyboard(inputHandler.lastInputSource, inputHandler.seats);
+    if (keys !== keyboardSourceClass) {
+        keyboardSourceClass = keys;
+        document.body.classList.toggle('input-keyboard', keys);
+    }
 }
 function updateToasts(dt) {
     toasts.forEach(t => { t.time -= dt; });
@@ -2114,7 +2131,8 @@ function starLevelBrightness(level) {
 // Draw radar mini-map
 // Single-player touch controls overlay the canvas corners (multiplayer keeps them in bars)
 function touchControlsOverCanvas() {
-    return isTouchDevice && !simultaneousRound() && !document.body.classList.contains('input-gamepad');
+    return isTouchDevice && !simultaneousRound() && !document.body.classList.contains('input-gamepad')
+        && !document.body.classList.contains('input-keyboard');
 }
 // Radar and status line positions for this view (js/viewport.js playHudLayout)
 function playHud() {
@@ -2478,6 +2496,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     window.addEventListener('pagehide', () => saveAllUpgrades());
+    // Desktop: switching to another window (Alt+Tab, a click outside the browser) pauses like
+    // hiding the tab. Multiplayer pauses as 'system' (no seat paused it).
+    window.addEventListener('blur', () => {
+        if (currentGameState === GameState.PLAYING) pauseGame('system');
+    });
+    // Right-click / long-press menus never open over the game or its controls
+    const noContextMenu = (e) => e.preventDefault();
+    canvas.addEventListener('contextmenu', noContextMenu);
+    document.querySelectorAll('.touch-controls, .mp-join-pads').forEach(el => el.addEventListener('contextmenu', noContextMenu));
+    setupBackAndWakeLock();
 
     // Installable app: service worker, update toast, install / iOS hint, full screen
     // A paused run lives only in memory: while one exists the menus count as 'paused' for
@@ -2529,6 +2557,9 @@ document.addEventListener('DOMContentLoaded', () => {
         get pwa() { return pwa ? { ...pwa.getPwaState(), ui: pwaUi ? pwaUi.state : null } : null; },
         get joystick() { return inputHandler.getJoystick(); },
         get lastInputSource() { return inputHandler.lastInputSource; },
+        get touchUi() { return touchUi(); },
+        get backNav() { return backNav ? backNav.snapshot() : null; },
+        get wakeLock() { return wakeLock ? wakeLock.snapshot() : null; },
         get inputContext() { return inputHandler.context; },
         get gamepad() {
             const info = inputHandler.gamepadInfo();
@@ -2840,33 +2871,41 @@ function handlePromptInput() {
     const input = document.getElementById('username-input');
     if (!input) return;
 
-    const pressedChar = inputHandler.consumeLastCharKey();
-    if (pressedChar && input.value.length < 10) {
-        input.value += pressedChar;
+    // Every character typed outside the field since the last frame, in typed order
+    let typed = '';
+    for (let c = inputHandler.consumeLastCharKey(); c; c = inputHandler.consumeLastCharKey()) typed += c;
+    // A letter typed outside the field (a keyboard on a touch-capable device, which gets no
+    // autofocus): move the focus into the field so the next keys go there directly. Only on
+    // typed characters, so Tab to the Install or Full screen button keeps its focus. The
+    // queued characters are all older than anything typed into the field after this.
+    if (typed && document.activeElement !== input) input.focus();
+    if (typed && nameLength(input.value) < NAME_MAX_LENGTH) {
+        input.value = sanitizeName(input.value + typed);
     }
     if (inputHandler.consumeAction('backspace') && input.value.length > 0) {
-        input.value = input.value.slice(0, -1);
+        input.value = Array.from(input.value).slice(0, -1).join('');
     }
     if (inputHandler.consumeAction('enter')) {
         submitUsername();
     } else if (inputHandler.gamepadJustPressed('menuSelect')) {
         // A controller can't type: Ⓐ accepts the typed name, or the default "PLAYER1"
-        if (sanitizeUsername(input.value).length < 3) input.value = 'PLAYER1';
+        if (nameLength(sanitizeUsername(input.value)) < NAME_MIN_LENGTH) input.value = 'PLAYER1';
         submitUsername();
         return;
     }
     promptInput = input.value;
 }
 
+// Letters (any script) and digits, upper case, 3-10 characters (js/names.js)
 function sanitizeUsername(value) {
-    return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+    return sanitizeName(value);
 }
 
 function submitUsername() {
     const input = document.getElementById('username-input');
     const errorEl = document.getElementById('username-error');
     const newUser = sanitizeUsername(input ? input.value : promptInput);
-    if (newUser.length < 3) {
+    if (nameLength(newUser) < NAME_MIN_LENGTH) {
         if (errorEl) errorEl.textContent = 'Please use at least 3 letters or digits.';
         return false;
     }
@@ -2891,11 +2930,18 @@ function setupUserPromptForm() {
         e.preventDefault();
         submitUsername();
     });
-    input.addEventListener('input', () => {
-        const clean = sanitizeUsername(input.value);
-        if (input.value !== clean) input.value = clean;
-        promptInput = clean;
+    // Not while an input method composes (CJK, and word-composing Android keyboards): changing
+    // the value mid-composition would break it; the composition's end cleans it
+    const clean = () => {
+        const value = sanitizeUsername(input.value);
+        if (input.value !== value) input.value = value;
+        promptInput = value;
+    };
+    input.addEventListener('input', (e) => {
+        if (e.isComposing) return;
+        clean();
     });
+    input.addEventListener('compositionend', clean);
 }
 
 // Show or hide DOM overlays that depend on the game state
@@ -2914,7 +2960,7 @@ function syncDomToState() {
         form.classList.toggle('hidden', !show);
         const input = document.getElementById('username-input');
         // Autofocus for keyboards; touch users tap the field to raise their keyboard
-        if (show && wasHidden && input && !isTouchDevice) input.focus();
+        if (show && wasHidden && input && !touchUi()) input.focus();
     }
 }
 
@@ -3207,13 +3253,52 @@ let gameOverInputDelay = 0; // Ignore input briefly after game over to avoid acc
 // i.e. at the moment the state changed, so input arriving for the new screen is kept.
 function syncStateTransition() {
     if (inputHandler) syncSeatMode();
-    if (currentGameState === lastInputState) return;
-    inputHandler.clearPending();
-    if (currentGameState === GameState.PLAYING || lastInputState === GameState.PLAYING) {
-        inputHandler.releaseAll();
+    if (currentGameState !== lastInputState) {
+        inputHandler.clearPending();
+        if (currentGameState === GameState.PLAYING || lastInputState === GameState.PLAYING) {
+            inputHandler.releaseAll();
+        }
+        lastInputState = currentGameState;
+        syncDomToState();
     }
-    lastInputState = currentGameState;
-    syncDomToState();
+    syncBackAndWakeLock();
+}
+
+// --- Back button (js/backNav.js) and screen wake lock (js/wakeLock.js) ---
+let backNav = null;
+let wakeLock = null;
+// Screens where a game runs: keep the screen on (the round intro card is part of PLAYING)
+const WAKE_STATES = new Set([GameState.PLAYING, GameState.LOBBY, GameState.TURN_CHANGE, GameState.ROUND_END]);
+function setupBackAndWakeLock() {
+    try {
+        backNav = createBackNav({
+            history: window.history,
+            getUrl: () => window.location.href,
+            listen: (type, fn) => window.addEventListener(type, fn),
+            getContext: () => ({ state: currentGameState, resetConfirm: !!resetConfirm }),
+            onBack: handleBackButton,
+        });
+    } catch (e) {
+        console.warn('Back button handling unavailable', e);
+        backNav = null;
+    }
+    wakeLock = createWakeLock({ navigator: window.navigator, document });
+}
+// Back (Android back button, browser Back, a mouse's back button) as Escape: see js/backNav.js
+function handleBackButton(action) {
+    inputHandler.releaseAll();
+    if (action === 'pause') {
+        if (currentGameState === GameState.PLAYING) pauseGame('system');
+    } else if (action === 'menu') {
+        if (currentGameState === GameState.GAME_OVER) pausedGameExists = false;
+        returnToMenu();
+    } else if (action === 'escape') {
+        inputHandler.triggerAction('escape');
+    }
+}
+function syncBackAndWakeLock() {
+    if (backNav) backNav.sync();
+    if (wakeLock) wakeLock.sync(WAKE_STATES.has(currentGameState) && !document.hidden);
 }
 
 // One player's ship controls for this frame: rotate, thrust (keys or stick), fire, hyperspace.
@@ -5368,7 +5453,7 @@ function gameOver() {
 
 function checkAndAddHighScore(currentScore, username = currentUser) {
     if (!persistenceManager || !username || currentScore <= 0) return;
-    const playerName = username.substring(0, 3).toUpperCase();
+    const playerName = nameInitials(username, 3);
     const newEntry = { name: playerName, score: currentScore }; // Note: name here is just for display if needed, user is implicit
 
     // Load current user's scores for comparison
@@ -5490,7 +5575,7 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
             const rank = `${index + 1}.`.padEnd(3);
             // entry.user should exist from loadHighScores(null)
             const username = entry.user || "???";
-            const nameDisplay = username.substring(0, 3).toUpperCase();
+            const nameDisplay = nameInitials(username, 3);
             const scoreVal = entry.score;
 
             // Check if this user has any achievements
@@ -5854,7 +5939,7 @@ function drawPauseMenu() {
     // (Skip Tutorial, Drop Pn) or on a phone it grows so every row stays inside the screen
     const compact = isCompact(viewHeight);
     const header = (compact ? 40 : 60) + (byName ? 16 : 0);
-    const footer = compact && isTouchDevice && !usingGamepad() ? 8 : 34;
+    const footer = compact && touchUi() && !usingGamepad() ? 8 : 34;
     const natural = header + options.length * PAUSE_ROW + footer;
     const boxH = Math.min(viewHeight - 8, Math.max(viewHeight * 0.5, natural + (compact ? 0 : 36)));
     const boxY = (viewHeight - boxH) / 2;
@@ -6081,7 +6166,7 @@ function drawSeatLobby() {
         ctx.textBaseline = 'middle';
         ctx.font = 'bold 17px Arial';
         ctx.fillStyle = '#FFFFFF';
-        const keyHint = isTouchDevice ? '' : `  (${row.key})`;
+        const keyHint = touchUi() ? '' : `  (${row.key})`;
         drawValueRow(x0, oy, ow, optH, oy + optH / 2, `${row.label()}${keyHint}`, rowValue(row), '#FFD700');
         ctx.textBaseline = 'alphabetic';
         addRowTapRegion(x0, oy, ow, optH, row, i, () => {}, `lobby:${row.id}`);
@@ -7703,7 +7788,7 @@ function drawHelpScreen() {
         { action: 'Skip tutorial / Mute', keys: 'View (in game / in menus)' },
         { action: 'Menus', keys: `Stick or D-pad, ${A} select, ${B} back` },
         { action: 'Sound', keys: 'Tap or press a key once to enable' },
-    ] : isTouchDevice && controlMode === ControlMode.JOYSTICK ? [
+    ] : touchUi() && controlMode === ControlMode.JOYSTICK ? [
         { action: 'Steer', keys: 'Drag on the left half of the screen' },
         { action: 'Thrust Forward', keys: 'Drag further out' },
         { action: 'Fire', keys: 'Red button' },
@@ -7711,7 +7796,7 @@ function drawHelpScreen() {
         { action: 'Pause Game', keys: 'Pause button (top right)' },
         { action: 'Controls, colours, sound, music', keys: 'Menu > Settings' },
         ...(haptics.supported ? [{ action: 'Vibration', keys: 'Menu > Settings' }] : []),
-    ] : isTouchDevice ? [
+    ] : touchUi() ? [
         { action: 'Rotate Left/Right', keys: 'Arrow buttons (bottom left)' },
         { action: 'Thrust Forward', keys: 'Up arrow button' },
         { action: 'Fire', keys: 'Red button' },
@@ -7723,7 +7808,7 @@ function drawHelpScreen() {
     ] : [
         { action: 'Rotate Left/Right', keys: 'Arrow Keys / A,D' },
         { action: 'Thrust Forward', keys: 'Up Arrow / W' },
-        { action: 'Fire', keys: 'Spacebar' },
+        { action: 'Fire', keys: 'Space, F or Enter' },
         { action: 'Hyperspace (Risky!)', keys: 'H / S / Down Arrow' },
         { action: 'Pause Game', keys: 'P / Escape' },
         { action: 'Toggle Mute', keys: 'M' },
@@ -7752,7 +7837,7 @@ function drawUserPrompt() {
 
     ctx.font = '18px Arial';
     ctx.fillStyle = '#AAAAAA';
-    ctx.fillText(isTouchDevice ? "Tap the box, type a name, then tap OK" : "Type a name, then press Enter",
+    ctx.fillText(touchUi() ? "Tap the box, type a name, then tap OK" : "Type a name, then press Enter",
         viewWidth / 2, viewHeight * 0.7, viewWidth - 16);
     if (usingGamepad()) {
         // A controller can't type

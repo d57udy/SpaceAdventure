@@ -124,6 +124,30 @@ export function hideTouchForGamepad(lastInputSource, table) {
 }
 
 /**
+ * Hybrid devices (touch laptops, Chromebooks, an iPad with a keyboard or trackpad): hide the
+ * on-screen touch controls because a keyboard or mouse is the last input? Same seat rule as
+ * hideTouchForGamepad (a joined touch player keeps their controls). The next touch shows
+ * them again. Pure.
+ * @param {string|null} lastInputSource
+ * @param {{merged:boolean, seats:Array<{source:string|null}|null>}|null} table
+ */
+export function hideTouchForKeyboard(lastInputSource, table) {
+    if (lastInputSource !== 'keyboard' && lastInputSource !== 'mouse') return false;
+    if (!table || table.merged) return true;
+    return !(table.seats || []).some((s) => s && sourceKind(s.source) === 'touch');
+}
+
+/**
+ * Show touch-style hints and controls? A touch-capable device whose last input was not a
+ * keyboard or mouse (before any input: touch). Devices without touch never do. Pure.
+ * @param {boolean} touchCapable
+ * @param {string|null} lastInputSource
+ */
+export function touchUiFor(touchCapable, lastInputSource) {
+    return !!touchCapable && lastInputSource !== 'keyboard' && lastInputSource !== 'mouse';
+}
+
+/**
  * Which controllers rumble for a game event. Pure.
  *   merged (single-player): [null] = the most recently used controller (unchanged).
  *   seat mode, event of one seat: that seat's own controller, or none when it plays with

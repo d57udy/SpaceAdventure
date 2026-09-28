@@ -14,7 +14,8 @@ export const TIME_ATTACK = Object.freeze({
     viewSizeTolerance: 0.1, // a ghost from a screen more than 10% bigger or smaller gets a notice
 });
 
-const GHOST_KEY_RE = /^spaceAdventure_ghost_v1_([A-Z0-9]+)_(\d+)_([a-z]+)$/;
+// Owner: a player name (js/names.js: letters of any script and digits, upper case)
+const GHOST_KEY_RE = /^spaceAdventure_ghost_v1_([\p{L}\p{M}\p{N}]+)_(\d+)_([a-z]+)$/u;
 
 /** Course number clamped to 1..10 (bad input gives 1). */
 export function clampCourse(n) {

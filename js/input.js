@@ -35,7 +35,8 @@ export const SOURCE_EVENT_LIMIT = 64;
 export const CHAR_QUEUE_LIMIT = 16; // typed characters kept for the username prompt
 
 const DEFAULT_ZONE = 'a';
-const TYPED_CHAR = /^[A-Za-z0-9]$/;
+// A letter (any script) or digit: queued for the username prompt (js/names.js)
+const TYPED_CHAR = /^[\p{L}\p{N}]$/u;
 // Shared actions whose keys should not scroll/activate the page.
 const PREVENT_SHARED = new Set(['menuUp', 'menuDown', 'menuLeft', 'menuRight', 'menuSelect', 'enter', 'backspace']);
 // Keys that activate a focused <button> (the browser clicks it; the game must not act).

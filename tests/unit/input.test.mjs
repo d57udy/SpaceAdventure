@@ -265,6 +265,17 @@ test('consumeLastCharKey() returns uppercase chars for letters and digits', () =
     assert.equal(input.consumeLastCharKey(), '7');
 });
 
+test('consumeLastCharKey() queues Unicode letters and digits (names in any script)', () => {
+    const { win, input } = setup();
+    win.dispatch('keydown', keyEvent('ü', null, 'BracketLeft'));
+    win.dispatch('keydown', keyEvent('ж', null, 'Semicolon'));
+    win.dispatch('keydown', keyEvent('😀', null, 'Quote'));
+    win.dispatch('keydown', keyEvent('-', null, 'Minus'));
+    assert.equal(input.consumeLastCharKey(), 'Ü');
+    assert.equal(input.consumeLastCharKey(), 'Ж');
+    assert.equal(input.consumeLastCharKey(), null);
+});
+
 // --- Pointer ---------------------------------------------------------------
 
 test('pointerdown on a touch button presses its action; pointerup releases it', () => {

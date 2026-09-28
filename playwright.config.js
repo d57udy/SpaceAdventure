@@ -25,9 +25,9 @@ const PORT = Number(process.env.PW_PORT) || 8082; // PW_PORT lets parallel workt
 // test-only /__admin/override endpoint used by the update-flow test.
 const SUBPATH_PORT = Number(process.env.PW_SUBPATH_PORT) || 8083;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js', 'platform.spec.js'];
 const PWA_SPECS = ['pwa.spec.js'];
-const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js'];
+const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js', 'platform.spec.js'];
 // A tall phone (the adaptive, non-square canvas on a small screen)
 const PIXEL_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'phone.spec.js', 'settings.spec.js', 'tutorial.spec.js', 'layout.spec.js'];
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     MAX_SEATS, MAX_TOUCH_SEATS, KEY_PROFILES, MERGED_EXTRA, SHARED_CODES, lookupCode, lookupShared,
     sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat, hideTouchForGamepad, rumblePads, preferredSeat,
+    hideTouchForKeyboard, touchUiFor,
 } from '../../js/seats.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `expected ${b}, got ${a}`);
@@ -345,4 +346,29 @@ test('rumblePads: single-player uses the last controller; multiplayer the player
     t.reserve(0, { id: 'x' });
     assert.deepEqual(rumblePads(t, 0), []);
     assert.deepEqual(rumblePads(t.snapshot(), 2), [0]);
+});
+
+test('hideTouchForKeyboard: keyboard or mouse on a touch screen, same seat rule', () => {
+    const t = new SeatTable();
+    assert.equal(hideTouchForKeyboard('touch', t), false);
+    assert.equal(hideTouchForKeyboard('gamepad', t), false);
+    assert.equal(hideTouchForKeyboard(null, t), false);
+    assert.equal(hideTouchForKeyboard('keyboard', t), true);
+    assert.equal(hideTouchForKeyboard('mouse', t), true);
+    assert.equal(hideTouchForKeyboard('keyboard', null), true);
+    t.setMerged(false);
+    t.join('kbLeft');
+    assert.equal(hideTouchForKeyboard('keyboard', t.snapshot ? t.snapshot() : t), true);
+    t.join('touch:a');
+    assert.equal(hideTouchForKeyboard('keyboard', t.snapshot ? t.snapshot() : t), false);
+});
+
+test('touchUiFor: touch hints on touch screens until a keyboard or mouse is used', () => {
+    assert.equal(touchUiFor(false, null), false);
+    assert.equal(touchUiFor(false, 'touch'), false);
+    assert.equal(touchUiFor(true, null), true); // pure touch devices: unchanged
+    assert.equal(touchUiFor(true, 'touch'), true);
+    assert.equal(touchUiFor(true, 'gamepad'), true); // controller hints are chosen separately
+    assert.equal(touchUiFor(true, 'keyboard'), false);
+    assert.equal(touchUiFor(true, 'mouse'), false);
 });
