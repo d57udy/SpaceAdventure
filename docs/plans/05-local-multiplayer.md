@@ -118,8 +118,15 @@ Only after R8 does anything create a second player.
 ### 3.2 Three or four players (later)
 Compute the smallest covering interval per axis and zoom out just enough: about 0.90 for 3 players and 0.81 for 4 at V = 690, clamped at 0.75 so nothing is ever drawn twice. Zoom changes smoothly (out in 0.25 s, in over 0.4 s).
 
-### 3.3 The half-world flip
-When the ships are almost exactly half a world apart, there are two equally good midpoints. Keep the current one until the other is better by more than 4% of the world width, then glide over 0.2 s along the shorter path, without jerking the starfield. Normal following uses light smoothing (0.12 s); single-player keeps today's instant follow.
+### 3.3 The half-world flip (replaced 2026-09-28: continuous tracking and a soft edge)
+Original design: when the ships are almost exactly half a world apart, there are two equally good midpoints. Keep the current one until the other is better by more than 4% of the world width, then glide over 0.2 s along the shorter path, without jerking the starfield. Normal following uses light smoothing (0.12 s); single-player keeps today's instant follow.
+
+**Change (2026-09-28).** Players reported that the view "snaps back" when one ship flies away: at half a world apart the shortest route between the ships switches sides and the flip glided about 0.75 of a view in 0.2 s. All simultaneous modes (Co-op, Harvest, Duel, Saucer including the flown saucer, 3-4 players) now use:
+- **Continuous tracking.** The camera keeps each target's unwrapped position (per id), advanced every frame by the wrapped delta of its world position. The centre follows the midpoint of the unwrapped covering interval per axis (smoothing 0.12 s) and is itself unwrapped, so crossing the world edge scrolls like single-player. A target that (re)appears (spawn, respawn, revive, rejoin) or jumps more than a quarter of the world in one frame (hyperspace) is re-anchored to its image nearest the centre. There is no flip.
+- **Zoom** eases out as the targets spread around the centre (margins 25 px), down to max(0.75, view/world); a settled target never gets closer than 15 px to the view edge.
+- **Soft edge (leash).** Box = camera centre ± (visible half-extent at the minimum zoom − 25 px) per axis. Ships and the flown saucer are held inside: co-op clamps onto the edge and removes the outward velocity; Harvest, Duel and Saucer damp the outward velocity strongly and allow a springy overshoot of at most 20 px. While a player pushes against it, that screen edge glows in their colour (edge arrows stay as a fallback). Rocks, bullets and UFOs are not leashed and keep wrapping.
+- **Hyperspace** lands inside the box (same self-destruct and collision risks); `nearTeam` respawns, revives and `furthestFromOpponents` respawns (a grid over the box) stay inside it too.
+- Single-player and Take Turns keep today's instant follow. The maths is in `js/camera.js` (`unwrapTargets`, `leashBox`, `applyLeash`, `leashEntity`), unit tested in `tests/unit/camera.test.mjs`; the browser check is `tests/integration/mp-camera.spec.js`.
 
 ### 3.4 Deaths, respawn and radar
 - The camera follows living ships only; a co-op revive beacon is included only if everything still fits.

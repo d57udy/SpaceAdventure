@@ -94,14 +94,16 @@ test.describe('co-op (shared keyboard)', () => {
     // S is P1's hyperspace only: P1 lands on the target, P2 stays
     const world = await hook(page, 'world');
     const p2Before = await hook(page, 'players.1.ship');
-    // A spot clear of every rock, so the jump never lands inside one (that is a fatal jump)
+    // A spot clear of every rock, so the jump never lands inside one (that is a fatal jump),
+    // inside the soft-edge box (co-op jumps land on screen)
     const target = await page.evaluate(() => {
       const g = window.__spaceAdventure;
-      const W = g.world.width, H = g.world.height;
+      const W = g.world.width, H = g.world.height, L = g.camera.leash;
       const wrap = (d, size) => d - size * Math.round(d / size);
+      const mod = (v, size) => ((v % size) + size) % size;
       let best = null;
-      for (const fx of [0.2, 0.35, 0.65, 0.8]) for (const fy of [0.2, 0.35, 0.65, 0.8]) {
-        const p = { x: W * fx, y: H * fy };
+      for (const fx of [-0.6, -0.3, 0.3, 0.6]) for (const fy of [-0.6, -0.3, 0.3, 0.6]) {
+        const p = { x: mod(L.cx + fx * L.halfW, W), y: mod(L.cy + fy * L.halfH, H) };
         const clear = Math.min(...g.asteroids.map((a) => Math.hypot(wrap(a.x - p.x, W), wrap(a.y - p.y, H)) - a.radius));
         if (!best || clear > best.clear) best = { ...p, clear };
       }

@@ -120,10 +120,14 @@ test.describe('versus (shared keyboard)', () => {
           const W = s.world.width;
           const H = s.world.height;
           const all = s.asteroids;
+          // Jumps land inside the soft-edge box (on screen): only crystals there can be reached
+          const L = s.camera.leash;
+          const wrap = (d, size) => d - size * Math.round(d / size);
+          const inLeash = (x, y) => !L || (Math.abs(wrap(x - L.cx, W)) < L.halfW - 20 && Math.abs(wrap(y - L.cy, H)) < L.halfH - 20);
           for (const a of all.filter((q) => q.type === 'green' && !q.materialising)) {
             const x = a.x;
             const y = a.y + a.radius + 55;
-            if (x < 40 || x > W - 40 || y < 40 || y > H - 40) continue;
+            if (x < 40 || x > W - 40 || y < 40 || y > H - 40 || !inLeash(x, y)) continue;
             const clear = all.every((q) => q === a || Math.hypot(q.x - x, q.y - y) > q.radius + 45
               && !(Math.abs(q.x - x) < q.radius + 4 && q.y > a.y && q.y < y));
             if (clear) return { x, y };

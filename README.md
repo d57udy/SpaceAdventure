@@ -102,6 +102,8 @@ In both schemes:
 | Saucer | 2 | P1 flies the ship and must reach the target score in 2:30; P2 steers the enemy saucer |
 | Time Attack vs Ghost | 1 | 3 minutes on a numbered course, racing the best run on this device |
 
+**Shared screen:** everyone flies in one view that follows the whole group and zooms out as you spread. The screen edge holds you back (it glows in your colour while you push against it), so nobody can fly out of sight; hyperspace and respawns also land on screen.
+
 **Joining:** in the lobby each player presses their own fire to join and again when ready. Hyperspace leaves, rotate changes colour. The round starts 3 s after everyone is ready.
 
 **Controls card:** the first round of a lobby shows each player's controls in their HUD panel, plus one line of rules. The world waits until every player presses fire (or 8 s). Rematches and restarts with the same players show it for 2 s. Help has a **Multiplayer** page (◂ ▸ or the button at the top).

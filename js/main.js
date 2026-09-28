@@ -15,7 +15,7 @@ import { applyJoystickSteering, angleDiff, stabilizeHeading } from './steering.j
 import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
 import { Particles } from './particles.js';
 import { createSettings } from './settings.js';
-import { findPalette } from './palette.js';
+import { findPalette, hexToRgb } from './palette.js';
 import { Haptics } from './haptics.js';
 import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
@@ -24,7 +24,7 @@ import { hideTouchForGamepad, rumblePads } from './seats.js';
 import { stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP } from './menuLayout.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
-import { createCamera, frameTargets } from './camera.js';
+import { createCamera, leashEntity, clampToBox, boxSpawnGrid } from './camera.js';
 import {
     MODES, getMode, scaleForPlayers, pickSpawnPoint, ringSpawnGrid, worldSpawnGrid, updateRevive, reviverFor, REVIVE,
 } from './modes.js';
@@ -130,10 +130,11 @@ const LEVEL_UP_SCORE = 500; // Score needed per level (level 2 at 500, level 3 a
 
 // Shared camera (js/camera.js). It follows the living ships: with one ship it snaps to it
 // every frame exactly like the old single-player camera (instant follow, zoom 1, parallax from
-// the ship's wrapped movement); with more ships it frames their midpoint.
-// camera.x/y is the world point at the top-left of the view, camera.cx/cy the centre.
-// Co-op and other simultaneous modes use a smoothly following camera even for one ship
-// (createCamera({ singleInstant: false }), set in startGame).
+// the ship's wrapped movement). Co-op and the other simultaneous modes track every ship
+// continuously (createCamera({ singleInstant: false }), set in startGame): the view frames the
+// midpoint of their unwrapped positions, zooms out as they spread, and the soft edge (leash)
+// keeps every ship in view. camera.x/y is the world point at the top-left of the view,
+// camera.cx/cy the centre.
 let camera = createCamera();
 function cameraView() {
     return { width: viewWidth, height: viewHeight, worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT };
@@ -1506,7 +1507,7 @@ function updateRespawnSpots() {
         }
         const pt = pickSpawnPoint(grid, [], hazards, WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS });
         p.respawnSlot = grid.indexOf(pt);
-        p.respawnAt = pt;
+        p.respawnAt = pt; // the ring is 150 px around the camera centre: well inside the soft edge
     }
 }
 
@@ -2503,6 +2504,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 shipColour: p.ship ? p.ship.colour : null, hullMark: p.ship ? p.ship.hullMark : null,
                 dropped: !!p.dropped,
                 tagTimer: p.tagTimer || 0, tag: seatTag(p.label, p.bindingId),
+                // Soft edge: pushing against it this frame, which edges, and the glow per edge (s)
+                pressingEdge: !!(p.pressingEdges && p.pressingEdges.length),
+                pressingEdges: p.pressingEdges ? p.pressingEdges.slice() : [],
+                edgeGlow: p.edgeGlow ? { ...p.edgeGlow } : null,
             }));
         },
         get mode() {
@@ -2520,7 +2525,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return out;
         },
         // Shared camera: centre (x, y), top-left of the view (left, top) and zoom
-        get camera() { return { x: camera.cx, y: camera.cy, left: camera.x, top: camera.y, zoom: camera.zoom }; },
+        // continuous: simultaneous-mode tracking; leash: the soft-edge box (null otherwise),
+        // cx/cy/left/top in world units, left/top may be negative (wrap)
+        get camera() {
+            const b = leashBoxNow();
+            return { x: camera.cx, y: camera.cy, left: camera.x, top: camera.y, zoom: camera.zoom,
+                continuous: !!camera.continuous,
+                leash: b ? { cx: b.cx, cy: b.cy, halfW: b.halfW, halfH: b.halfH, left: b.left, top: b.top,
+                    width: b.width, height: b.height, soft: leashSoft() } : null };
+        },
         // Asteroids in the current world (position, type, radius)
         get asteroids() {
             return asteroids.filter(a => a.isAlive).map(a => ({ x: a.x, y: a.y, velX: a.velX, velY: a.velY, type: a.type, radius: a.radius,
@@ -2550,6 +2563,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 intro: roundIntroSnapshot(), help: { page: helpPage },
                 pauseControls: currentGameState === GameState.PAUSED ? pauseControlsDrawn.slice() : [],
                 cameraSingleInstant: !!camera.options.singleInstant,
+                edgeGlows: edgeGlowsDrawn.map(g => ({ ...g })),
                 scaling: { ...currentScaling() }, boss: currentBoss ? { maxHealth: currentBoss.maxHealth } : null,
                 ...touchLobbyNotes(),
                 ...mp5Snapshot(), // reserved seats, dropped players, disconnect notice, player count
@@ -2944,9 +2958,22 @@ function resizeCanvas() {
                     timeAttackRun.ghost.player.worldHeight = WORLD_HEIGHT;
                 }
             }
-            // Re-centre on a ship (the next frame re-frames several ships)
-            const ship = players.map(p => p.ship).find(Boolean);
-            if (ship) camera.reset(ship.x, ship.y, cameraView());
+            // Re-centre on the ship, or on the midpoint of several (so the soft edge still
+            // holds everyone where they are)
+            // (single-player and Take Turns: the first ship, as before)
+            const ships = simultaneous() ? players.map(p => p.ship).filter(Boolean)
+                : players.map(p => p.ship).filter(Boolean).slice(0, 1);
+            if (simultaneous() && saucer && saucer.ufo && saucer.ufo.isAlive) ships.push(saucer.ufo);
+            if (ships.length) {
+                const ref = ships[0];
+                const xs = ships.map(q => ref.x + wrapDelta(q.x - ref.x, WORLD_WIDTH));
+                const ys = ships.map(q => ref.y + wrapDelta(q.y - ref.y, WORLD_HEIGHT));
+                const mid = (v) => (Math.min(...v) + Math.max(...v)) / 2;
+                const wrapTo = (v, size) => ((v % size) + size) % size;
+                const cx = ships.length > 1 ? wrapTo(mid(xs), WORLD_WIDTH) : ref.x;
+                const cy = ships.length > 1 ? wrapTo(mid(ys), WORLD_HEIGHT) : ref.y;
+                camera.reset(cx, cy, cameraView());
+            }
         }
     }
 
@@ -3138,7 +3165,10 @@ function handleShipInput(p, deltaTime) {
     }
 
     if (input.consumeAction('hyperspace')) {
-        const jumped = ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager);
+        // Simultaneous modes: land inside the soft edge (on screen); same risks as always
+        const box = leashBoxNow();
+        const area = box ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
+        const jumped = ship.hyperspace(WORLD_WIDTH, WORLD_HEIGHT, asteroids, ufos, audioManager, area);
         if (jumped && !ship.isAlive) {
             handlePlayerDeath(p, true); // May set p.ship = null (respawn pending); vibrates
             return;
@@ -3394,17 +3424,110 @@ function updateShip(p, deltaTime) {
 }
 
 // Ships the camera follows: living ships that are not waiting to respawn
+// ({id, x, y}; the id keeps each one's continuous track in the camera)
 function cameraTargets() {
-    const ships = players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0).map(p => p.ship);
-    if (saucer && saucer.ufo && saucer.ufo.isAlive) ships.push(saucer.ufo); // Saucer: frame P1 and the UFO
+    const ships = players.filter(p => p.ship && p.ship.isAlive && p.respawnTimer <= 0)
+        .map(p => ({ id: p.id, x: p.ship.x, y: p.ship.y }));
+    if (saucer && saucer.ufo && saucer.ufo.isAlive) ships.push({ id: 'saucer', x: saucer.ufo.x, y: saucer.ufo.y }); // Saucer: frame P1 and the UFO
     if (!simultaneous() || !mode.revive || ships.length === 0) return ships;
     // Co-op: a revive beacon is framed too, but only if that needs no extra zoom (plan §3.4)
-    const beacons = players.filter(p => p.out && p.beacon).map(p => p.beacon);
+    const beacons = players.filter(p => p.out && p.beacon).map(p => ({ id: `beacon:${p.id}`, x: p.beacon.x, y: p.beacon.y }));
     if (!beacons.length) return ships;
     const view = cameraView();
     const withBeacons = [...ships, ...beacons];
-    const zoomShips = frameTargets(ships, view, null, camera.options).zoom;
-    return frameTargets(withBeacons, view, null, camera.options).zoom >= zoomShips - 1e-6 ? withBeacons : ships;
+    return camera.previewZoom(withBeacons, view) >= camera.previewZoom(ships, view) - 1e-6 ? withBeacons : ships;
+}
+
+// --- Soft edge (leash), simultaneous modes (plan 05 §3, 2026-09-28) ---
+// The box is the camera centre ± (visible half-extent at the minimum zoom − 25 px). Ships and
+// the flown saucer are held inside it: co-op pushes back hard (outward speed removed), the
+// competitive modes give a little (damped, springy, at most 20 px past the edge). Rocks,
+// bullets and UFOs keep wrapping as always. While a player presses against it, that screen
+// edge glows in their colour.
+const LEASH_GLOW_TIME = 0.35; // s the edge glow fades after the last push
+let edgeGlowsDrawn = [];      // glows drawn this frame (test hook)
+
+function leashActive() { return simultaneous() && inRound(); }
+function leashBoxNow() { return leashActive() ? camera.leashBox(cameraView()) : null; }
+function leashSoft() { return mode.kind === 'versus'; } // Harvest, Duel, Saucer
+
+// Hold one entity inside the box; remember the edges it pushes against for the glow
+function leashOne(p, entity, box, dt) {
+    const r = leashEntity(entity, box, WORLD_WIDTH, WORLD_HEIGHT, { soft: leashSoft(), dt });
+    p.pressingEdges = r.edges;
+    if (!p.edgeGlow) p.edgeGlow = { left: 0, right: 0, top: 0, bottom: 0 };
+    for (const e of r.edges) p.edgeGlow[e] = LEASH_GLOW_TIME;
+}
+
+function tickEdgeGlows(dt) {
+    for (const p of players) {
+        if (!p.edgeGlow) continue;
+        for (const e of Object.keys(p.edgeGlow)) p.edgeGlow[e] = Math.max(0, p.edgeGlow[e] - dt);
+    }
+}
+
+// Every living ship (before the camera follows them this frame)
+function leashShips(dt) {
+    tickEdgeGlows(dt);
+    const box = leashBoxNow();
+    for (const p of players) {
+        const alive = p.ship && p.ship.isAlive && p.respawnTimer <= 0;
+        if (!box || !alive) { p.pressingEdges = []; continue; }
+        leashOne(p, p.ship, box, dt);
+    }
+}
+
+// Screen space: a glow in the player's colour on each screen edge they press against, centred
+// on their ship along that edge; fades LEASH_GLOW_TIME after the last push
+function drawEdgeGlows() {
+    edgeGlowsDrawn = [];
+    if (!leashActive()) return;
+    for (const p of players) {
+        const g = p.edgeGlow;
+        if (!g) continue;
+        const ent = saucer && p === saucer.player ? saucer.ufo : p.ship;
+        const pos = ent && ent.isAlive ? worldScreenPos(ent.x, ent.y) : { x: viewWidth / 2, y: viewHeight / 2 };
+        let rgb;
+        try { rgb = hexToRgb(p.colour); } catch (e) { rgb = [255, 255, 255]; }
+        if (!Array.isArray(rgb) || rgb.some(v => !Number.isFinite(v))) rgb = [255, 255, 255];
+        for (const edge of ['left', 'right', 'top', 'bottom']) {
+            const t = g[edge];
+            if (!(t > 0)) continue;
+            const a = Math.min(1, t / LEASH_GLOW_TIME);
+            const vertical = edge === 'left' || edge === 'right'; // the edge runs up and down
+            const ex = edge === 'left' ? 0 : edge === 'right' ? viewWidth : Math.max(0, Math.min(viewWidth, pos.x));
+            const ey = edge === 'top' ? 0 : edge === 'bottom' ? viewHeight : Math.max(0, Math.min(viewHeight, pos.y));
+            ctx.save();
+            ctx.translate(ex, ey);
+            if (vertical) ctx.scale(1, 5); else ctx.scale(5, 1); // a long, thin glow along the edge
+            const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 34);
+            const c = `${rgb[0]}, ${rgb[1]}, ${rgb[2]}`;
+            grad.addColorStop(0, `rgba(${c}, ${0.8 * a})`);
+            grad.addColorStop(0.45, `rgba(${c}, ${0.35 * a})`);
+            grad.addColorStop(1, `rgba(${c}, 0)`);
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(0, 0, 34, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            edgeGlowsDrawn.push({ id: p.id, edge, x: ex, y: ey, alpha: a, colour: p.colour });
+        }
+    }
+}
+
+// Saucer: the UFO P2 flies (after it moved this frame)
+function leashSaucer(dt) {
+    if (!saucer) return;
+    const box = leashBoxNow();
+    const u = saucer.ufo;
+    if (!box || !u || !u.isAlive) { saucer.player.pressingEdges = []; return; }
+    leashOne(saucer.player, u, box, dt);
+}
+
+// A world point pulled inside the soft edge (spawns, respawns, revives); unchanged otherwise
+function insideLeash(pt, inset = 40) {
+    const box = leashBoxNow();
+    return box && pt ? clampToBox(pt.x, pt.y, box, WORLD_WIDTH, WORLD_HEIGHT, inset) : pt;
 }
 
 // The camera follows the living ships (holds its position while there are none)
@@ -3465,6 +3588,7 @@ function updateGame(deltaTime) {
     for (const p of activePlayers()) updateShip(p, deltaTime);
     updateShipBumps(deltaTime); // Harvest, Duel: ships bounce off each other
     updateSaucer(deltaTime); // Saucer: a destroyed UFO returns after 4 s
+    leashShips(deltaTime); // simultaneous modes: the soft edge keeps every ship in view
     updateCamera(deltaTime);
 
     // Update asteroids and wrap their positions
@@ -3501,6 +3625,7 @@ function updateGame(deltaTime) {
              }
         }
     });
+    leashSaucer(deltaTime); // Saucer: the flown UFO can't leave the view either
 
     // Only play UFO hum when a UFO is actually visible on screen
     if (visibleUfoExists && !audioManager.isMuted) audioManager.startUfoHum();
@@ -3952,6 +4077,7 @@ function renderGame() {
             // Several ships: numbers, revive beacons, respawn rings, edge arrows
             if (simultaneous()) drawMpWorldOverlays();
             drawSaucerOverlays(); // Saucer: P2 label, edge arrow, return countdown
+            drawEdgeGlows(); // soft edge: a player's colour where they press against it
 
             // Draw level up notification (screen-space, not world-space)
             drawLevelUpNotification();
@@ -4858,10 +4984,10 @@ function respawnPoint(p, isInitialSpawn) {
     const hazards = spawnHazards();
     switch (mode.respawn.placement) {
         case 'nearTeam': {
-            if (p.respawnAt) return p.respawnAt; // the spot the respawn ring showed
+            if (p.respawnAt) return insideLeash(p.respawnAt); // the spot the respawn ring showed
             const c = cameraCentre();
-            return pickSpawnPoint(ringSpawnGrid(c.x, c.y, NEAR_TEAM_RADIUS, WORLD_WIDTH, WORLD_HEIGHT), [], hazards,
-                WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre;
+            return insideLeash(pickSpawnPoint(ringSpawnGrid(c.x, c.y, NEAR_TEAM_RADIUS, WORLD_WIDTH, WORLD_HEIGHT), [], hazards,
+                WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS }) || centre);
         }
         case 'furthestFromOpponents':
             return versusRespawnPoint(p, hazards) || centre;
@@ -4886,7 +5012,8 @@ function respawnPlayer(p, isInitialSpawn = false, { at = null, invulnerability =
          console.log("Respawning Player - Conditions Met");
 
          // Spawn at the centre of the world (single-player) or where the mode says
-         const spot = at || respawnPoint(p, isInitialSpawn);
+         // (a revive at a drifting beacon is pulled inside the soft edge, like every respawn)
+         const spot = at ? insideLeash(at) : respawnPoint(p, isInitialSpawn);
          p.respawnAt = null;
          p.respawnSlot = null;
          const centerX = spot.x;
@@ -6401,10 +6528,13 @@ function creditKill(killer, victim, x, y) {
     FloatingTexts.spawn(at.x, at.y - 30, `${k.label} +1 KILL`, k.colour, 22, 1.5);
 }
 
+// Harvest, Duel: furthest from the other ships, on a grid over the soft-edge box (so the ship
+// appears on screen); the whole world when there is no box
 function versusRespawnPoint(p, hazards = spawnHazards()) {
     const opponents = players.filter(o => o !== p && isLiving(o)).map(o => o.ship);
-    return pickSpawnPoint(worldSpawnGrid(WORLD_WIDTH, WORLD_HEIGHT), opponents, hazards,
-        WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS });
+    const box = leashBoxNow();
+    const grid = box ? boxSpawnGrid(box, WORLD_WIDTH, WORLD_HEIGHT) : worldSpawnGrid(WORLD_WIDTH, WORLD_HEIGHT);
+    return pickSpawnPoint(grid, opponents, hazards, WORLD_WIDTH, WORLD_HEIGHT, { safeRadius: SAFE_SPAWN_RADIUS });
 }
 
 // Overtime / sudden death just started: a banner for everyone

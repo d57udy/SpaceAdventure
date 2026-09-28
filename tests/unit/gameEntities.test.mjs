@@ -36,6 +36,30 @@ test('Bullet: owner and colour (multiplayer); defaults keep single-player bullet
     assert.deepEqual(fills, ['white', '#FF9F1C', 'lime']);
 });
 
+test('PlayerShip.hyperspace: with an area it lands inside it (wrapped), same three rolls', () => {
+    const real = Math.random;
+    try {
+        const rolls = [0.5, 0, 1]; // no self-destruct; x at the area's left, y at its bottom
+        let calls = 0;
+        Math.random = () => { calls++; return rolls.shift(); };
+        const ship = new PlayerShip(500, 500);
+        ship.velX = 100;
+        const area = { x: -100, y: 200, width: 400, height: 300 };
+        assert.equal(ship.hyperspace(1000, 1000, [], [], null, area), true);
+        assert.equal(calls, 3);
+        assert.equal(ship.x, 1000 - 100 + 15); // -85 wrapped into the world
+        assert.equal(ship.y, 200 + 300 - 15);
+        assert.equal(ship.velX, 0);
+        // Without an area: anywhere in the world, as before
+        Math.random = (() => { const r = [0.5, 0, 0]; return () => r.shift(); })();
+        const other = new PlayerShip(500, 500);
+        other.hyperspace(1000, 800, [], [], null);
+        assert.equal(other.x, 15); assert.equal(other.y, 15);
+    } finally {
+        Math.random = real;
+    }
+});
+
 test('PlayerShip.fire: bullets carry the ship owner and bullet colour', () => {
     const ship = new PlayerShip(100, 100);
     const bullets = [];

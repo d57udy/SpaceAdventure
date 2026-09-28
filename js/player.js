@@ -78,7 +78,10 @@ export class PlayerShip extends Entity {
         }
     }
 
-    hyperspace(canvasWidth, canvasHeight, asteroids, ufos, audioManager) {
+    // area (optional, simultaneous modes): {x, y, width, height} in world units, x/y may be
+    // negative; the ship lands inside it (wrapped into the world) instead of anywhere. The rolls
+    // are the same: self-destruct, then x, then y.
+    hyperspace(canvasWidth, canvasHeight, asteroids, ufos, audioManager, area = null) {
         if (!this.canHyperspace || this.hyperspaceCooldownTimer > 0) {
             console.log("Hyperspace not ready.");
             return false;
@@ -98,8 +101,14 @@ export class PlayerShip extends Entity {
         }
 
         // Relocate to a random position
-        this.x = randomRange(this.radius, canvasWidth - this.radius);
-        this.y = randomRange(this.radius, canvasHeight - this.radius);
+        if (area) {
+            const wrap = (v, size) => ((v % size) + size) % size;
+            this.x = wrap(area.x + randomRange(this.radius, area.width - this.radius), canvasWidth);
+            this.y = wrap(area.y + randomRange(this.radius, area.height - this.radius), canvasHeight);
+        } else {
+            this.x = randomRange(this.radius, canvasWidth - this.radius);
+            this.y = randomRange(this.radius, canvasHeight - this.radius);
+        }
 
         // Stop movement
         this.velX = 0;

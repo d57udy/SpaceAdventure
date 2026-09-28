@@ -535,6 +535,10 @@ export async function collectGreenByJump(page, key = 'h') {
       const r = 15;
       calls++;
       if (calls === 1) {
+        // Simultaneous modes: only spots inside the soft-edge box can be reached by a jump
+        const L = g.camera.leash;
+        const wrap = (d, size) => d - size * Math.round(d / size);
+        const inLeash = (x, y) => !L || (Math.abs(wrap(x - L.cx, W)) < L.halfW - 20 && Math.abs(wrap(y - L.cy, H)) < L.halfH - 20);
         const all = g.asteroids;
         const clear = (x, y) => all.every((a) => Math.hypot(a.x - x, a.y - y) > a.radius + r + 2);
         const greens = all.filter((q) => q.type === 'green' && !q.materialising)
@@ -544,14 +548,17 @@ export async function collectGreenByJump(page, key = 'h') {
           const d = a.radius + r + 4;
           const x = a.x + (a.velX / speed) * d;
           const y = a.y + (a.velY / speed) * d;
-          if (x > 40 && x < W - 40 && y > 40 && y < H - 40 && clear(x, y)) { target = { x, y }; break; }
+          if (x > 40 && x < W - 40 && y > 40 && y < H - 40 && clear(x, y) && inLeash(x, y)) { target = { x, y }; break; }
         }
         if (!target) { Math.random = real; return 0.01; } // no spot: self-destruct instead
         return 0.5; // no self-destruct
       }
-      if (calls === 2) return (target.x - r) / (W - 2 * r);
+      // Simultaneous modes land inside the soft-edge box (camera.leash), else anywhere
+      const L = g.camera.leash;
+      const near = (v, c, size) => c + ((((v - c + size / 2) % size) + size) % size) - size / 2;
+      if (calls === 2) return L ? (near(target.x, L.cx, W) - L.left - r) / (L.width - 2 * r) : (target.x - r) / (W - 2 * r);
       Math.random = real;
-      return (target.y - r) / (H - 2 * r);
+      return L ? (near(target.y, L.cy, H) - L.top - r) / (L.height - 2 * r) : (target.y - r) / (H - 2 * r);
     };
   });
   await page.keyboard.press(key);
@@ -640,6 +647,8 @@ export async function skipRoundIntro(page) {
 /**
  * Hyperspace to a chosen world point (stubs Math.random for the jump's own rolls only, a browser
  * API stub, not game state): no self-destruct, then x and y. `key` is the seat's hyperspace key.
+ * In simultaneous modes a jump lands inside the soft-edge box (hook camera.leash): the rolls are
+ * computed against that box when the jump happens, and a point outside it lands on its edge.
  */
 export async function jumpTo(page, key, x, y) {
   await page.evaluate(([tx, ty]) => {
@@ -652,9 +661,13 @@ export async function jumpTo(page, key, x, y) {
       const r = 15;
       calls++;
       if (calls === 1) return 0.5; // no self-destruct
-      if (calls === 2) return Math.min(1, Math.max(0, (tx - r) / (g.world.width - 2 * r)));
+      const L = g.camera.leash;
+      const W = g.world.width, H = g.world.height;
+      const near = (v, c, size) => c + ((((v - c + size / 2) % size) + size) % size) - size / 2;
+      const roll = (v, lo, span) => Math.min(1, Math.max(0, (v - lo - r) / (span - 2 * r)));
+      if (calls === 2) return L ? roll(near(tx, L.cx, W), L.left, L.width) : roll(tx, 0, W);
       Math.random = real;
-      return Math.min(1, Math.max(0, (ty - r) / (g.world.height - 2 * r)));
+      return L ? roll(near(ty, L.cy, H), L.top, L.height) : roll(ty, 0, H);
     };
   }, [x, y]);
   await page.keyboard.press(key);
