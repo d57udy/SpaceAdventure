@@ -38,6 +38,8 @@ const DEFAULT_ZONE = 'a';
 const TYPED_CHAR = /^[A-Za-z0-9]$/;
 // Shared actions whose keys should not scroll/activate the page.
 const PREVENT_SHARED = new Set(['menuUp', 'menuDown', 'menuLeft', 'menuRight', 'menuSelect', 'enter', 'backspace']);
+// Keys that activate a focused <button> (the browser clicks it; the game must not act).
+const BUTTON_KEYS = new Set(['Enter', 'NumpadEnter', 'Space']);
 
 function defaultNow() {
     return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
@@ -261,6 +263,10 @@ export class InputHandler {
 
         const code = codeOf(event);
         if (!code) return;
+
+        // Enter / Space on a focused DOM button (Install, Full screen, update toast) activate
+        // that button: no preventDefault (it would cancel the click) and no game action.
+        if (isPressed && target && target.tagName === 'BUTTON' && BUTTON_KEYS.has(code)) return;
 
         if (!isPressed) {
             this.downCodes.delete(code);

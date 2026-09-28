@@ -168,6 +168,30 @@ test('keys whose target is an INPUT (or TEXTAREA) are ignored', () => {
     assert.equal(input.isPressed('thrust'), true);
 });
 
+test('Enter and Space on a focused DOM button activate the button, not the game', () => {
+    const { win, input } = setup();
+    const button = { tagName: 'BUTTON', classList: { contains: (c) => c === 'app-btn' } };
+    for (const key of ['Enter', ' ']) {
+        const ev = keyEvent(key, button);
+        win.dispatch('keydown', ev);
+        assert.equal(ev.defaultPrevented, false, `${key}: the browser must be allowed to click the button`);
+        input.endFrame();
+        assert.equal(input.consumeAction('menuSelect'), false, `${key}: no menu select`);
+        assert.equal(input.isPressed('fire'), false, `${key}: no fire`);
+        win.dispatch('keyup', keyEvent(key, button));
+    }
+    const numpad = keyEvent('Enter', button, 'NumpadEnter');
+    win.dispatch('keydown', numpad);
+    assert.equal(numpad.defaultPrevented, false);
+    // Other keys on a button still drive the game (arrows keep moving the menu)
+    const arrow = keyEvent('ArrowDown', button);
+    win.dispatch('keydown', arrow);
+    assert.equal(arrow.defaultPrevented, true);
+    // Space on the canvas still fires
+    win.dispatch('keydown', keyEvent(' ', { tagName: 'CANVAS' }));
+    assert.equal(input.isPressed('fire'), true);
+});
+
 test('unmapped keys are ignored without preventing default', () => {
     const { win, input } = setup();
     const ev = keyEvent('F5');
