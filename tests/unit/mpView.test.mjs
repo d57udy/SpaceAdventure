@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     HULL_MARKS, hullMarkFor, hullMarkShapes, sideBarWidth, touchLayout, hudMode, hudSide, compactHudCorner,
+    reservedSideBar, reservedTopBar, MP_BAR_MAX, MP_MIN_CANVAS_RATIO,
     edgeArrow, respawnFraction, isIpad, touchPointsWarning, MP_BAR_MIN, MP_HUD_BAR_MIN,
 } from '../../js/mpView.js';
 
@@ -52,38 +53,61 @@ test('hull mark shapes: none is empty, the others differ and stay inside the hul
     assert.ok(Math.abs(b.y2 - 2 * a.y2) < 1e-9);
 });
 
-test('side bars: the space beside the centred square canvas (plan §9 table)', () => {
-    // canvas = 90% of the short side
-    const cases = [
-        [1024, 768, 166], // iPad 10.2" full screen
-        [1080, 810, 175], // iPad gen 7 (test size)
-        [1180, 820, 221], // iPad Air 11"
-        [1366, 1024, 222], // iPad Pro 12.9"
-        [1280, 800, 280], // 10" Android
-    ];
-    for (const [w, h, bar] of cases) {
-        const canvas = Math.floor(Math.min(w, h) * 0.9);
-        assert.equal(sideBarWidth(w, canvas), bar, `${w}x${h}`);
-    }
+test('side bars: sideBarWidth / topBarHeight measure the space beside a centred canvas', () => {
+    assert.equal(sideBarWidth(1024, 691), 166);
     assert.equal(sideBarWidth(1024, 691, { left: 20, right: 20 }), 146);
     assert.equal(sideBarWidth(700, 800), 0);
+    assert.equal(topBarHeight(1080, 729, { top: 20, bottom: 10 }), 160);
+});
+
+test('reserved bars: 16% of the width, 150 to 200 px, the canvas keeps 3/4 of its height', () => {
+    const cases = [
+        [1024, 768, 164], // iPad 10.2" full screen
+        [1080, 810, 173], // iPad gen 7 (test size)
+        [1180, 820, 189], // iPad Air 11"
+        [1366, 1024, 200], // iPad Pro 12.9": capped
+        [1280, 800, 200], // 10" Android / laptop
+        [844, 390, 150], // phone landscape: the HUD panel minimum
+        [892, 412, 150], // Pixel 7 Pro landscape
+    ];
+    for (const [w, h, bar] of cases) {
+        assert.equal(reservedSideBar(w, h), bar, `${w}x${h}`);
+        const canvasW = w - 2 * bar;
+        assert.ok(canvasW >= h * MP_MIN_CANVAS_RATIO, `${w}x${h} canvas keeps its width`);
+    }
+    // Nearly square landscape: the bars shrink so the canvas stays 3/4 as wide as tall
+    assert.equal(reservedSideBar(700, 650), Math.floor((700 - 650 * 0.75) / 2));
+    assert.equal(reservedSideBar(300, 600), 0);
+    // Portrait facing: the same rule on the other axis
+    assert.equal(reservedTopBar(810, 1080), 173);
+    assert.equal(reservedTopBar(412, 892), 150);
+    assert.equal(MP_BAR_MAX, 200);
 });
 
 test('touch layout: side by side in landscape with bars >= 120 px, else rotate; none without touch', () => {
-    const at = (w, h, touch = true, safe = {}) => touchLayout({
-        viewportW: w, viewportH: h, canvasSize: Math.floor(Math.min(w, h) * 0.9), safe, touch,
+    const at = (w, h, touch = true, safe = {}, panels = false) => touchLayout({
+        viewportW: w, viewportH: h, safe, touch, panels,
     });
-    assert.deepEqual(at(1080, 810), { layout: 'sides', bar: 175, landscape: true });
-    assert.deepEqual(at(810, 1080), { layout: 'rotate', bar: 40, landscape: false });
-    assert.equal(at(1024, 768, false).layout, null);
-    // A landscape phone: bars too narrow
-    assert.equal(at(844, 390).layout, 'sides'); // 844 - 351 = 493 / 2 = 246
-    assert.equal(at(1000, 900).layout, 'facing'); // bar 95: too narrow for side by side, switch to facing (plan §9)
+    assert.deepEqual(at(1080, 810), { layout: 'sides', bar: 173, landscape: true, reserve: { left: 173, right: 173, top: 0, bottom: 0 } });
+    assert.deepEqual(at(810, 1080), { layout: 'rotate', bar: 0, landscape: false, reserve: { left: 0, right: 0, top: 0, bottom: 0 } });
+    // No touch players: nothing reserved (single-player, Take Turns)
+    assert.deepEqual(at(1024, 768, false), { layout: null, bar: 0, landscape: true, reserve: { left: 0, right: 0, top: 0, bottom: 0 } });
+    // Keyboard / controller multiplayer: bars for the HUD panels in landscape, none in portrait
+    assert.deepEqual(at(1280, 800, false, {}, true).reserve, { left: 200, right: 200, top: 0, bottom: 0 });
+    assert.equal(hudMode(at(1280, 800, false, {}, true).bar), 'dom');
+    assert.deepEqual(at(810, 1080, false, {}, true).reserve, { left: 0, right: 0, top: 0, bottom: 0 });
+    assert.equal(hudMode(at(810, 1080, false, {}, true).bar), 'canvas');
+    // A landscape phone
+    assert.equal(at(844, 390).layout, 'sides');
+    // Nearly square landscape: bars below 120 px, switch to facing (plan §9) in the side bars
+    const sq = at(700, 650);
+    assert.equal(sq.layout, 'facing');
+    assert.equal(sq.reserve.left, sq.bar);
+    assert.ok(sq.bar < MP_BAR_MIN);
     assert.equal(MP_BAR_MIN, 120);
-    // Exactly at the threshold
-    const canvas = 600;
-    assert.equal(touchLayout({ viewportW: canvas + 2 * MP_BAR_MIN, viewportH: 667, canvasSize: canvas, touch: true }).layout, 'sides');
-    assert.equal(touchLayout({ viewportW: canvas + 2 * MP_BAR_MIN - 2, viewportH: 667, canvasSize: canvas, touch: true }).layout, 'facing');
+    // Safe areas come off the available width first
+    const notch = at(1080, 810, true, { left: 40, right: 40 });
+    assert.equal(notch.bar, reservedSideBar(1000, 810));
 });
 
 test('HUD: DOM panels from 150 px bars, compact canvas HUD below; seats alternate sides', () => {
@@ -153,13 +177,14 @@ test('layout setting: auto = landscape sides / portrait facing; sides in portrai
     assert.equal(resolveMpLayout('bogus', false, 40), 'facing'); // unknown = auto
 });
 
-test('touch layout with a setting: portrait facing uses the top/bottom bar height', () => {
-    const at = (w, h, setting) => touchLayout({ viewportW: w, viewportH: h, canvasSize: Math.floor(Math.min(w, h) * 0.9), touch: true, setting });
-    assert.deepEqual(at(810, 1080, 'auto'), { layout: 'facing', bar: 175, landscape: false });
-    assert.deepEqual(at(810, 1080, 'sides'), { layout: 'rotate', bar: 40, landscape: false });
-    assert.deepEqual(at(1080, 810, 'facing'), { layout: 'facing', bar: 175, landscape: true });
-    assert.deepEqual(at(1080, 810, 'auto'), { layout: 'sides', bar: 175, landscape: true });
-    assert.equal(topBarHeight(1080, 729, { top: 20, bottom: 10 }), 160);
+test('touch layout with a setting: portrait facing reserves bars above and below', () => {
+    const at = (w, h, setting) => touchLayout({ viewportW: w, viewportH: h, touch: true, setting });
+    assert.deepEqual(at(810, 1080, 'auto'), { layout: 'facing', bar: 173, landscape: false, reserve: { left: 0, right: 0, top: 173, bottom: 173 } });
+    assert.deepEqual(at(810, 1080, 'sides'), { layout: 'rotate', bar: 0, landscape: false, reserve: { left: 0, right: 0, top: 0, bottom: 0 } });
+    assert.deepEqual(at(1080, 810, 'facing'), { layout: 'facing', bar: 173, landscape: true, reserve: { left: 173, right: 173, top: 0, bottom: 0 } });
+    assert.deepEqual(at(1080, 810, 'auto').layout, 'sides');
+    // A portrait phone: 150 px bars leave a 412 x 592 canvas
+    assert.deepEqual(at(412, 892, 'auto').reserve, { left: 0, right: 0, top: 150, bottom: 150 });
     assert.equal(layoutKey({ layout: 'facing', landscape: false }), 'facing:P');
     assert.notEqual(layoutKey(at(810, 1080, 'auto')), layoutKey(at(1080, 810, 'auto')));
     assert.equal(layoutKey({ layout: null }), '');

@@ -2,7 +2,7 @@
 // See docs/plans/05-local-multiplayer.md §3.4, §9, §10.3 and §11.
 //
 //   hull marks     a per-seat mark on the ship hull, so colour is never the only cue
-//   side bars      the space left and right of the square canvas (tablet controls, HUD panels)
+//   side bars      bars reserved left and right of the canvas (tablet controls, HUD panels)
 //   touch layout   side by side, facing (P2 rotated 180°) or "rotate", from the mpLayout setting
 //   viewers        per-viewer regions and 180° rotated tap regions for the facing layout
 //   edge arrows    where to point at a ship or revive beacon that is outside the view
@@ -58,7 +58,7 @@ export function hullMarkShapes(mark, r) {
 }
 
 /**
- * Width of each side bar beside the centred square canvas (CSS px, rounded down).
+ * Width of each side bar beside a centred canvas of the given width (CSS px, rounded down).
  * @param {number} viewportW window.innerWidth
  * @param {number} canvasSize the canvas side in CSS px
  * @param {{left?:number, right?:number}} [safe] safe-area insets
@@ -72,7 +72,7 @@ export function sideBarWidth(viewportW, canvasSize, safe = {}) {
 export const MP_LAYOUT_SETTINGS = Object.freeze(['auto', 'sides', 'facing']);
 
 /**
- * Height of the bars above and below the centred square canvas (portrait facing layout).
+ * Height of the bars above and below a centred canvas of the given height.
  * @param {number} viewportH window.innerHeight
  * @param {{top?:number, bottom?:number}} [safe]
  */
@@ -97,26 +97,70 @@ export function resolveMpLayout(setting, landscape, sideBar) {
     return s === 'sides' ? 'rotate' : 'facing';
 }
 
+/** Widest side (or top / bottom) bar reserved for multiplayer controls and HUD panels. */
+export const MP_BAR_MAX = 200;
+/** The canvas between reserved bars keeps at least this share of the other axis. */
+export const MP_MIN_CANVAS_RATIO = 0.75;
+
 /**
- * Which touch layout applies (plan §9).
+ * Width of each side bar reserved beside the canvas (landscape): 16% of the safe width, from
+ * MP_HUD_BAR_MIN (HUD panels fit) to MP_BAR_MAX, but never so wide that the canvas between the
+ * bars is narrower than MP_MIN_CANVAS_RATIO x its height (then the bar can drop below
+ * MP_BAR_MIN and the touch layout falls back to facing).
+ */
+export function reservedSideBar(availW, availH) {
+    const want = Math.min(MP_BAR_MAX, Math.max(MP_HUD_BAR_MIN, Math.round(availW * 0.16)));
+    const room = Math.floor((availW - availH * MP_MIN_CANVAS_RATIO) / 2);
+    return Math.max(0, Math.min(want, room));
+}
+
+/** Height of each bar above and below the canvas (portrait facing layout); same rule. */
+export function reservedTopBar(availW, availH) {
+    return reservedSideBar(availH, availW);
+}
+
+/**
+ * Which touch layout applies (plan §9) and which bars the canvas leaves free for it.
+ * The canvas fills the safe-area viewport minus these bars (js/viewport.js computeCanvasSize),
+ * so the bars are sized for the controls and HUD panels, not the leftover of a square canvas.
+ *
+ *   touch 'sides', or 'facing' in landscape: a side bar left and right (controls, HUD panels)
+ *   touch 'facing' in portrait: a bar above and below
+ *   touch 'rotate': none (the game waits for the device to turn)
+ *   no touch players, `panels` (a simultaneous round or its lobby with keyboards / controllers):
+ *     side bars for the DOM HUD panels in landscape; none in portrait (the compact canvas HUD)
+ *   otherwise: none (single-player and Take Turns use the whole viewport)
+ *
  * @param {object} o
- * @param {number} o.viewportW @param {number} o.viewportH
- * @param {number} o.canvasSize
+ * @param {number} o.viewportW @param {number} o.viewportH window.innerWidth / innerHeight
  * @param {{left?:number, right?:number, top?:number, bottom?:number}} [o.safe] safe-area insets
  * @param {boolean} o.touch - touch players take part (or may join, in the lobby)
  * @param {'auto'|'sides'|'facing'} [o.setting='sides'] - the mpLayout setting
- * @returns {{layout:'sides'|'facing'|'rotate'|null, bar:number, landscape:boolean}}
- *   null: no touch players; 'sides': controls in the side bars; 'facing': P1 at the bottom, P2
- *   at the top (rotated); 'rotate': ask to turn the device. `bar` is the bar the layout uses:
- *   the side bar width, or in portrait facing the top/bottom bar height.
+ * @param {boolean} [o.panels=false] - keyboard / controller multiplayer: reserve HUD panel bars
+ * @returns {{layout:'sides'|'facing'|'rotate'|null, bar:number, landscape:boolean,
+ *            reserve:{left:number, right:number, top:number, bottom:number}}}
+ *   `bar` is the bar the layout uses (the side bar, or in portrait facing the top/bottom bar;
+ *   0 when nothing is reserved); `reserve` is what the canvas leaves free on each side.
  */
-export function touchLayout({ viewportW, viewportH, canvasSize, safe = {}, touch, setting = 'sides' }) {
-    const side = sideBarWidth(viewportW, canvasSize, safe);
+export function touchLayout({ viewportW, viewportH, safe = {}, touch, setting = 'sides', panels = false }) {
+    const availW = Math.max(0, viewportW - (safe.left || 0) - (safe.right || 0));
+    const availH = Math.max(0, viewportH - (safe.top || 0) - (safe.bottom || 0));
     const landscape = viewportW > viewportH;
-    if (!touch) return { layout: null, bar: side, landscape };
+    const none = { left: 0, right: 0, top: 0, bottom: 0 };
+    const side = landscape ? reservedSideBar(availW, availH) : 0;
+    if (!touch) {
+        if (panels && landscape && side >= MP_HUD_BAR_MIN) {
+            return { layout: null, bar: side, landscape, reserve: { left: side, right: side, top: 0, bottom: 0 } };
+        }
+        return { layout: null, bar: 0, landscape, reserve: none };
+    }
     const layout = resolveMpLayout(setting, landscape, side);
-    const bar = layout === 'facing' && !landscape ? topBarHeight(viewportH, canvasSize, safe) : side;
-    return { layout, bar, landscape };
+    if (layout === 'rotate') return { layout, bar: 0, landscape, reserve: none };
+    if (layout === 'facing' && !landscape) {
+        const bar = reservedTopBar(availW, availH);
+        return { layout, bar, landscape, reserve: { left: 0, right: 0, top: bar, bottom: bar } };
+    }
+    return { layout, bar: side, landscape, reserve: { left: side, right: side, top: 0, bottom: 0 } };
 }
 
 /** Key that changes when a running round has to be laid out again (auto-pause on rotation). */
