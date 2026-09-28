@@ -3448,7 +3448,20 @@ const LEASH_GLOW_TIME = 0.35; // s the edge glow fades after the last push
 let edgeGlowsDrawn = [];      // glows drawn this frame (test hook)
 
 function leashActive() { return simultaneous() && inRound(); }
-function leashBoxNow() { return leashActive() ? camera.leashBox(cameraView()) : null; }
+// Screen px kept free at the top (team score / level / round clock) so a ship held at the edge
+// never sits under that text; facing layouts draw it at the bottom too.
+const LEASH_HUD_INSET = 56;
+function leashBoxNow() {
+    if (!leashActive()) return null;
+    const b = camera.leashBox(cameraView());
+    // World px per screen px when the box edge meets the screen edge (minimum zoom)
+    const scale = viewHeight > 0 ? (2 * (b.halfH + 25)) / viewHeight : 1;
+    const insetTop = LEASH_HUD_INSET * scale;
+    const insetBottom = isMultiplayer() && facingLayout() ? insetTop : 0;
+    const top = b.top + insetTop;
+    const height = Math.max(0, b.height - insetTop - insetBottom);
+    return { ...b, top, height, halfH: height / 2, cy: top + height / 2 };
+}
 function leashSoft() { return mode.kind === 'versus'; } // Harvest, Duel, Saucer
 
 // Hold one entity inside the box; remember the edges it pushes against for the glow
