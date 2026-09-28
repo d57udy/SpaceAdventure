@@ -12,7 +12,8 @@ import { PowerUp, PowerUpType } from './powerup.js';
 import { Boss } from './boss.js';
 import { Entity } from './entity.js';
 import { applyJoystickSteering, angleDiff, stabilizeHeading } from './steering.js';
-import { computeCanvasSize, MAX_RENDER_SCALE } from './viewport.js';
+import { computeCanvasSize, MAX_RENDER_SCALE, playHudLayout } from './viewport.js';
+import { computeWorldSize, scaledAsteroidCount } from './worldSize.js';
 import { Particles } from './particles.js';
 import { createSettings } from './settings.js';
 import { findPalette, hexToRgb } from './palette.js';
@@ -21,7 +22,9 @@ import { MusicEngine, selectMood } from './music.js';
 import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { hideTouchForGamepad, rumblePads } from './seats.js';
-import { stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP } from './menuLayout.js';
+import {
+    stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP, MIN_TAP, menuColumn, overlayInsets, fitFontPx, menuGrid,
+} from './menuLayout.js';
 import { valueRowArrows, valueRowStep } from './valueRow.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
@@ -1587,13 +1590,27 @@ function syncMpDom() {
         if (!resultsTouch) lastRoundZones = [];
         zones = resultsTouch ? lastRoundZones : [];
     }
+    // Keyboard / controller players in a simultaneous round (its lobby and results too): side
+    // bars for the HUD panels in landscape
+    const seatLobby = currentGameState === GameState.LOBBY && !!lobby && lobby.kind === 'seats'
+        && (getMode(lobbyModeId) || {}).kind !== 'turns';
+    const resultsSim = currentGameState === GameState.RESULTS && isMultiplayer() && simultaneous();
     const lay = touchLayout({
-        viewportW: window.innerWidth, viewportH: window.innerHeight, canvasSize: viewWidth, safe: lastSafeInsets,
+        viewportW: window.innerWidth, viewportH: window.innerHeight, safe: lastSafeInsets,
         touch: touchLobby || zones.length > 0, setting: settings.get('mpLayout'),
+        panels: roundSim || seatLobby || resultsSim,
     });
+    // The canvas fills the viewport minus these bars: resize when they change
+    const r = lay.reserve;
+    if (r.left !== canvasReserve.left || r.right !== canvasReserve.right
+        || r.top !== canvasReserve.top || r.bottom !== canvasReserve.bottom) {
+        canvasReserve = { ...r };
+        resizeCanvas();
+    }
+    const bars = r.left + r.right + r.top + r.bottom > 0;
     const hud = roundSim ? hudMode(lay.bar) : null;
     mpLayoutState = { ...lay, hud, zones };
-    const key = [currentGameState === GameState.RESULTS, roundSim, touchLobby, lay.layout, lay.bar, lay.landscape, zones.join(''), hud].join('|');
+    const key = [currentGameState === GameState.RESULTS, roundSim, touchLobby, lay.layout, lay.bar, lay.landscape, zones.join(''), hud, bars].join('|');
     if (key !== mpDomKey) {
         mpDomKey = key;
         const body = document.body;
@@ -1609,6 +1626,7 @@ function syncMpDom() {
         body.classList.toggle('mp-zone-b', roundSim && zones.includes('b'));
         body.classList.toggle('mp-hud-dom', hud === 'dom');
         body.classList.toggle('mp-results-facing', !roundSim && !touchLobby && lay.layout === 'facing' && zones.length > 0);
+        body.classList.toggle('mp-bars', bars); // outline the play area between the bars
         body.style.setProperty('--mp-bar', `${lay.bar}px`);
     }
     if (roundSim && zones.length > 0) {
@@ -1866,8 +1884,8 @@ function drawResetConfirm() {
     ctx.fillText('Scores, achievements and upgrades are deleted.', viewWidth / 2, y + (compact ? 52 : 66), w - 20);
     const gap = 16;
     const bw = (w - 40 - gap) / 2;
-    const bh = compact ? 40 : 48;
-    const by = y + h - bh - (compact ? 14 : 20);
+    const bh = compact ? MIN_TAP : 48;
+    const by = y + h - bh - (compact ? 12 : 20);
     RESET_CONFIRM_BUTTONS.forEach((label, i) => {
         const bx = x + 20 + i * (bw + gap);
         drawButtonBox(bx, by, bw, bh, label, i === resetConfirm.index);
@@ -1910,17 +1928,19 @@ let pausedGameExists = false; // Flag to track paused game
 let currentUser = null; // Track current user
 let promptInput = ""; // For user name entry
 
-// Bounded world settings (1.5x1.5 screens with wrap-around for higher asteroid density)
-const WORLD_SCREENS_X = 1.5; // World is 1.5 screens wide
-const WORLD_SCREENS_Y = 1.5; // World is 1.5 screens tall
-let WORLD_WIDTH = 800 * WORLD_SCREENS_X;  // Will be set properly after canvas init
-let WORLD_HEIGHT = 600 * WORLD_SCREENS_Y; // Will be set properly after canvas init
+// Bounded world with wrap-around: 1.5 views per axis, aspect-clamped (js/worldSize.js)
+let WORLD_WIDTH = 1200;  // Will be set properly after canvas init
+let WORLD_HEIGHT = 900;  // Will be set properly after canvas init
+let worldAsteroidScale = 1;              // extra rocks where the world is more than 1.5 views
 let viewWidth = 800, viewHeight = 800;   // logical (CSS) pixels: all game code uses these
-let renderScale = 1;                     // backing pixels per CSS pixel (capped dpr)
+let renderScale = 1;                     // backing pixels per CSS pixel (capped dpr), x axis
+let renderScaleY = 1;                    // the same for the y axis (exact per-axis ratio)
 let renderScaleCap = MAX_RENDER_SCALE;   // lowered by the adaptive fallback when frames are slow
 let canvasSized = false;
 let lastLandscape = false;                // window orientation at the last resize
-let backingSize = 0;                     // canvas backing-store width/height in device pixels
+let backingWidth = 0, backingHeight = 0; // canvas backing store in device pixels
+// Bars the canvas leaves free around it (multiplayer touch controls / HUD panels; mpView.js)
+let canvasReserve = { left: 0, right: 0, top: 0, bottom: 0 };
 
 // Level progression settings
 const BASE_ASTEROIDS_PER_LEVEL = 10; // Starting asteroids at level 1
@@ -2052,7 +2072,7 @@ function drawStarfield() {
     if (!backgroundGradient) {
         backgroundGradient = ctx.createRadialGradient(
             viewWidth / 2, viewHeight / 2, 0,
-            viewWidth / 2, viewHeight / 2, viewWidth
+            viewWidth / 2, viewHeight / 2, Math.max(viewWidth, viewHeight)
         );
         backgroundGradient.addColorStop(0, '#0A0A20');
         backgroundGradient.addColorStop(1, '#050510');
@@ -2092,10 +2112,19 @@ function starLevelBrightness(level) {
 }
 
 // Draw radar mini-map
-function drawRadar() {
-    const radarSize = Math.round(Math.max(70, Math.min(120, viewWidth * 0.2))); // Smaller on phones
-    const radarX = viewWidth - radarSize - 15;
-    const radarY = viewHeight - radarSize - 15;
+// Single-player touch controls overlay the canvas corners (multiplayer keeps them in bars)
+function touchControlsOverCanvas() {
+    return isTouchDevice && !simultaneousRound() && !document.body.classList.contains('input-gamepad');
+}
+// Radar and status line positions for this view (js/viewport.js playHudLayout)
+function playHud() {
+    return playHudLayout(viewWidth, viewHeight, { touch: touchControlsOverCanvas() });
+}
+
+function drawRadar(hudLayout = playHud()) {
+    const radarSize = hudLayout.radar.size; // smaller on phones
+    const radarX = hudLayout.radar.x;
+    const radarY = hudLayout.radar.y;
     const radarCenterX = radarX + radarSize / 2;
     const radarCenterY = radarY + radarSize / 2;
     const radarRadius = radarSize / 2 - 5;
@@ -2458,6 +2487,10 @@ document.addEventListener('DOMContentLoaded', () => {
         onBeforeReload: () => saveAllUpgrades(),
     });
     pwaUi = createPwaUi(pwa, { getState: () => currentGameState, notify: showToast });
+    // Settings draws in the menu column (withMenuColumn): its Full screen row overlay is placed
+    // in column coordinates, so move it to the canvas's
+    const placeSettingsButton = pwaUi.placeSettingsButton;
+    pwaUi.placeSettingsButton = (x, y, w, h) => placeSettingsButton(x + menuFrame.x, y + menuFrame.y, w, h);
 
     // Read-only snapshot used by the automated browser tests
     window.__spaceAdventure = {
@@ -2521,8 +2554,9 @@ document.addEventListener('DOMContentLoaded', () => {
         get world() { return { width: WORLD_WIDTH, height: WORLD_HEIGHT }; },
         get view() {
             return {
-                width: viewWidth, height: viewHeight, scale: renderScale,
-                backingWidth: backingSize, backingHeight: backingSize,
+                width: viewWidth, height: viewHeight, scale: renderScale, scaleY: renderScaleY,
+                backingWidth, backingHeight, reserve: { ...canvasReserve },
+                worldAsteroidScale, hudLayout: playHud(), menuColumn: { ...menuFrame },
                 dpr: window.devicePixelRatio || 1,
                 scaleCap: renderScaleCap, downgrades: renderPerf.downgrades, avgFrameMs: renderPerf.lastAvgMs,
             };
@@ -2869,6 +2903,9 @@ function syncDomToState() {
     document.body.classList.toggle('state-playing', currentGameState === GameState.PLAYING);
     document.body.classList.toggle('state-lobby', currentGameState === GameState.LOBBY);
     document.body.classList.toggle('state-paused', currentGameState === GameState.PAUSED);
+    // The DOM HUD line only in play (menus draw their own titles where it would sit)
+    document.body.classList.toggle('hud-line', [GameState.PLAYING, GameState.PAUSED, GameState.ROUND_END,
+        GameState.TURN_CHANGE].includes(currentGameState));
     if (pwaUi) pwaUi.sync();
     const form = document.getElementById('user-prompt');
     if (form) {
@@ -2914,40 +2951,47 @@ function pauseGame(by = 'system') {
 // --- Main Update and Render Loop ---
 
 function resizeCanvas() {
-    // Logical (CSS) size: a square of 90% of the smaller window side. Backing store: that
-    // times devicePixelRatio (capped), so lines and text are sharp on retina tablets.
+    // Logical (CSS) size: the whole safe-area viewport (inside the notch / display cutout),
+    // minus the bars multiplayer keeps for touch controls and HUD panels (canvasReserve, set by
+    // syncMpDom). Any aspect ratio. Backing store: each axis times devicePixelRatio (capped),
+    // so lines and text are sharp on retina screens.
     const dpr = window.devicePixelRatio || 1;
-    const safe = safeAreaInsets(); // notch / display cutout: keep the canvas inside the safe area
+    const safe = safeAreaInsets();
     lastSafeInsets = safe;
     const size = computeCanvasSize(window.innerWidth - safe.left - safe.right,
-        window.innerHeight - safe.top - safe.bottom, dpr, renderScaleCap);
-    if (canvas.width > 0 && size.css < 50) return; // Ignore transient tiny/zero sizes (would zero the world)
-    const cssChanged = size.css !== viewWidth || size.css !== viewHeight || !canvasSized;
-    const backingChanged = canvas.width !== size.backing || canvas.height !== size.backing;
+        window.innerHeight - safe.top - safe.bottom, dpr, renderScaleCap, canvasReserve);
+    // Ignore transient tiny/zero sizes (would zero the world)
+    if (canvas.width > 0 && (size.width < 50 || size.height < 50)) return;
+    const cssChanged = size.width !== viewWidth || size.height !== viewHeight || !canvasSized;
+    const backingChanged = canvas.width !== size.backingWidth || canvas.height !== size.backingHeight;
     const landscape = window.innerWidth > window.innerHeight;
     const orientationChanged = canvasSized && landscape !== lastLandscape;
     lastLandscape = landscape;
 
     // A rotation re-lays out the page and can leave a held stick off-screen; make the player
-    // put the finger down again. Toolbar collapses and DPR-only changes (zoom, other monitor,
-    // adaptive fallback) keep the stick.
-    if ((cssChanged || orientationChanged) && inputHandler) inputHandler.releaseJoystick();
+    // put the finger down again. Toolbar collapses (a small change of one side), DPR-only
+    // changes (zoom, other monitor, adaptive fallback) and bar changes keep the stick.
+    const bigChange = canvasSized && (Math.abs(size.width - viewWidth) > viewWidth * 0.25
+        || Math.abs(size.height - viewHeight) > viewHeight * 0.25);
+    if ((orientationChanged || bigChange) && inputHandler) inputHandler.releaseJoystick();
 
     // iOS fires many resize events (e.g. toolbar collapse); resizing clears the canvas, so skip no-ops
-    if (!cssChanged && !backingChanged && renderScale === size.scale) return;
+    if (!cssChanged && !backingChanged && renderScale === size.scaleX && renderScaleY === size.scaleY) return;
     canvasSized = true;
 
-    canvas.style.width = `${size.css}px`;
-    canvas.style.height = `${size.css}px`;
+    canvas.style.width = `${size.width}px`;
+    canvas.style.height = `${size.height}px`;
     if (backingChanged) {
-        canvas.width = size.backing;
-        canvas.height = size.backing;
+        canvas.width = size.backingWidth;
+        canvas.height = size.backingHeight;
     }
-    backingSize = size.backing;
-    viewWidth = size.css;
-    viewHeight = size.css;
-    renderScale = size.scale;
-    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    backingWidth = size.backingWidth;
+    backingHeight = size.backingHeight;
+    viewWidth = size.width;
+    viewHeight = size.height;
+    renderScale = size.scaleX;
+    renderScaleY = size.scaleY;
+    ctx.setTransform(renderScale, 0, 0, renderScaleY, 0, 0);
     backgroundGradient = null; // Rebuilt for the new view size on the next frame
     watchDevicePixelRatio();
 
@@ -2955,8 +2999,10 @@ function resizeCanvas() {
         const oldWorldWidth = WORLD_WIDTH;
         const oldWorldHeight = WORLD_HEIGHT;
         // World dimensions come from the logical size only (identical at any DPR)
-        WORLD_WIDTH = viewWidth * WORLD_SCREENS_X;
-        WORLD_HEIGHT = viewHeight * WORLD_SCREENS_Y;
+        const world = computeWorldSize(viewWidth, viewHeight);
+        WORLD_WIDTH = world.width;
+        WORLD_HEIGHT = world.height;
+        worldAsteroidScale = world.asteroidScale;
         Entity.worldWidth = WORLD_WIDTH;
         Entity.worldHeight = WORLD_HEIGHT;
 
@@ -4033,10 +4079,159 @@ function drawShields() {
     }
 }
 
+// Main menu: title, the two description lines, the rows (44 px tall or more: one column, or
+// two side by side on a short screen such as a phone in landscape) and the player footer
+function drawMainMenu() {
+    const compact = isCompact(viewHeight);
+    const titleY = compact ? Math.max(40, Math.round(viewHeight * 0.1)) : viewHeight / 6;
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+    setFittedFont(compact ? '36px Arial' : '48px Arial', 'SPACE ADVENTURE', viewWidth - 24);
+    ctx.fillText("SPACE ADVENTURE", viewWidth / 2, titleY);
+
+    // Game description: a live icon before each line; shape words carry the meaning
+    const d1 = compact ? 24 : 35;
+    const d2 = compact ? 42 : 58;
+    drawIconLine('green', `Collect smooth ${palette.collectWord} crystals for points!`, viewWidth / 2, titleY + d1, palette.collect);
+    drawIconLine('red', `Avoid spiky ${palette.hazardWord} rocks - shoot them!`, viewWidth / 2, titleY + d2, palette.hazard);
+    ctx.textAlign = 'center';
+
+    currentMenuOptions = visibleRows(mainMenuItems);
+    const soundHint = usingGamepad() && audioLocked();
+    const top = titleY + d2 + (compact ? 12 : 22) + (soundHint ? 20 : 0);
+    const gridW = Math.min(viewWidth - 16, 560);
+    const gridX = (viewWidth - gridW) / 2;
+    const grid = menuGrid({ count: currentMenuOptions.length, top, bottom: viewHeight - 72, width: gridW, maxPitch: 48 });
+
+    // Adjust index bounds safely before rendering
+    if (menuSelectionIndex >= currentMenuOptions.length) {
+        menuSelectionIndex = 0;
+    }
+
+    currentMenuOptions.forEach((row, index) => {
+        const cell = grid.cells[index];
+        const isSelected = index === menuSelectionIndex;
+        const x = gridX + cell.x;
+        const cx = x + cell.w / 2;
+        const baseline = cell.y + cell.h / 2 + 7;
+        const fontPx = grid.pitch < 30 ? 16 : 20;
+        ctx.fillStyle = isSelected ? 'yellow' : 'white';
+        if (isSelected && grid.cols > 1) {
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.12)';
+            ctx.fillRect(x + 4, cell.y + 2, cell.w - 8, cell.h - 4);
+            ctx.fillStyle = 'yellow';
+        }
+        if (rowHasValue(row)) {
+            // "◂  Difficulty: Medium  ▸": the arrows sit on their tap targets (valueRow.js)
+            const text = `${row.label()}: ${rowValue(row)}`;
+            setFittedFont(`${fontPx}px Arial`, text, valueRowArrows(x, cell.w).inner.w - 12);
+            drawValueRow(x, cell.y, cell.w, cell.h, baseline, null, text);
+        } else {
+            setFittedFont(`${fontPx}px Arial`, row.label(), cell.w - 16);
+            ctx.fillText(row.label(), cx, baseline);
+        }
+        // Tapping an item highlights and selects it (value rows: ◂ steps back, the rest forward)
+        addRowTapRegion(x, cell.y, cell.w, cell.h, row, index, (i) => { menuSelectionIndex = i; });
+    });
+
+    // Show current user and credits at bottom
+    ctx.font = '16px Arial';
+    ctx.fillStyle = '#888888';
+    ctx.fillText(`Player: ${currentUser || 'None'}`, viewWidth / 2, viewHeight - 50, viewWidth - 16);
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(`Upgrade Credits: ${ShipUpgrades.currency}`, viewWidth / 2, viewHeight - 25, viewWidth - 16);
+    if (usingGamepad()) {
+        setFittedFont('13px Arial', `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back   \u25C2 \u25B8 Change`, viewWidth - 16);
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText(`${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back   \u25C2 \u25B8 Change`, viewWidth / 2, viewHeight - 6);
+        if (soundHint) {
+            ctx.font = '15px Arial';
+            ctx.fillStyle = '#FFD700';
+            ctx.fillText('Tap or press a key to enable sound', viewWidth / 2, top - 10, viewWidth - 16);
+        }
+    }
+    if (resetConfirm) drawResetConfirm();
+}
+
+// --- Menu content column (js/menuLayout.js menuColumn) ---
+// The canvas fills the screen at any aspect ratio. Menu screens were laid out for a roughly
+// square area, so they are drawn in a centred column the full height of the view (less the DOM
+// overlays that cover it: the app bar, an update notice). While a screen draws in the column,
+// viewWidth / viewHeight are the column's size and the context is translated to it; tap
+// regions registered meanwhile are moved back to view coordinates afterwards (their handlers
+// still receive column coordinates). Full-screen "tap anywhere" regions are added outside it.
+let menuFrame = { x: 0, y: 0, w: 0, h: 0 }; // the column while a menu draws (test hook)
+let appBarWidthCss = -1;
+function menuOverlayInsetsNow() {
+    if (!canvas || currentGameState === GameState.PLAYING) return { top: 0, bottom: 0 };
+    const rect = (el) => {
+        if (!el || el.hidden) return null;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 ? r : null;
+    };
+    const c = canvas.getBoundingClientRect();
+    if (!(c.width > 0)) return { top: 0, bottom: 0 };
+    const bar = rect(document.getElementById('app-bar'));
+    // The HUD line (shown while paused) keeps clear of the app bar
+    const barW = bar ? Math.ceil(bar.width) + 8 : 0;
+    if (barW !== appBarWidthCss) {
+        appBarWidthCss = barW;
+        document.body.style.setProperty('--app-bar-w', `${barW}px`);
+    }
+    const col = menuColumn(viewWidth, viewHeight);
+    return overlayInsets(c, col, [bar, rect(document.getElementById('app-notices'))], viewWidth / c.width);
+}
+
+function withMenuColumn(fn) {
+    const col = menuColumn(viewWidth, viewHeight, menuOverlayInsetsNow());
+    if (col.x === 0 && col.y === 0 && col.w === viewWidth && col.h === viewHeight) {
+        menuFrame = { ...col };
+        fn();
+        return;
+    }
+    const fullW = viewWidth;
+    const fullH = viewHeight;
+    for (const r of tapRegions) r.framed = true; // already in view coordinates
+    ctx.save();
+    ctx.translate(col.x, col.y);
+    viewWidth = col.w;
+    viewHeight = col.h;
+    menuFrame = { ...col };
+    try {
+        fn();
+    } finally {
+        viewWidth = fullW;
+        viewHeight = fullH;
+        ctx.restore();
+        // (a screen may have replaced the array, e.g. the reset confirmation)
+        for (const r of tapRegions) {
+            if (r.framed) continue;
+            r.framed = true;
+            r.x += col.x;
+            r.y += col.y;
+            const onTap = r.onTap;
+            r.onTap = (tap) => onTap(tap ? { ...tap, x: tap.x - col.x, y: tap.y - col.y } : tap);
+        }
+    }
+}
+
+// Fit a font to a width: `font` like 'bold 48px Arial' is shrunk (px only) until `text` is at
+// most maxWidth wide. Sets ctx.font and returns the size used.
+function setFittedFont(font, text, maxWidth, minPx = 10) {
+    ctx.font = font;
+    const m = /(\d+(?:\.\d+)?)px/.exec(font);
+    if (!m) return 0;
+    const px = parseFloat(m[1]);
+    const fitted = fitFontPx(px, ctx.measureText(String(text)).width, maxWidth, minPx);
+    if (fitted !== px) ctx.font = font.replace(m[0], `${fitted}px`);
+    return fitted;
+}
+
 function renderGame() {
     // Logical-pixel transform every frame (also recovers from any unbalanced save/restore);
     // the camera translate composes on top of it.
-    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    ctx.setTransform(renderScale, 0, 0, renderScaleY, 0, 0);
     // The starfield's gradient covers the whole view while playing/paused
     if (currentGameState !== GameState.PLAYING && currentGameState !== GameState.PAUSED &&
         currentGameState !== GameState.ROUND_END) {
@@ -4048,71 +4243,14 @@ function renderGame() {
     // console.log(`[renderGame] Current state: ${currentGameState}`); // Optional: Log state every frame
     switch (currentGameState) {
         case GameState.PROMPT_USER:
-            drawUserPrompt();
+            withMenuColumn(drawUserPrompt);
             break;
         case GameState.MENU:
-            ctx.fillStyle = 'white';
-            ctx.textAlign = 'center';
-            ctx.font = '48px Arial';
-            ctx.fillText("SPACE ADVENTURE", viewWidth / 2, viewHeight / 6);
-
-            // Game description: a live icon before each line; shape words carry the meaning
-            drawIconLine('green', `Collect smooth ${palette.collectWord} crystals for points!`, viewWidth / 2, viewHeight / 6 + 35, palette.collect);
-            drawIconLine('red', `Avoid spiky ${palette.hazardWord} rocks - shoot them!`, viewWidth / 2, viewHeight / 6 + 58, palette.hazard);
-            ctx.textAlign = 'center';
-
-            ctx.font = '20px Arial';
-            currentMenuOptions = visibleRows(mainMenuItems);
-
-            // Fit all items between the description and the player/credits footer
-            const menuStartY = viewHeight * 0.38;
-            const menuLineHeight = Math.min(30, (viewHeight - 75 - menuStartY) / currentMenuOptions.length);
-
-            // Adjust index bounds safely before rendering
-            if (menuSelectionIndex >= currentMenuOptions.length) {
-                menuSelectionIndex = 0;
-            }
-
-            currentMenuOptions.forEach((row, index) => {
-                const isSelected = index === menuSelectionIndex;
-                const itemY = menuStartY + index * menuLineHeight;
-                ctx.fillStyle = isSelected ? 'yellow' : 'white';
-                // Value rows are wider so "Difficulty: Medium" fits between ◂ and ▸ on a phone
-                const rowX = viewWidth * (rowHasValue(row) ? 0.1 : 0.2);
-                const rowW = viewWidth - 2 * rowX;
-                const rowTop = itemY - menuLineHeight * 0.7;
-                if (rowHasValue(row)) {
-                    // "◂  Difficulty: Medium  ▸": the arrows sit on their tap targets
-                    drawValueRow(rowX, rowTop, rowW, menuLineHeight, itemY, null, `${row.label()}: ${rowValue(row)}`);
-                } else {
-                    ctx.fillText(row.label(), viewWidth / 2, itemY);
-                }
-                // Tapping an item highlights and selects it (value rows: ◂ steps back, the rest forward)
-                addRowTapRegion(rowX, rowTop, rowW, menuLineHeight, row, index, (i) => { menuSelectionIndex = i; });
-            });
-
-            // Show current user and credits at bottom
-            ctx.font = '16px Arial';
-            ctx.fillStyle = '#888888';
-            ctx.fillText(`Player: ${currentUser || 'None'}`, viewWidth / 2, viewHeight - 50);
-            ctx.fillStyle = '#FFD700';
-            ctx.font = 'bold 18px Arial';
-            ctx.fillText(`Upgrade Credits: ${ShipUpgrades.currency}`, viewWidth / 2, viewHeight - 25);
-            if (usingGamepad()) {
-                ctx.font = '13px Arial';
-                ctx.fillStyle = '#AAAAAA';
-                ctx.fillText(`${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back   \u25C2 \u25B8 Change`, viewWidth / 2, viewHeight - 6);
-                if (audioLocked()) {
-                    ctx.font = '15px Arial';
-                    ctx.fillStyle = '#FFD700';
-                    ctx.fillText('Tap or press a key to enable sound', viewWidth / 2, menuStartY - 32);
-                }
-            }
-            if (resetConfirm) drawResetConfirm();
+            withMenuColumn(drawMainMenu);
             break;
 
         case GameState.TUTORIAL_ASK:
-            drawTutorialAsk();
+            withMenuColumn(drawTutorialAsk);
             break;
 
         case GameState.PLAYING:
@@ -4152,8 +4290,9 @@ function renderGame() {
             // Draw level up notification (screen-space, not world-space)
             drawLevelUpNotification();
 
-            // Draw HUD elements (screen-space)
-            drawRadar();
+            // Draw HUD elements (screen-space); clear of the touch controls on touch screens
+            const hudLayout = playHud();
+            drawRadar(hudLayout);
             // Per-player HUD: side panels (DOM) or the compact canvas HUD with several ships
             if (simultaneous()) drawTeamHud();
             else drawActivePowerUps(hudPlayer());
@@ -4161,15 +4300,15 @@ function renderGame() {
             // Draw remaining asteroids count
             ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
             ctx.font = '14px Arial';
-            ctx.textAlign = 'left';
-            ctx.fillText(`Asteroids: ${asteroids.length}`, 10, viewHeight - 10);
+            ctx.textAlign = hudLayout.asteroids.align;
+            ctx.fillText(`Asteroids: ${asteroids.length}`, hudLayout.asteroids.x, hudLayout.asteroids.y);
 
             // Draw Dynamic Difficulty Adjustment indicator (not during training)
             if (!tutorial.active && mode.ddaEnabled) {
                 ctx.fillStyle = DynamicDifficulty.getAdjustmentColor();
                 ctx.font = '12px Arial';
-                ctx.textAlign = 'left';
-                ctx.fillText(`Difficulty: ${DynamicDifficulty.getAdjustmentText()}`, 130, viewHeight - 10);
+                ctx.textAlign = hudLayout.dda.align;
+                ctx.fillText(`Difficulty: ${DynamicDifficulty.getAdjustmentText()}`, hudLayout.dda.x, hudLayout.dda.y);
             }
 
             // Draw combo indicator (player 1's in single-player; per-player HUD otherwise)
@@ -4183,7 +4322,7 @@ function renderGame() {
             // Draw boss warning if boss is entering (limited time)
             if (currentBoss && currentBoss.isAlive && currentBoss.shouldShowWarning()) {
                 ctx.fillStyle = '#FF0000';
-                ctx.font = 'bold 36px Arial';
+                setFittedFont('bold 36px Arial', 'WARNING: BOSS APPROACHING!', viewWidth - 24);
                 ctx.textAlign = 'center';
                 ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 200) * 0.5;
                 ctx.fillText('WARNING: BOSS APPROACHING!', viewWidth / 2, viewHeight / 2);
@@ -4196,24 +4335,24 @@ function renderGame() {
             break;
 
         case GameState.TA_SETUP:
-            drawTimeAttackSetup();
+            withMenuColumn(drawTimeAttackSetup);
             break;
 
         case GameState.MP_MODE_SELECT:
-            drawModeSelect();
+            withMenuColumn(drawModeSelect);
             break;
 
         case GameState.LOBBY:
-            if (lobby && lobby.kind === 'seats') drawSeatLobby();
-            else if (lobby) drawCountLobby();
+            if (lobby && lobby.kind === 'seats') withMenuColumn(drawSeatLobby);
+            else if (lobby) withMenuColumn(drawCountLobby);
             break;
 
         case GameState.TURN_CHANGE:
-            drawTurnChange();
+            withMenuColumn(drawTurnChange);
             break;
 
         case GameState.RESULTS:
-            drawResults();
+            withMenuColumn(drawResults);
             break;
 
         case GameState.PAUSED:
@@ -4234,41 +4373,45 @@ function renderGame() {
             ctx.restore();
             ctx.globalAlpha = 1.0;
 
-            drawPauseMenu();
+            withMenuColumn(drawPauseMenu);
             break;
 
         case GameState.HIGH_SCORES:
-            drawHighScores(allHighScores, allAchievements);
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
+            withMenuColumn(() => drawHighScores(allHighScores, allAchievements));
             break;
 
         case GameState.ACHIEVEMENTS:
-            drawAchievements();
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
+            withMenuColumn(drawAchievements);
             break;
 
         case GameState.UPGRADES:
-            drawUpgradesMenu();
+            withMenuColumn(drawUpgradesMenu);
             break;
 
         case GameState.SETTINGS:
-            drawSettingsScreen();
+            withMenuColumn(drawSettingsScreen);
             break;
 
         case GameState.HELP:
-            drawHelpScreen();
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
-            // Registered after the full-screen region: taps are checked last-to-first
-            if (helpPage === 0) drawHelpReplayButton();
-            drawHelpTabs();
+            withMenuColumn(() => {
+                drawHelpScreen();
+                // Registered after the full-screen region: taps are checked last-to-first
+                if (helpPage === 0) drawHelpReplayButton();
+                drawHelpTabs();
+            });
             break;
 
         case GameState.GAME_OVER:
-            drawCenterText("GAME OVER", `Final Score: ${finalScore}`);
-            ctx.font = '20px Arial';
-            ctx.fillText(inputHint("Press Space or Enter for Menu", "Tap for Menu", () => `Press ${padGlyph(GP.A)} for Menu`),
-                viewWidth / 2, viewHeight / 2 + 60);
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
+            withMenuColumn(() => {
+                drawCenterText("GAME OVER", `Final Score: ${finalScore}`);
+                setFittedFont('20px Arial', inputHint("Press Space or Enter for Menu", "Tap for Menu", () => `Press ${padGlyph(GP.A)} for Menu`), viewWidth - 20);
+                ctx.fillText(inputHint("Press Space or Enter for Menu", "Tap for Menu", () => `Press ${padGlyph(GP.A)} for Menu`),
+                    viewWidth / 2, viewHeight / 2 + 60);
+            });
             break;
         default:
              console.error(`[renderGame] Encountered unknown game state: ${currentGameState}`);
@@ -4317,7 +4460,7 @@ function drawButtonBox(x, y, w, h, label, selected, font = 'bold 20px Arial') {
 function drawTutorialAsk() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '40px Arial';
+    setFittedFont('40px Arial', 'SPACE ADVENTURE', viewWidth - 24);
     ctx.fillText('SPACE ADVENTURE', viewWidth / 2, viewHeight / 6);
 
     const w = Math.min(460, viewWidth - 40);
@@ -4364,11 +4507,11 @@ function drawTutorialOverlay() {
     const text = tutorial.text;
     if (!text) return;
     const margin = 10;
-    const x = margin;
-    const w = viewWidth - margin * 2;
+    const w = Math.min(viewWidth - margin * 2, 760); // centred, readable on a wide screen
+    const x = (viewWidth - w) / 2;
     const top = 48;
     const skipW = tutorial.noProgress ? 110 : 90;
-    const skipH = tutorial.noProgress ? 46 : 38;
+    const skipH = tutorial.noProgress ? 46 : MIN_TAP;
     const bodyFont = viewWidth < 500 ? '16px Arial' : '19px Arial';
     ctx.save();
     ctx.font = bodyFont;
@@ -4464,9 +4607,9 @@ function drawTutorialTargetArrow(bannerBottom) {
 // Help screen: "▶ Replay tutorial" (also T or controller Y)
 function drawHelpReplayButton() {
     const w = Math.min(300, viewWidth * 0.6);
-    const h = 40;
+    const h = MIN_TAP;
     const x = (viewWidth - w) / 2;
-    const y = viewHeight - 105;
+    const y = viewHeight - 109;
     const key = inputHint(' (T)', '', () => ` (${padGlyph(GP.Y)})`);
     drawButtonBox(x, y, w, h, `\u25B6 Replay tutorial${key}`, false, 'bold 17px Arial');
     addTapRegion(x, y, w, h, () => replayTutorial());
@@ -4475,10 +4618,10 @@ function drawHelpReplayButton() {
 function drawCenterText(line1, line2 = null) {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '48px Arial';
+    setFittedFont('48px Arial', line1, viewWidth - 24);
     ctx.fillText(line1, viewWidth / 2, viewHeight / 2 - (line2 ? 20 : 0));
     if (line2) {
-        ctx.font = '24px Arial';
+        setFittedFont('24px Arial', line2, viewWidth - 24);
         ctx.fillText(line2, viewWidth / 2, viewHeight / 2 + 20);
     }
 }
@@ -4572,7 +4715,8 @@ function createLevelAsteroids(isBossLevel = false) {
 
     // Calculate number of asteroids for this level (fewer during boss battles)
     // Single-player: BASE_ASTEROIDS_PER_LEVEL + (level - 1) * ASTEROIDS_PER_LEVEL_INCREASE
-    let numAsteroids = currentScaling().asteroidCount;
+    // More rocks where the world is more than 1.5 views (tall phone, ultra-wide; worldSize.js)
+    let numAsteroids = scaledAsteroidCount(currentScaling().asteroidCount, worldAsteroidScale);
     if (isBossLevel) {
         numAsteroids = Math.floor(numAsteroids * 0.4); // 40% of normal asteroids during boss fight
     }
@@ -5410,7 +5554,7 @@ function drawAchievements() {
 
 // One centred line of text with a small asteroid icon in front of it (menu description)
 function drawIconLine(type, text, centerX, y, color, font = '14px Arial', iconR = 7) {
-    ctx.font = font;
+    setFittedFont(font, text, viewWidth - 24 - iconR * 2 - 8);
     const w = ctx.measureText(text).width;
     const left = centerX - (w + iconR * 2 + 8) / 2;
     Asteroid.drawIcon?.(ctx, type, left + iconR, y - iconR * 0.7, iconR, palette);
@@ -5506,7 +5650,7 @@ function drawUpgradesMenu() {
     // Rows (upgrades, then Back) fit above the two hint lines; Back stays on screen on a phone
     const layout = stackRows({
         count: upgradeKeys.length + 1, top: titleY + (compact ? 48 : 70), bottom: viewHeight - 64,
-        maxStep: 55, lastMin: MIN_EXIT_TAP + 5, lastMax: 45,
+        maxStep: 55, lastMin: MIN_EXIT_TAP + 5, lastMax: MIN_EXIT_TAP + 5,
     });
     const listLineHeight = layout.step;
     const tall = listLineHeight >= 45; // room for the description line
@@ -5698,6 +5842,7 @@ function drawPauseMenuFacing() {
     });
 }
 
+const PAUSE_ROW = 48; // pause menu row pitch: at least MIN_TAP
 function drawPauseMenu() {
     if (isMultiplayer() && facingLayout()) {
         drawPauseMenuFacing();
@@ -5710,7 +5855,7 @@ function drawPauseMenu() {
     const compact = isCompact(viewHeight);
     const header = (compact ? 40 : 60) + (byName ? 16 : 0);
     const footer = compact && isTouchDevice && !usingGamepad() ? 8 : 34;
-    const natural = header + options.length * 40 + footer;
+    const natural = header + options.length * PAUSE_ROW + footer;
     const boxH = Math.min(viewHeight - 8, Math.max(viewHeight * 0.5, natural + (compact ? 0 : 36)));
     const boxY = (viewHeight - boxH) / 2;
     const boxW = Math.min(viewWidth - 16, Math.max(viewWidth * 0.5, 300));
@@ -5722,6 +5867,7 @@ function drawPauseMenu() {
     ctx.textAlign = 'center';
     ctx.font = compact ? '28px Arial' : '36px Arial';
     const titleY = boxY + (compact ? 30 : Math.min(viewHeight * 0.1, 36 + (boxH - natural) / 2));
+    // (the box is at most 16 px narrower than the column; PAUSED always fits it)
     ctx.fillText("PAUSED", viewWidth / 2, titleY);
     if (byName) {
         ctx.font = '16px Arial';
@@ -5733,7 +5879,7 @@ function drawPauseMenu() {
     ctx.font = compact ? '20px Arial' : '24px Arial';
     const layout = stackRows({
         count: options.length, top: titleY + header - (compact ? 30 : 36), bottom: boxY + boxH - footer,
-        maxStep: 40, lastMin: MIN_EXIT_TAP,
+        maxStep: PAUSE_ROW, lastMin: MIN_EXIT_TAP,
     });
     options.forEach((option, index) => {
         ctx.fillStyle = index === pauseMenuSelectionIndex ? 'yellow' : 'white';
@@ -5811,7 +5957,7 @@ function drawScreenTitle(title, subtitle = null) {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
-    ctx.font = t.titleFont;
+    setFittedFont(t.titleFont, title, viewWidth - 16);
     ctx.fillText(title, viewWidth / 2, t.titleY, viewWidth - 16);
     if (subtitle) {
         ctx.font = t.subtitleFont;
@@ -5913,10 +6059,10 @@ function drawSeatLobby() {
     const gap = 12;
     const cols = 2;
     const optRows = lobbyOptionRows();
-    const optH = 34;
+    const optH = MIN_TAP;
     const optSpace = optRows.length ? optRows.length * (optH + 6) + 4 : 0;
     const w = Math.min(300, (viewWidth - 40 - gap) / cols);
-    const h = Math.min(170, (viewHeight - top - 150 - gap - noteLines.length * 18 - optSpace) / 2);
+    const h = Math.min(170, (viewHeight - top - 158 - gap - noteLines.length * 18 - optSpace) / 2);
     const x0 = (viewWidth - (w * cols + gap)) / 2;
     const snapshot = inputHandler.seats.snapshot().seats;
     const shownSeats = Math.min(4, lobby.max);
@@ -5969,16 +6115,16 @@ function drawSeatLobby() {
     });
     const bw = Math.min(360, viewWidth - 60);
     const bx = (viewWidth - bw) / 2;
-    const by = viewHeight - 88;
+    const by = viewHeight - 44 - MIN_TAP;
     if (m && m.kind === 'turns') {
         // Pass-and-play instead (touch, mouse)
-        drawButtonBox(bx, by, bw, 36, 'Pass one device instead ▸', false, 'bold 16px Arial');
-        addTapRegion(bx, by, bw, 36, () => openLobby(lobbyModeId, { kind: 'count' }));
+        drawButtonBox(bx, by, bw, MIN_TAP, 'Pass one device instead ▸', false, 'bold 16px Arial');
+        addTapRegion(bx, by, bw, MIN_TAP, () => openLobby(lobbyModeId, { kind: 'count' }));
     } else {
         // No Escape key on a tablet: a Back button (asks first when players have joined)
         const backW = Math.min(160, bw);
-        drawButtonBox((viewWidth - backW) / 2, by, backW, 36, '◂ Back', false, 'bold 16px Arial');
-        addTapRegion((viewWidth - backW) / 2, by, backW, 36, () => requestLobbyExit(), 'lobby:back');
+        drawButtonBox((viewWidth - backW) / 2, by, backW, MIN_TAP, '◂ Back', false, 'bold 16px Arial');
+        addTapRegion((viewWidth - backW) / 2, by, backW, MIN_TAP, () => requestLobbyExit(), 'lobby:back');
     }
     if (touchLobby) {
         drawHintLine('Tap your pad: join / ready   Hold it: leave   Keys and controllers can join too', viewHeight - 30);
@@ -7280,7 +7426,7 @@ function timeAttackGhostLines() {
     const best = taSetup.best;
     if (best) {
         lines.push({ text: `Ghost: ${best.owner} · ${best.record.score}`, colour: ownerColour(best.owner, palette.seats) });
-        if (viewSizeDiffers(best.record.viewSize, viewWidth)) {
+        if (viewSizeDiffers(best.record.viewSize, viewSizeMetric())) {
             lines.push({ text: 'Recorded on a different screen size: its path may not line up', colour: '#FFB347' });
         }
     } else {
@@ -7316,13 +7462,13 @@ function setupTimeAttackRun() {
         ghost = {
             player: new GhostPlayer(decoded, { worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT }),
             owner: best.owner, score: best.record.score, viewSize: best.record.viewSize,
-            sizeDiffers: viewSizeDiffers(best.record.viewSize, viewWidth),
+            sizeDiffers: viewSizeDiffers(best.record.viewSize, viewSizeMetric()),
             colour: ownerColour(best.owner, palette.seats),
         };
     }
     timeAttackRun = {
         course, difficulty, ghost, sample: null,
-        recorder: new GhostRecorder({ worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT, viewSize: viewWidth }),
+        recorder: new GhostRecorder({ worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT, viewSize: viewSizeMetric() }),
         previousBest: own ? own.score : null,
         noticeTimer: ghost && ghost.sizeDiffers ? TA_NOTICE_SECONDS : 0,
         layout: [], saved: false, newBest: false, summary: null,
@@ -7415,6 +7561,12 @@ function drawTimeAttackGhost() {
 }
 
 // Screen-space HUD: time left, pace against the ghost, and the screen-size notice
+// One number for the screen size a ghost was recorded on: the side of a square of the same
+// area (the square canvas's side, as recorded before the view could be any shape)
+function viewSizeMetric() {
+    return Math.round(Math.sqrt(viewWidth * viewHeight));
+}
+
 function drawTimeAttackHud() {
     const run = timeAttackRun;
     if (!run || !isTimeAttack() || !round) return;
@@ -7595,13 +7747,13 @@ function drawHelpScreen() {
 function drawUserPrompt() {
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-    ctx.font = '40px Arial';
+    setFittedFont('40px Arial', 'SPACE ADVENTURE', viewWidth - 24);
     ctx.fillText("SPACE ADVENTURE", viewWidth / 2, viewHeight / 6);
 
     ctx.font = '18px Arial';
     ctx.fillStyle = '#AAAAAA';
     ctx.fillText(isTouchDevice ? "Tap the box, type a name, then tap OK" : "Type a name, then press Enter",
-        viewWidth / 2, viewHeight * 0.7);
+        viewWidth / 2, viewHeight * 0.7, viewWidth - 16);
     if (usingGamepad()) {
         // A controller can't type
         ctx.fillStyle = '#FFD700';
@@ -7934,8 +8086,8 @@ function setHelpPage(page) {
 }
 function drawHelpTabs() {
     const w = 150;
-    const h = 34;
-    const y = viewHeight * 0.12 - 30;
+    const h = MIN_TAP;
+    const y = Math.max(2, viewHeight * 0.12 - 36);
     const toMp = helpPage === 0;
     const x = toMp ? viewWidth - w - 8 : 8;
     drawButtonBox(x, y, w, h, toMp ? 'Multiplayer ▸' : '◂ Game help', false, 'bold 16px Arial');

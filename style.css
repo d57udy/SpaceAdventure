@@ -1,5 +1,6 @@
 /* Safe areas (notch, rounded corners, Android display cutouts). resizeCanvas() in
-   js/main.js reads these with getComputedStyle and sizes the canvas inside them. */
+   js/main.js reads these with getComputedStyle and sizes the canvas to fill the space inside
+   them (any aspect ratio; multiplayer on a touch tablet keeps bars free for its controls). */
 :root {
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-right: env(safe-area-inset-right, 0px);
@@ -40,9 +41,14 @@ canvas,
 
 .game-container {
     position: relative; /* Needed for absolute positioning of UI overlay */
-    border: 1px solid #444; /* Optional border for the game area */
-    /* Ensure touch controls are contained */
+    /* No border: the canvas fills the safe viewport exactly (a border would overflow it) */
     overflow: hidden;
+}
+
+/* Multiplayer with bars beside (or above and below) the canvas: outline the play area.
+   An outline takes no layout space. */
+body.mp-bars .game-container {
+    outline: 1px solid #444;
 }
 
 canvas {
@@ -55,13 +61,28 @@ canvas {
     top: 10px;
     left: 10px;
     right: 10px;
-    display: flex;
+    display: none; /* only in play: body.hud-line (menus draw their own titles there) */
     justify-content: space-between;
     font-size: 1.5em;
     pointer-events: none; /* Allow clicks to pass through to canvas if needed */
     text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
     /* Make sure items don't shrink if space is tight */
     flex-wrap: nowrap;
+}
+
+body.hud-line .ui-overlay {
+    display: flex;
+}
+
+/* Paused: the app bar (top right) is back; keep the HUD line clear of it */
+body.state-paused .ui-overlay {
+    right: calc(10px + var(--app-bar-w, 0px));
+}
+
+/* Touch controls overlay the canvas: the HUD line leaves the top-right corner to the
+   Full screen, mute and pause buttons (3 x 48 px + gaps) */
+body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay {
+    right: calc(3 * 48px + 2 * 10px + 16px);
 }
 
 #user-display,
@@ -139,8 +160,9 @@ canvas {
 }
 
 /* --- Touch Controls --- */
-/* Fixed to the viewport corners so on tablets they sit in the space beside/below the
-   square play area instead of covering it. Shown only on touch devices while playing. */
+/* Fixed to the viewport corners, over the edges of the full-screen canvas (the radar and the
+   status line move to the bottom centre, js/viewport.js playHudLayout). Shown only on touch
+   devices while playing. */
 .touch-controls {
     display: none;
     position: fixed;
@@ -240,6 +262,7 @@ body.touch-enabled.state-playing .touch-controls {
     .touch-btn.small { width: 42px; height: 42px; }
     /* Keep all five HUD values visible on phones */
     .ui-overlay { font-size: 0.8em; flex-wrap: wrap; row-gap: 0; top: 4px; left: 4px; right: 4px; }
+    body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay { right: calc(3 * 42px + 2 * 10px + 12px); }
     #user-display, #score, #credits, #lives, #level { padding: 2px 4px; }
 }
 
@@ -427,7 +450,8 @@ body.tutorial-buttons.tutorial-step-shoot #touch-fire-btn {
 
 .ios-hint-close {
     flex: none;
-    min-height: 32px;
+    min-height: 44px;
+    min-width: 44px;
     padding: 4px 10px;
 }
 
@@ -480,7 +504,7 @@ body.state-playing .app-notices {
 
 @media (max-width: 480px), (max-height: 480px) {
     .game-fs-btn { width: 42px; height: 42px; }
-    .app-btn { font-size: 12px; padding: 6px 8px; min-height: 30px; }
+    .app-btn { font-size: 12px; padding: 6px 8px; min-height: 44px; } /* 44 px touch target */
 }
 
 /* ===================================================================================
