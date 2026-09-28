@@ -5,6 +5,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openFresh, hook, waitForState, loginWithTouch, tapMenuItem, tapAt, canvasToPage,
+  valueArrowPoint, settingsRowIndex, menuItemCenter, tapRegionCenter, MENU,
 } from './helpers.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
@@ -138,6 +139,74 @@ test.describe('phone-size screen: every menu exit is inside the canvas and tappa
     for (const label of ['Resume', 'Restart', 'Main Menu', 'Skip Tutorial']) {
       await exitRegion(page, byId(`pause:${label}`), `Pause ${label}`);
     }
+    expect(errors).toEqual([]);
+  });
+});
+
+// Bug report (Pixel 7 Pro): "In the settings menu I was not able to press the volume down /
+// left buttons." The ◂ was drawn beside the value at the right end of the row, where a tap
+// stepped forward. Now ◂ and ▸ are 44+ px targets at the row ends (js/valueRow.js).
+test.describe('phone-size screen: ◂ and ▸ on value rows', () => {
+  test.skip(({ hasTouch }) => !hasTouch, 'touch devices');
+
+  async function arrowTap(page, region, side) {
+    const r = typeof region === 'number' ? (await hook(page, 'tapRegions'))[region] : region;
+    const v = await hook(page, 'view');
+    expect(r.arrowW, JSON.stringify(r)).toBeGreaterThanOrEqual(44);
+    expect(r.x).toBeGreaterThanOrEqual(-0.5);
+    expect(r.x + r.w).toBeLessThanOrEqual(v.width + 0.5);
+    await tapAt(page, await valueArrowPoint(page, r, side));
+  }
+
+  test('Settings: ◂ lowers Music volume, ▸ raises it; the same on Sound effects', async ({ page }) => {
+    const errors = await openFresh(page);
+    await loginWithTouch(page, 'PHONE');
+    await tapMenuItem(page, 'Settings');
+    await waitForState(page, 'settings');
+    const mv = await settingsRowIndex(page, 'musicVolume');
+    await arrowTap(page, mv, 'left');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    await arrowTap(page, mv, 'left');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(3);
+    await arrowTap(page, mv, 'right');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    const sv = await settingsRowIndex(page, 'sfxVolume');
+    await arrowTap(page, sv, 'left');
+    await expect.poll(() => hook(page, 'settings.sfxVolume')).toBe(9);
+    await arrowTap(page, sv, 'right');
+    await expect.poll(() => hook(page, 'settings.sfxVolume')).toBe(10);
+    // Colours (two values): ◂ and ▸ both reach the other value and back
+    const col = await settingsRowIndex(page, 'colours');
+    await arrowTap(page, col, 'left');
+    await expect.poll(() => hook(page, 'palette')).toBe('safe');
+    await arrowTap(page, col, 'right');
+    await expect.poll(() => hook(page, 'palette')).toBe('standard');
+    expect(await hook(page, 'state')).toBe('settings');
+    expect(errors).toEqual([]);
+  });
+
+  test('main-menu Difficulty and a lobby option step both ways', async ({ page }) => {
+    const errors = await openFresh(page);
+    await loginWithTouch(page, 'PHONE');
+    const diff = (await hook(page, 'tapRegions'))[MENU.DIFFICULTY];
+    expect(diff.id).toBe('row:difficulty');
+    await arrowTap(page, diff, 'left');
+    await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
+    await arrowTap(page, (await hook(page, 'tapRegions'))[MENU.DIFFICULTY], 'right');
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
+
+    await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
+    await waitForState(page, 'mp_mode_select');
+    const rows = await hook(page, 'mp.modeSelect.rows');
+    await tapAt(page, await tapRegionCenter(page, rows.indexOf('coop')));
+    await waitForState(page, 'lobby');
+    const layout = async () => (await hook(page, 'tapRegions')).find((q) => q.id === 'lobby:layout');
+    expect(await layout()).toBeTruthy();
+    expect(await hook(page, 'mp.layoutSetting')).toBe('auto');
+    await arrowTap(page, await layout(), 'left');
+    await expect.poll(() => hook(page, 'mp.layoutSetting')).toBe('facing');
+    await arrowTap(page, await layout(), 'right');
+    await expect.poll(() => hook(page, 'mp.layoutSetting')).toBe('auto');
     expect(errors).toEqual([]);
   });
 });

@@ -6,6 +6,7 @@ import {
   touchSettingsRows, hasVibrate, vibrations, withFullscreenRow,
   CONTROL_LABELS, PALETTE_LABELS, openFresh, hook, snap, waitForState, loginWithKeyboard, loginWithTouch,
   tapMenuItem, tapAt, tapRegionCenter, tapRegionPoint, settingsRowIndex, drawnTexts, frames,
+  valueArrowPoint, menuItemCenter, openModeLobby, padTap, padStick, PAD, canvasToPage,
 } from './helpers.js';
 
 const stored = (page, key) => page.evaluate((k) => localStorage.getItem(k), key);
@@ -432,5 +433,185 @@ test.describe('settings: music (touch)', () => {
     if (m.running) expect(m.events).toBeGreaterThan(0);
     expect(await hook(page, 'loopErrors')).toBe(0);
     expect(errors).toEqual([]);
+  });
+});
+
+// ◂ / ▸ arrow targets at the ends of every value row (bug: on a phone the ◂ was drawn next to
+// the value, on the right, where a tap stepped forward). Every project: desktop mouse, iPad
+// touch; phone.spec.js repeats the core checks on a 390 px phone.
+test.describe('value rows: ◂ steps down, ▸ steps up', () => {
+  const press = async (page, p, touch) => (touch ? tapAt(page, p) : page.mouse.click(p.x, p.y));
+
+  async function openSettings(page, touch) {
+    await openFresh(page, { recordText: true });
+    if (touch) {
+      await loginWithTouch(page, 'ARROWS');
+      await tapMenuItem(page, 'Settings');
+    } else {
+      await loginWithKeyboard(page, 'ARROWS');
+      const p = await menuItemCenter(page, 'Settings');
+      await page.mouse.click(p.x, p.y);
+    }
+    await waitForState(page, 'settings');
+  }
+
+  test('Music volume and Sound effects: ◂ decreases, ▸ increases', async ({ page }, testInfo) => {
+    const touch = !!testInfo.project.use.hasTouch;
+    await openSettings(page, touch);
+    const mv = await settingsRowIndex(page, 'musicVolume');
+    const r = (await hook(page, 'tapRegions'))[mv];
+    expect(r.arrowW).toBeGreaterThanOrEqual(44);
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['\u25C2', '\u25B8', 'Music volume', '5']));
+
+    await press(page, await valueArrowPoint(page, mv, 'left'), touch);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    expect(await hook(page, 'settingsIndex')).toBe(mv);
+    await press(page, await valueArrowPoint(page, mv, 'left'), touch);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(3);
+    await press(page, await valueArrowPoint(page, mv, 'right'), touch);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    await press(page, await tapRegionPoint(page, mv, 0.5), touch); // the middle steps forward
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(5);
+
+    const sv = await settingsRowIndex(page, 'sfxVolume');
+    await press(page, await valueArrowPoint(page, sv, 'left'), touch);
+    await expect.poll(() => hook(page, 'settings.sfxVolume')).toBe(9);
+    await press(page, await valueArrowPoint(page, sv, 'right'), touch);
+    await expect.poll(() => hook(page, 'settings.sfxVolume')).toBe(10);
+    expect(await hook(page, 'state')).toBe('settings');
+  });
+
+  test('every value row on Settings (and the Multiplayer page) has 44 px arrows; ◂ steps each back', async ({ page }, testInfo) => {
+    const touch = !!testInfo.project.use.hasTouch;
+    await openSettings(page, touch);
+    const check = async () => {
+      const rows = await hook(page, 'settingsRows');
+      const regions = await hook(page, 'tapRegions');
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].value === null) {
+          expect(regions[i].arrowW, rows[i].id).toBeNull();
+          continue;
+        }
+        expect(regions[i].arrowW, rows[i].id).toBeGreaterThanOrEqual(44);
+        const before = rows[i].value;
+        await press(page, await valueArrowPoint(page, i, 'left'), touch);
+        await expect.poll(async () => (await hook(page, 'settingsRows'))[i].value, rows[i].id).not.toBe(before);
+        await press(page, await valueArrowPoint(page, i, 'right'), touch);
+        await expect.poll(async () => (await hook(page, 'settingsRows'))[i].value, rows[i].id).toBe(before);
+      }
+    };
+    await check();
+    // Multiplayer sub-page: same rows, and the Full screen overlay must not cover them
+    await press(page, await tapRegionCenter(page, await settingsRowIndex(page, 'multiplayer')), touch);
+    await expect.poll(() => hook(page, 'settingsPage')).toBe('mp');
+    await frames(page, 2);
+    await check();
+  });
+
+  test('keyboard ← → and A D step Music volume', async ({ page }, testInfo) => {
+    test.skip(!!testInfo.project.use.hasTouch, 'keyboard: desktop project');
+    await openSettings(page, false);
+    await selectSettingsRow(page, 'musicVolume');
+    await page.keyboard.press('ArrowLeft');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(5);
+    await page.keyboard.press('a');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    await page.keyboard.press('d');
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(5);
+  });
+
+  test('mouse: pointer cursor over a row and its arrows, default cursor elsewhere', async ({ page }, testInfo) => {
+    test.skip(!!testInfo.project.use.hasTouch, 'mouse: desktop project');
+    await openSettings(page, false);
+    const mv = await settingsRowIndex(page, 'musicVolume');
+    const cursor = () => page.evaluate(() => document.getElementById('gameCanvas').style.cursor);
+    const p = await valueArrowPoint(page, mv, 'left');
+    await page.mouse.move(p.x, p.y);
+    await expect.poll(cursor).toBe('pointer');
+    const corner = await canvasToPage(page, 2, 2);
+    await page.mouse.move(corner.x, corner.y);
+    await expect.poll(cursor).toBe('');
+  });
+
+  test('controller D-pad and stick left/right step Music volume', async ({ page }, testInfo) => {
+    test.skip(!!testInfo.project.use.hasTouch, 'controller: desktop project');
+    await openFresh(page, { gamepads: [{}] });
+    await loginWithKeyboard(page, 'PADARROWS');
+    const p = await menuItemCenter(page, 'Settings');
+    await page.mouse.click(p.x, p.y);
+    await waitForState(page, 'settings');
+    const mv = await settingsRowIndex(page, 'musicVolume');
+    for (let i = 0; i < 12 && (await hook(page, 'settingsIndex')) !== mv; i++) await padTap(page, PAD.DOWN);
+    expect(await hook(page, 'settingsIndex')).toBe(mv);
+    await padTap(page, PAD.LEFT);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(4);
+    await padTap(page, PAD.RIGHT);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBe(5);
+    await padStick(page, -1, 0);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBeLessThan(5);
+    await padStick(page, 0, 0);
+    await frames(page, 3);
+    const low = await hook(page, 'settings.musicVolume');
+    await padStick(page, 1, 0);
+    await expect.poll(() => hook(page, 'settings.musicVolume')).toBeGreaterThan(low);
+    await padStick(page, 0, 0);
+  });
+
+  test('main-menu Difficulty: ◂ steps back, ▸ forward', async ({ page }, testInfo) => {
+    const touch = !!testInfo.project.use.hasTouch;
+    await openFresh(page, { recordText: true });
+    if (touch) await loginWithTouch(page, 'DIFFARROWS');
+    else await loginWithKeyboard(page, 'DIFFARROWS');
+    await frames(page, 2);
+    expect(await hook(page, 'difficulty')).toBe('medium');
+    const r = (await hook(page, 'tapRegions'))[MENU.DIFFICULTY];
+    expect(r.id).toBe('row:difficulty');
+    expect(r.arrowW).toBeGreaterThanOrEqual(44);
+    await press(page, await valueArrowPoint(page, r, 'left'), touch);
+    await expect.poll(() => hook(page, 'difficulty')).toBe('easy');
+    await press(page, await valueArrowPoint(page, r, 'right'), touch);
+    await expect.poll(() => hook(page, 'difficulty')).toBe('medium');
+    await press(page, await valueArrowPoint(page, r, 'right'), touch);
+    await expect.poll(() => hook(page, 'difficulty')).toBe('hard');
+    expect(await hook(page, 'state')).toBe('menu');
+  });
+
+  test('a lobby option row: ◂ steps back, ▸ forward', async ({ page }, testInfo) => {
+    const touch = !!testInfo.project.use.hasTouch;
+    await openFresh(page);
+    if (touch) {
+      // Touch: the Co-op lobby's Layout row (Auto -> Facing on ◂, back to Auto on ▸)
+      await loginWithTouch(page, 'LOBBYARROWS');
+      await tapAt(page, await menuItemCenter(page, 'Multiplayer'));
+      await waitForState(page, 'mp_mode_select');
+      const rows = await hook(page, 'mp.modeSelect.rows');
+      await tapAt(page, await tapRegionCenter(page, rows.indexOf('coop')));
+      await waitForState(page, 'lobby');
+      const r = (await hook(page, 'tapRegions')).find((q) => q.id === 'lobby:layout');
+      expect(r).toBeTruthy();
+      expect(await hook(page, 'mp.layoutSetting')).toBe('auto');
+      await tapAt(page, await valueArrowPoint(page, r, 'left'));
+      await expect.poll(() => hook(page, 'mp.layoutSetting')).toBe('facing');
+      const again = (await hook(page, 'tapRegions')).find((q) => q.id === 'lobby:layout');
+      await tapAt(page, await valueArrowPoint(page, again, 'right'));
+      await expect.poll(() => hook(page, 'mp.layoutSetting')).toBe('auto');
+    } else {
+      // Desktop: the Saucer lobby's strength row (Normal -> Weak on ◂, Normal, Strong on ▸)
+      await loginWithKeyboard(page, 'LOBBYARROWS');
+      await openModeLobby(page, 'saucer');
+      const region = async () => (await hook(page, 'tapRegions')).find((q) => q.id === 'lobby:option');
+      expect(await region()).toBeTruthy();
+      const strength = () => hook(page, 'saucer.strength');
+      expect(await strength()).toBe('normal');
+      await press(page, await valueArrowPoint(page, await region(), 'left'), false);
+      await expect.poll(strength).toBe('weak');
+      await press(page, await valueArrowPoint(page, await region(), 'right'), false);
+      await expect.poll(strength).toBe('normal');
+      await press(page, await valueArrowPoint(page, await region(), 'right'), false);
+      await expect.poll(strength).toBe('strong');
+    }
+    expect(await hook(page, 'state')).toBe('lobby');
   });
 });

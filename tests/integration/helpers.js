@@ -448,6 +448,21 @@ export async function tapRegionPoint(page, index, fx = 0.5) {
   return canvasToPage(page, r.x + r.w * fx, r.y + r.h / 2);
 }
 
+/**
+ * Page point on the ◂ ('left') or ▸ ('right') arrow target of a value-row tap region, i.e.
+ * where the glyph is drawn (js/valueRow.js). `region` is a tapRegions entry or its index.
+ */
+export async function valueArrowPoint(page, region, side) {
+  let r = region;
+  if (typeof region === 'number') {
+    await expect.poll(() => hook(page, 'tapRegions.length')).toBeGreaterThan(region);
+    r = (await hook(page, 'tapRegions'))[region];
+  }
+  expect(r.arrowW, `value row arrows in ${JSON.stringify(r)}`).toBeGreaterThanOrEqual(44);
+  const x = side === 'left' ? r.x + r.arrowW / 2 : r.x + r.w - r.arrowW / 2;
+  return canvasToPage(page, x, r.y + r.h / 2);
+}
+
 // --- Local multiplayer ---
 
 /** Move the main-menu selection with ArrowDown until it reaches `target`. */

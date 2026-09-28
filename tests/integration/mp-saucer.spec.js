@@ -90,7 +90,7 @@ test.describe('Saucer', () => {
     expect(await hook(page, 'lobby')).toMatchObject({ min: 2, max: 2 });
     await expect.poll(async () => {
       const t = await drawnTexts(page);
-      return t.includes('SHIP') && t.includes('SAUCER') && t.includes('Saucer strength  (O)') && t.includes('◂  Normal  ▸');
+      return t.includes('SHIP') && t.includes('SAUCER') && t.includes('Saucer strength  (O)') && t.includes('Normal') && t.includes('◂') && t.includes('▸');
     }).toBe(true);
     expect(await hook(page, 'lobby.options.rows')).toEqual(['option']);
     // O (anyone) steps the strength too

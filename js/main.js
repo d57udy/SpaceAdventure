@@ -22,6 +22,7 @@ import { tuneName } from './tunes.js';
 import { GP, buttonGlyph, controllerName } from './gamepad.js';
 import { hideTouchForGamepad, rumblePads } from './seats.js';
 import { stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP } from './menuLayout.js';
+import { valueRowArrows, valueRowStep } from './valueRow.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
 import { UpgradeState } from './upgrades.js';
 import { createCamera, leashEntity, clampToBox, boxSpawnGrid } from './camera.js';
@@ -691,17 +692,55 @@ function navigateRows(rows, getIndex, setIndex) {
     }
 }
 
-// One tap region per row. On a value row the left part steps back, the rest (centre and
-// right) steps forward, applied at once so several quick taps in one frame all count.
-function addRowTapRegion(x, y, w, h, row, index, setIndex) {
+// One tap region per row. On a value row the ◂ target at the left end steps back; the ▸
+// target at the right end and the middle step forward (js/valueRow.js, the same numbers
+// drawValueRow draws the arrows with). Applied at once so quick taps in one frame all count.
+function addRowTapRegion(x, y, w, h, row, index, setIndex, id = null) {
+    const valueRow = rowHasValue(row);
     addTapRegion(x, y, w, h, (tap) => {
         setIndex(index);
-        if (rowHasValue(row) && tap) {
-            rowChange(row, tap.x < x + w * 0.35 ? -1 : 1);
+        if (valueRow && tap) {
+            rowChange(row, valueRowStep(tap.x, x, w));
         } else {
             inputHandler.triggerAction('menuSelect');
         }
-    }, row && row.id ? `row:${row.id}` : null); // id: the test hook finds exit rows ('row:back')
+    }, id || (row && row.id ? `row:${row.id}` : null)); // id: the test hook finds exit rows ('row:back')
+    if (valueRow) tapRegions[tapRegions.length - 1].arrowW = valueRowArrows(x, w).arrowW;
+}
+
+// Draw a value row's content: ◂ and ▸ in their tap targets at the row's ends (a faint box
+// marks each target), the label left-aligned and the value right-aligned between them, or
+// (label null) the value centred. Uses the current font and fill colour; y is the baseline.
+function drawValueRow(x, top, w, h, y, label, value, valueColour = null) {
+    const a = valueRowArrows(x, w);
+    const colour = ctx.fillStyle;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.fillRect(a.left.x, top, a.left.w, h);
+    ctx.fillRect(a.right.x, top, a.right.w, h);
+    ctx.fillStyle = colour;
+    ctx.textAlign = 'center';
+    ctx.fillText('\u25C2', a.left.cx, y);
+    ctx.fillText('\u25B8', a.right.cx, y);
+    const pad = 6;
+    const left = a.inner.x + pad;
+    const right = a.inner.x + a.inner.w - pad;
+    const room = Math.max(1, right - left);
+    const text = String(value);
+    if (label === null || label === undefined) {
+        if (valueColour) ctx.fillStyle = valueColour;
+        ctx.fillText(text, (left + right) / 2, y, room);
+    } else {
+        const gap = 10;
+        const valueW = Math.min(ctx.measureText(text).width, room * 0.5);
+        const labelW = Math.max(1, room - valueW - gap);
+        ctx.textAlign = 'left';
+        ctx.fillText(label, left, y, labelW);
+        ctx.textAlign = 'right';
+        if (valueColour) ctx.fillStyle = valueColour;
+        ctx.fillText(text, right, y, Math.max(1, Math.max(valueW, room - ctx.measureText(label).width - gap)));
+    }
+    ctx.fillStyle = colour;
+    ctx.textAlign = 'center';
 }
 
 function cycleDifficulty(dir) {
@@ -2365,6 +2404,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize Managers
     inputHandler = new InputHandler(canvas, { getLogicalSize: () => ({ width: viewWidth, height: viewHeight }) });
+    setupPointerCursor();
     setupTouchSupport();
     setupJoinPads();
     applySettings();
@@ -2541,7 +2581,8 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         get counts() { return { asteroids: asteroids.length, bullets: bullets.length, playerBullets: bullets.filter(b => b.isPlayerBullet).length, ufos: ufos.length, powerUps: powerUps.length }; },
         get tapRegions() {
-            return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h, id: r.id ?? null, rotated: !!r.rotated }));
+            return tapRegions.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h, id: r.id ?? null, rotated: !!r.rotated,
+                arrowW: r.arrowW ?? null })); // arrowW: value rows' ◂ / ▸ target width
         },
         isPressed(action) { return inputHandler.isPressed(action); },
         isPressedSeat(action, seat) { return inputHandler.isPressed(action, seat); },
@@ -3083,17 +3124,33 @@ function addTapRegion(x, y, w, h, onTap, id = null) {
 function addFullScreenTap(onTap) {
     addTapRegion(0, 0, viewWidth, viewHeight, onTap);
 }
+// The tap region under a logical canvas point (topmost first), or null
+function tapRegionAt(x, y) {
+    for (let i = tapRegions.length - 1; i >= 0; i--) {
+        const r = tapRegions[i];
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r;
+    }
+    return null;
+}
+// Mouse users: a pointer cursor over a tappable button or row (not over the whole-screen
+// "tap anywhere" regions, which would make the cursor meaningless)
+function setupPointerCursor() {
+    canvas.addEventListener('pointermove', (e) => {
+        if (e.pointerType !== 'mouse') return;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        const r = tapRegionAt((e.clientX - rect.left) * (viewWidth / rect.width), (e.clientY - rect.top) * (viewHeight / rect.height));
+        const want = r && !(r.w >= viewWidth && r.h >= viewHeight) ? 'pointer' : '';
+        if (canvas.style.cursor !== want) canvas.style.cursor = want;
+    });
+    canvas.addEventListener('pointerleave', () => { if (canvas.style.cursor) canvas.style.cursor = ''; });
+}
 // Route a canvas tap to the topmost region under it
 function processTaps() {
     let tap;
     while ((tap = inputHandler.consumeTap())) {
-        for (let i = tapRegions.length - 1; i >= 0; i--) {
-            const r = tapRegions[i];
-            if (tap.x >= r.x && tap.x <= r.x + r.w && tap.y >= r.y && tap.y <= r.y + r.h) {
-                r.onTap(tap);
-                break;
-            }
-        }
+        const r = tapRegionAt(tap.x, tap.y);
+        if (r) r.onTap(tap);
     }
 }
 
@@ -4020,17 +4077,18 @@ function renderGame() {
                 const isSelected = index === menuSelectionIndex;
                 const itemY = menuStartY + index * menuLineHeight;
                 ctx.fillStyle = isSelected ? 'yellow' : 'white';
+                // Value rows are wider so "Difficulty: Medium" fits between ◂ and ▸ on a phone
+                const rowX = viewWidth * (rowHasValue(row) ? 0.1 : 0.2);
+                const rowW = viewWidth - 2 * rowX;
+                const rowTop = itemY - menuLineHeight * 0.7;
                 if (rowHasValue(row)) {
-                    // "Difficulty: Medium" between arrows that show the row can be stepped
-                    ctx.fillText(`${row.label()}: ${rowValue(row)}`, viewWidth / 2, itemY);
-                    ctx.fillText('\u25C2', viewWidth * 0.27, itemY);
-                    ctx.fillText('\u25B8', viewWidth * 0.73, itemY);
+                    // "◂  Difficulty: Medium  ▸": the arrows sit on their tap targets
+                    drawValueRow(rowX, rowTop, rowW, menuLineHeight, itemY, null, `${row.label()}: ${rowValue(row)}`);
                 } else {
                     ctx.fillText(row.label(), viewWidth / 2, itemY);
                 }
-                // Tapping an item highlights and selects it (value rows: left/right part steps)
-                addRowTapRegion(viewWidth * 0.2, itemY - menuLineHeight * 0.7, viewWidth * 0.6, menuLineHeight,
-                    row, index, (i) => { menuSelectionIndex = i; });
+                // Tapping an item highlights and selects it (value rows: ◂ steps back, the rest forward)
+                addRowTapRegion(rowX, rowTop, rowW, menuLineHeight, row, index, (i) => { menuSelectionIndex = i; });
             });
 
             // Show current user and credits at bottom
@@ -5361,8 +5419,8 @@ function drawIconLine(type, text, centerX, y, color, font = '14px Arial', iconR 
     ctx.fillText(text, left + iconR * 2 + 8, y);
 }
 
-// Settings screen: one row per setting, like the Upgrades screen. Tap the left/right part of
-// a row (or press left/right) to change it; Enter or a centre tap steps forward.
+// Settings screen: one row per setting, like the Upgrades screen. Tap ◂ / ▸ at a row's ends
+// (or press left/right) to change it; Enter or a tap on the middle steps forward.
 function drawSettingsScreen() {
     const compact = isCompact(viewHeight);
     ctx.fillStyle = 'white';
@@ -5381,6 +5439,7 @@ function drawSettingsScreen() {
     });
     const x = viewWidth * 0.1;
     const w = viewWidth * 0.8;
+    let fullscreenRowDrawn = false;
 
     rows.forEach((row, index) => {
         const isSelected = index === settingsIndex;
@@ -5395,23 +5454,26 @@ function drawSettingsScreen() {
         ctx.fillStyle = isSelected ? '#FFFF00' : '#FFFFFF';
         ctx.font = h < 24 ? 'bold 14px Arial' : compact ? 'bold 16px Arial' : 'bold 20px Arial';
         if (rowHasValue(row)) {
-            ctx.textAlign = 'left';
-            ctx.fillText(row.label(), x + 15, y, w * 0.5);
-            ctx.textAlign = 'right';
-            ctx.fillText(`◂  ${rowValue(row)}  ▸`, x + w - 15, y);
+            drawValueRow(x, top, w, h, y, row.label(), rowValue(row));
         } else {
             ctx.textAlign = 'center';
             ctx.fillText(row.id === 'back' ? '< Back to Menu >' : row.label(), viewWidth / 2, y);
         }
         addRowTapRegion(x, top, w, h, row, index, (i) => { settingsIndex = i; });
-        if (row.id === 'fullscreen' && pwaUi) pwaUi.placeSettingsButton(x, top, w, h);
+        if (row.id === 'fullscreen' && pwaUi) {
+            pwaUi.placeSettingsButton(x, top, w, h);
+            fullscreenRowDrawn = true;
+        }
     });
+    // No Full screen row on this page (the Multiplayer sub-page): collapse the transparent
+    // DOM button, which would otherwise stay where that row was and swallow taps there
+    if (!fullscreenRowDrawn && pwaUi) pwaUi.placeSettingsButton(0, 0, 0, 0);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#888888';
     ctx.font = '14px Arial';
     ctx.fillText(inputHint('UP/DOWN to choose, LEFT/RIGHT or ENTER to change, ESC to go back',
-        'Tap the left or right side of a setting to change it',
+        'Tap \u25C2 or \u25B8 to change a setting',
         () => `\u25C2 \u25B8 Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`), viewWidth / 2, viewHeight - 30);
 }
 
@@ -5865,23 +5927,18 @@ function drawSeatLobby() {
         drawLobbyCard(seat, x, y, w, h, lobby.cards[seat], snapshot[seat]);
     }
     const cardRows = shownSeats <= 2 ? 1 : 2;
-    // Mode option (O) and tablet layout (L): tap the left part to step back, the rest forward
+    // Mode option (O) and tablet layout (L): ◂ steps back, ▸ and the middle step forward
     let oy = top + cardRows * (h + gap) + 2;
     optRows.forEach((row, i) => {
         const ow = w * cols + gap;
         drawButtonBox(x0, oy, ow, optH, '', false);
         ctx.textBaseline = 'middle';
         ctx.font = 'bold 17px Arial';
-        ctx.textAlign = 'left';
         ctx.fillStyle = '#FFFFFF';
         const keyHint = isTouchDevice ? '' : `  (${row.key})`;
-        ctx.fillText(`${row.label()}${keyHint}`, x0 + 12, oy + optH / 2);
-        ctx.textAlign = 'right';
-        ctx.fillStyle = '#FFD700';
-        ctx.fillText(`◂  ${rowValue(row)}  ▸`, x0 + ow - 12, oy + optH / 2);
+        drawValueRow(x0, oy, ow, optH, oy + optH / 2, `${row.label()}${keyHint}`, rowValue(row), '#FFD700');
         ctx.textBaseline = 'alphabetic';
-        addRowTapRegion(x0, oy, ow, optH, row, i, () => {});
-        tapRegions[tapRegions.length - 1].id = `lobby:${row.id}`;
+        addRowTapRegion(x0, oy, ow, optH, row, i, () => {}, `lobby:${row.id}`);
         oy += optH + 6;
     });
     const infoY = (optRows.length ? oy + 18 : top + cardRows * (h + gap) + 24);
@@ -6100,11 +6157,7 @@ function drawCountLobby() {
         const colour = nameRow ? seatColour(Number(row.id.slice(4)) - 1) : null;
         ctx.fillStyle = selected ? '#FFFF00' : (colour || '#FFFFFF');
         if (rowHasValue(row)) {
-            ctx.textAlign = 'left';
-            ctx.fillText(row.label(), x + 15, y);
-            ctx.textAlign = 'right';
-            ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
-            ctx.fillText(`◂  ${rowValue(row)}  ▸`, x + w - 15, y);
+            drawValueRow(x, rowTop, w, h, y, row.label(), rowValue(row), selected ? '#FFFF00' : '#FFFFFF');
         } else {
             ctx.textAlign = 'center';
             ctx.fillText(row.id === 'start' ? '▶ Start' : row.label(), viewWidth / 2, y);
@@ -6112,7 +6165,7 @@ function drawCountLobby() {
         addRowTapRegion(x, rowTop, w, h, row, index, (i) => { lobbyIndex = i; });
     });
     drawHintLine(inputHint('UP/DOWN to choose, LEFT/RIGHT to change, ENTER to select, ESC to go back',
-        'Tap the left or right side of a row to change it',
+        'Tap \u25C2 or \u25B8 to change a row',
         () => `◂ ▸ Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`), viewHeight - 24);
 }
 
@@ -7206,10 +7259,7 @@ function drawTimeAttackSetup() {
             ctx.fillStyle = selected ? '#FFFF00' : '#FFFFFF';
             ctx.font = 'bold 20px Arial';
             ctx.textBaseline = 'middle';
-            ctx.textAlign = 'left';
-            ctx.fillText(row.label(), x + 16, y + h / 2);
-            ctx.textAlign = 'right';
-            ctx.fillText(`◂  ${row.value()}  ▸`, x + w - 16, y + h / 2);
+            drawValueRow(x, y, w, h, y + h / 2, row.label(), rowValue(row));
             ctx.textBaseline = 'alphabetic';
         } else {
             drawButtonBox(x, y, w, h, row.label(), selected);
@@ -7221,7 +7271,7 @@ function drawTimeAttackSetup() {
         }
     });
     drawHintLine(inputHint('UP/DOWN to choose, LEFT/RIGHT to change, ENTER to select, ESC to go back',
-        'Tap the left or right side of a row to change it',
+        'Tap \u25C2 or \u25B8 to change a row',
         () => `◂ ▸ Change   ${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Back`));
 }
 // Whose ghost waits on the chosen course: lines for drawTimeAttackGhostInfo
