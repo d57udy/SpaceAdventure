@@ -3448,20 +3448,7 @@ const LEASH_GLOW_TIME = 0.35; // s the edge glow fades after the last push
 let edgeGlowsDrawn = [];      // glows drawn this frame (test hook)
 
 function leashActive() { return simultaneous() && inRound(); }
-// Screen px kept free at the top (team score / level / round clock) so a ship held at the edge
-// never sits under that text; facing layouts draw it at the bottom too.
-const LEASH_HUD_INSET = 56;
-function leashBoxNow() {
-    if (!leashActive()) return null;
-    const b = camera.leashBox(cameraView());
-    // World px per screen px when the box edge meets the screen edge (minimum zoom)
-    const scale = viewHeight > 0 ? (2 * (b.halfH + 25)) / viewHeight : 1;
-    const insetTop = LEASH_HUD_INSET * scale;
-    const insetBottom = isMultiplayer() && facingLayout() ? insetTop : 0;
-    const top = b.top + insetTop;
-    const height = Math.max(0, b.height - insetTop - insetBottom);
-    return { ...b, top, height, halfH: height / 2, cy: top + height / 2 };
-}
+function leashBoxNow() { return leashActive() ? camera.leashBox(cameraView()) : null; }
 function leashSoft() { return mode.kind === 'versus'; } // Harvest, Duel, Saucer
 
 // Hold one entity inside the box; remember the edges it pushes against for the glow
@@ -3913,8 +3900,19 @@ function drawMpWorldOverlays() {
 
 // Team score and level (top centre), plus the compact per-player HUD in the canvas corners
 // when the side bars are too narrow for the DOM panels
+// A ship (or the flown saucer) under the centre HUD text: fade the text so the ship stays visible
+function centreHudOccluded() {
+    const near = (pos) => pos && Math.abs(pos.x - viewWidth / 2) < 150 &&
+        (pos.y < 72 || (isMultiplayer() && facingLayout() && pos.y > viewHeight - 72));
+    for (const p of players) {
+        if (p.ship && p.ship.isAlive && near(shipScreenPos(p.ship))) return true;
+    }
+    return !!(saucer && saucer.ufo && saucer.ufo.isAlive && near(shipScreenPos(saucer.ufo)));
+}
+
 function drawTeamHud() {
     ctx.save();
+    if (centreHudOccluded()) ctx.globalAlpha = 0.3;
     if (saucer && round) {
         // Saucer: clock, P1's score against the target, P2's score (MP-5)
         drawForViewers((region) => drawSaucerCentreHud(region));
@@ -3931,6 +3929,7 @@ function drawTeamHud() {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
         ctx.fillText(`LEVEL ${level}`, viewWidth / 2, 46);
     }
+    ctx.globalAlpha = 1;
     if (mpLayoutState.hud !== 'dom') {
         for (const p of players) drawCompactSeatHud(p);
     }
