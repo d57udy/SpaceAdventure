@@ -110,7 +110,7 @@ Only after R8 does anything create a second player.
 ## 3. Shared camera
 
 ### 3.1 Why two ships always fit
-- The view is a square of side V; the world is 1.5V and wraps.
+- The view is a square of side V; the world is 1.5V and wraps. (Since 2026-09 the view is W x H and the world at least 1.5W x 1.5H; the argument holds per axis.)
 - Per axis, the shortest separation between two ships is at most half the world: 0.75V.
 - With the camera at the midpoint, each ship is at most 0.375V from the centre, and the view reaches 0.5V, leaving at least 0.125V: 86 px on a 690 px tablet canvas, 42 px on a 337 px phone. A ship with its shield ring is 25 px, so it fits whenever V ≥ 200.
 - Each axis is bounded independently, so the diagonal is covered too. **No split screen or zoom needed for 2 players.**
@@ -262,6 +262,8 @@ H stays a hyperspace key in single-player only. Bindings use `event.code` (physi
 
 - Setting `mpLayout: auto | sides | facing` (auto: landscape = side by side, portrait = facing), changed in the lobby. Rotating mid-round auto-pauses and resumes with a countdown.
 - **Touch players always use Drag to Steer** in multiplayer (the button layout doesn't fit the bars).
+
+> **Update (2026-09, adaptive screens):** bars are now reserved rather than left over: the canvas fills the safe viewport minus a side bar of 16% of the width (150 to 200 px, and the canvas keeps at least 3/4 of its height in width) on each side in landscape, or bars of the same size above and below in portrait facing (`js/mpView.js` reservedSideBar / touchLayout). Keyboard and controller multiplayer reserves side bars for the HUD panels in landscape; in portrait it uses the compact canvas HUD. The table below is the original square-canvas estimate.
 
 **Space check** (canvas = 90% of the short side; bar = the leftover each side):
 

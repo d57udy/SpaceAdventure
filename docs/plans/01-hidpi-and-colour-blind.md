@@ -15,6 +15,8 @@ Line numbers refer to `js/main.js` unless another file is named, as of the worki
 ### UX
 No layout change: the canvas stays a square of 90% of the smaller window side in CSS pixels. Lines, glows, stars and all canvas text (44 `ctx.font` assignments) become crisp. The DOM HUD and SVG buttons are already sharp.
 
+> **Update (2026-09, adaptive screens):** the canvas is no longer a square of 90% of the short side. It fills the safe-area viewport at any aspect ratio; the world is 1.5 views per axis, clamped to 16:9 (`js/worldSize.js`). See README > Technical Notes.
+
 ### Technical approach
 1. **Separate logical and backing size.** `canvas.width`/`canvas.height` are used as the logical view size in about 130 places (camera, culling in `drawEntityWrapped`, starfield, radar, menus and tap regions, entity update arguments, UFO spawn, boss target, floating texts, `addFullScreenTap`). Add next to `WORLD_WIDTH`:
    ```js

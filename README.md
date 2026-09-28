@@ -199,7 +199,7 @@ npx playwright install chromium webkit
 # Unit tests (Node's built-in runner, no browser)
 npm run test:unit
 
-# Integration and acceptance tests (Playwright: desktop keyboard, iPad touch)
+# Integration and acceptance tests (Playwright: desktop keyboard, iPad touch, Pixel 7 Pro phone)
 npm run test:e2e
 
 # Everything
@@ -229,6 +229,8 @@ This game is fully compatible with GitHub Pages (free edition):
 
 ## Technical Notes
 
+- **Screen layout:** the canvas fills the whole screen inside the safe area (notch, rounded corners) at any aspect ratio: a phone in portrait or landscape, a tablet, a 16:9 or ultra-wide monitor (`js/viewport.js`). Touch controls sit over the edges of the play area; the radar then moves to the bottom centre. Menus are drawn in a centred column the full height of the screen (`js/menuLayout.js`), with 44 px tap targets. In multiplayer on a tablet the canvas leaves bars beside it (side by side) or above and below it (facing) for the players' controls and HUD panels (`js/mpView.js`).
+- **World size:** 1.5 screens per axis and wrapping, but never more elongated than 16:9 (a tall phone gets a wider world, not a skinny one), at least 480 px per side. Where the world had to grow beyond 1.5 screens, levels get proportionally more asteroids so a screen shows as many rocks as on any other device (`js/worldSize.js`). Rotating or resizing mid-game rescales everything into the new world.
 - Built with vanilla JavaScript and HTML5 Canvas
 - Uses ES6 modules (requires web server)
 - No external dependencies for the game itself

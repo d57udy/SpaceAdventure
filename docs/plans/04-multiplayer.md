@@ -8,6 +8,8 @@ Start with **local 2-player on one device** (both ships on one shared screen), s
 
 Why this order:
 - **Shared screen fits this game unusually well.** The canvas is a square and the world is 1.5 x 1.5 canvases and wraps around. So the shortest distance between two ships is never more than 0.75 canvas per axis. If the camera centres on the midpoint between the two ships, each ship stays within 0.375 canvas of the centre, about 85 px of margin on a 690 px canvas. **Both ships always fit on screen without split screen or zooming out.** On a landscape tablet, the square canvas also leaves empty side bars that suit per-player touch controls.
+
+> **Update (2026-09, adaptive screens):** the view is no longer square; the canvas fills the screen and multiplayer on a touch tablet reserves side bars (or top and bottom bars when facing) for the controls (`js/mpView.js` touchLayout). The per-axis argument still holds: the world is at least 1.5 views on each axis.
 - **Local play costs nothing and needs no third party.** It runs on GitHub Pages exactly as today and matches the classic lineage: Spacewar! was 2-player on one screen, Space Duel had simultaneous and tethered co-op, and Asteroids: Recharged ships local co-op only.
 - **Online play without our own server is possible but fragile:** browser-to-browser connections plus free public matchmaking and relay services, none of which guarantee availability. About 20% of connections need a relay server.
 - **Most of the work is one refactor that every phase needs:** replacing the single global `ship` (and score, lives, combo and power-ups) with a list of players. Size L. Everything after it builds on it.
