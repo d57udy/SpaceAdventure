@@ -60,7 +60,16 @@ test.describe('MP-7 keyboard', () => {
     await expect(introPanels(page)).toHaveCount(2);
     await expect(introPanels(page).nth(0)).toContainText('W thrust · A D turn');
     await expect(introPanels(page).nth(0)).toContainText('SPACE or F fire');
-    await expect(introPanels(page).nth(0)).toContainText('Press FIRE when ready');
+    await expect(introPanels(page).nth(0)).toContainText('Press FIRE (SPACE) when ready');
+    await expect(introPanels(page).nth(1)).toContainText('Press FIRE (ENTER) when ready');
+    // Each player's key caps on their own side of the canvas (P1 left, P2 right)
+    await expect.poll(async () => ((await hook(page, 'mp.intro')) || {}).blocks?.length).toBe(2);
+    const blocks = (await hook(page, 'mp.intro')).blocks;
+    expect(blocks.map((b) => [b.label, b.side, b.status])).toEqual([
+      ['P1', 'left', 'Press FIRE (SPACE) when ready'], ['P2', 'right', 'Press FIRE (ENTER) when ready'],
+    ]);
+    expect(blocks[0].keys).toEqual(['W', 'A', 'S', 'D', 'SPACE', 'F']);
+    expect(blocks[1].keys).toEqual(['↑', '←', '↓', '→', 'ENTER']);
     await expect(introPanels(page).nth(1)).toContainText('↑ thrust · ← → turn');
     await expect(introPanels(page).nth(1)).toContainText('ENTER or RIGHT SHIFT fire');
     // Score and lives make room for the card
@@ -133,9 +142,17 @@ test.describe('MP-7 keyboard', () => {
     await page.keyboard.press('ArrowRight');
     await expect.poll(() => hook(page, 'mp.help.page')).toBe(1);
     const texts = await drawnTexts(page);
-    for (const t of ['MULTIPLAYER HELP', 'KEYBOARD (two players)', 'CONTROLLERS', 'TABLET', 'MODES', 'SPACE or F',
-      'ENTER or RIGHT SHIFT', 'Co-op "Wingmen": 2 to 4 players fly together, each with their own ship.']) {
+    for (const t of ['MULTIPLAYER HELP', 'KEYBOARD (two players)', 'CONTROLLERS', 'TABLET', 'MODES',
+      'Co-op "Wingmen": 2 to 4 players fly together, each with their own ship.']) {
       expect(texts, t).toContain(t);
+    }
+    // Keyboard: key cap diagrams per seat (a text table on a small screen)
+    if (texts.includes('P1 · left side · SPACE joins')) {
+      for (const t of ['P2 · right side · ENTER joins', 'W', 'A', 'S', 'D', 'SPACE', 'F', '↑', '←', '↓', '→', 'ENTER']) {
+        expect(texts, t).toContain(t);
+      }
+    } else {
+      for (const t of ['SPACE or F', 'ENTER or RIGHT SHIFT']) expect(texts, t).toContain(t);
     }
     expect(texts.some((t) => /Multitasking & Gestures/.test(t))).toBe(true);
     await page.keyboard.press('ArrowLeft');

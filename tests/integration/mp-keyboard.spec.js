@@ -275,10 +275,31 @@ test.describe('co-op screenshots for review (desktop)', () => {
     await page.waitForTimeout(600);
     await page.keyboard.up('Space');
     await page.keyboard.up('ArrowLeft');
+    // Round start: each ship is tagged with its player and keys for 5 s
+    expect(await hook(page, 'players.0.tag')).toBe('P1 · WASD + SPACE');
+    expect(await hook(page, 'players.1.tag')).toBe('P2 · ARROWS + ENTER');
+    expect(await hook(page, 'players.0.tagTimer')).toBeGreaterThan(0);
     await page.screenshot({ path: `tests/screenshots/${name}-coop-ingame.png` });
+    // Pause: a controls reminder per player under the menu
+    await page.keyboard.press('p');
+    await waitForState(page, 'paused');
+    await expect.poll(() => hook(page, 'mp.pauseControls')).toHaveLength(2);
+    const reminder = await hook(page, 'mp.pauseControls');
+    expect(reminder[0]).toMatch(/^P1 · WASD \+ SPACE \(TESTER\): W thrust · A D turn · S hyperspace · SPACE or F fire$/);
+    expect(reminder[1]).toMatch(/^P2 · ARROWS \+ ENTER \(Guest 2\): ↑ thrust/);
+    await page.screenshot({ path: `tests/screenshots/${name}-coop-paused.png` });
+    await page.keyboard.press('p');
+    await waitForState(page, 'playing');
+    await expect.poll(() => hook(page, 'mp.resumeCountdown'), { timeout: 8000 }).toBe(0);
+    await expect.poll(() => hook(page, 'players.0.tagTimer'), { timeout: 10000 }).toBe(0);
     // P1 down to 1 life (can't revive), then P2 out: beacon on screen
     await expect.poll(() => hook(page, 'players.0.ship.isAlive'), { timeout: 8000 }).toBe(true);
     await loseLife(page, 0, 's');
+    // After a respawn the tag shows again for 2 s
+    await expect.poll(async () => {
+      const p = await hook(page, 'players.0');
+      return !!(p.ship && p.ship.isAlive && p.respawnTimer <= 0 && p.tagTimer > 0);
+    }, { timeout: 8000, intervals: [100] }).toBe(true);
     for (let k = 0; k < 2; k++) {
       await expect.poll(() => hook(page, 'players.1.ship.isAlive'), { timeout: 8000 }).toBe(true);
       await loseLife(page, 1, 'ArrowDown');

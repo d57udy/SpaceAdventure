@@ -3,7 +3,7 @@
 // and the saved line-up. Desktop only (touch join pads come with MP-3).
 import { test, expect } from '@playwright/test';
 import {
-  PAD, openFresh, hook, waitForState, frames, loginWithKeyboard, openTakeTurnsLobby, lobbyPress, padTap,
+  PAD, openFresh, hook, waitForState, frames, loginWithKeyboard, openTakeTurnsLobby, lobbyPress, padTap, drawnTexts,
 } from './helpers.js';
 
 const USER_LIST_KEY = 'asteroids_userList';
@@ -62,20 +62,68 @@ test.describe('multiplayer lobby (keyboard)', () => {
 
   test('leave with S / ↓: ready players unready first; the freed seat is joined again', async ({ page }) => {
     await lobbyReady(page);
-    await lobbyPress(page, 'Enter', 0, (c) => !!c && c.source === 'kbRight'); // lowest free seat
-    await lobbyPress(page, 'Space', 1, (c) => !!c && c.source === 'kbLeft');
+    await lobbyPress(page, 'Enter', 1, (c) => !!c && c.source === 'kbRight'); // arrows: P2 even when first
+    await lobbyPress(page, 'Space', 0, (c) => !!c && c.source === 'kbLeft');
     // The signed-in profile went to the first player to join
-    expect((await hook(page, 'lobby.cards'))[0].name).toBe('TESTER');
-    await lobbyPress(page, 'ArrowDown', 0, (c) => c === null);
+    expect((await hook(page, 'lobby.cards'))[1].name).toBe('TESTER');
+    await lobbyPress(page, 'ArrowDown', 1, (c) => c === null);
     expect(await joined(page)).toBe(1);
-    expect((await hook(page, 'seats.seats'))[0]).toBeNull();
+    expect((await hook(page, 'seats.seats'))[1]).toBeNull();
     // S while ready: unready, then leave
-    await lobbyPress(page, 'Space', 1, (c) => c.ready);
-    await lobbyPress(page, 's', 1, (c) => !!c && !c.ready);
-    await lobbyPress(page, 's', 1, (c) => c === null);
+    await lobbyPress(page, 'Space', 0, (c) => c.ready);
+    await lobbyPress(page, 's', 0, (c) => !!c && !c.ready);
+    await lobbyPress(page, 's', 0, (c) => c === null);
     expect(await joined(page)).toBe(0);
-    // Rejoin: lowest free seat again, and the profile is free again
-    await lobbyPress(page, 'Enter', 0, (c) => !!c && c.name === 'TESTER' && c.source === 'kbRight');
+    // Rejoin: the same seat again, and the profile is free again
+    await lobbyPress(page, 'Enter', 1, (c) => !!c && c.name === 'TESTER' && c.source === 'kbRight');
+  });
+
+  test('seats follow the keyboard sides: Enter first joins P2, Space then P1; cards name their keys; caps light', async ({ page }, testInfo) => {
+    const errors = await lobbyReady(page, 'TESTER', {}, { recordText: true });
+    // Empty cards: each names its own join key
+    await expect.poll(async () => {
+      const t = await drawnTexts(page);
+      return t.includes('Press SPACE to join') && t.includes('Press ENTER to join');
+    }).toBe(true);
+    const texts = await drawnTexts(page);
+    expect(texts.some((t) => /^W A S D side · or press . on a controller$/.test(t))).toBe(true);
+    expect(texts.some((t) => /^Arrow keys side · or press . on a controller$/.test(t))).toBe(true);
+    expect(texts).not.toContain('Press FIRE to join');
+
+    // The arrow-keys player presses first: P2 (right card), not P1
+    await lobbyPress(page, 'Enter', 1, (c) => !!c && c.source === 'kbRight');
+    expect((await hook(page, 'lobby.cards'))[0]).toBeNull();
+    expect((await hook(page, 'seats.seats'))[1]).toMatchObject({ source: 'kbRight', colour: 1 });
+    await expect.poll(async () => (await drawnTexts(page)).includes('Press SPACE to join')).toBe(true);
+    // Space joins P1 (left card)
+    await lobbyPress(page, 'Space', 0, (c) => !!c && c.source === 'kbLeft');
+    expect((await hook(page, 'seats.seats')).map((s) => s && s.source)).toEqual(['kbLeft', 'kbRight', null, null]);
+
+    // Key caps on the joined cards, in the seat colour, lit while that seat's key is held
+    await expect.poll(() => hook(page, 'lobby.cards.0.keys.caps')).toEqual(['W', 'A', 'S', 'D', 'SPACE', 'F']);
+    expect(await hook(page, 'lobby.cards.1.keys.caps')).toEqual(['↑', '←', '↓', '→', 'ENTER']);
+    const cards = await hook(page, 'lobby.cards');
+    expect(cards[0].keys.colour).toBe(cards[0].colourHex);
+    expect(cards[1].keys.colour).toBe(cards[1].colourHex);
+    expect(cards[0].keys.labels).toEqual(expect.arrayContaining(['Thrust', 'Turn', 'Fire']));
+    expect(cards[0].keys.lit).toEqual([]);
+    // P1 ready first (ready cards ignore W and Space), then W lights on P1's card only
+    await lobbyPress(page, 'Space', 0, (c) => c.ready);
+    await page.keyboard.down('w');
+    await expect.poll(() => hook(page, 'lobby.cards.0.keys.lit')).toEqual(['W']);
+    expect(await hook(page, 'lobby.cards.1.keys.lit')).toEqual([]);
+    await page.keyboard.up('w');
+    await page.keyboard.down('Space'); // both fire caps (SPACE and F) light
+    await expect.poll(() => hook(page, 'lobby.cards.0.keys.lit')).toEqual(['SPACE', 'F']);
+    await page.keyboard.up('Space');
+    await expect.poll(() => hook(page, 'lobby.cards.0.keys.lit')).toEqual([]);
+    await page.keyboard.down('ArrowUp'); // P2 (not ready): ↑ also steps the name, harmless here
+    await expect.poll(() => hook(page, 'lobby.cards.1.keys.lit')).toEqual(['↑']);
+    expect(await hook(page, 'lobby.cards.0.keys.lit')).toEqual([]);
+    await page.keyboard.up('ArrowUp');
+    await expect.poll(() => hook(page, 'lobby.cards.1.keys.lit')).toEqual([]);
+    await page.screenshot({ path: `tests/screenshots/${testInfo.project.name}-lobby-keys.png` });
+    expect(errors).toEqual([]);
   });
 
   test('colours cycle with rotate keys and skip colours other players hold', async ({ page }) => {
@@ -131,15 +179,16 @@ test.describe('multiplayer lobby (keyboard)', () => {
 
   test('Change players / rematch rebuilds the line-up joined but not ready', async ({ page }) => {
     await lobbyReady(page, 'TESTER', { [USER_LIST_KEY]: JSON.stringify(['TESTER', 'ALICE']) });
-    await lobbyPress(page, 'Enter', 0, (c) => !!c);
-    await lobbyPress(page, 'Space', 1, (c) => !!c);
-    await lobbyPress(page, 'a', 1, (c) => c.colour === 3);
-    await lobbyPress(page, 'w', 1, (c) => c.name === 'ALICE');
-    const before = (await hook(page, 'lobby.cards')).slice(0, 2);
-    await lobbyPress(page, 'Enter', 0, (c) => c.ready);
-    await lobbyPress(page, 'Space', 1, (c) => c.ready);
+    await lobbyPress(page, 'Enter', 1, (c) => !!c);
+    await lobbyPress(page, 'Space', 0, (c) => !!c);
+    await lobbyPress(page, 'a', 0, (c) => c.colour === 3);
+    await lobbyPress(page, 'w', 0, (c) => c.name === 'ALICE');
+    const withoutKeys = (cards) => cards.map(({ keys, ...c }) => c); // drawn key caps: not part of the line-up
+    const before = withoutKeys((await hook(page, 'lobby.cards')).slice(0, 2));
+    await lobbyPress(page, 'Enter', 1, (c) => c.ready);
+    await lobbyPress(page, 'Space', 0, (c) => c.ready);
     await waitForState(page, 'turn_change', 6000);
-    expect((await hook(page, 'players')).map((p) => p.name)).toEqual(['TESTER', 'ALICE']);
+    expect((await hook(page, 'players')).map((p) => p.name)).toEqual(['ALICE', 'TESTER']);
 
     // Pause menu > Change players
     await page.keyboard.press('Escape');
@@ -150,7 +199,7 @@ test.describe('multiplayer lobby (keyboard)', () => {
     await expect.poll(() => hook(page, 'pauseIndex')).toBe(2);
     await page.keyboard.press('Enter');
     await waitForState(page, 'lobby');
-    const after = (await hook(page, 'lobby.cards')).slice(0, 2);
+    const after = withoutKeys((await hook(page, 'lobby.cards')).slice(0, 2));
     expect(after).toEqual(before.map((c) => ({ ...c, ready: false })));
     expect(await hook(page, 'seats.merged')).toBe(false);
     expect(await hook(page, 'lobby.countdown')).toBeNull();
