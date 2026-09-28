@@ -60,6 +60,7 @@ import {
     controlsCard, introRulesLine, introSessionKey, createIntro, introPressFire, tickIntro, keyboardTable,
     stereoPan, thrustPan,
 } from './mpIntro.js';
+import { keyDiagramLayout, fireKeyHint, seatTag, emptyCardLines, litCaps, keyboardForSeat } from './keyDiagram.js';
 
 // Game States Enum
 const GameState = {
@@ -2500,6 +2501,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 respawnAt: p.respawnAt ? { x: p.respawnAt.x, y: p.respawnAt.y } : null,
                 shipColour: p.ship ? p.ship.colour : null, hullMark: p.ship ? p.ship.hullMark : null,
                 dropped: !!p.dropped,
+                tagTimer: p.tagTimer || 0, tag: seatTag(p.label, p.bindingId),
             }));
         },
         get mode() {
@@ -2545,6 +2547,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
                 zones: mpLayoutState.zones.slice(), simultaneous: simultaneousRound(),
                 intro: roundIntroSnapshot(), help: { page: helpPage },
+                pauseControls: currentGameState === GameState.PAUSED ? pauseControlsDrawn.slice() : [],
                 cameraSingleInstant: !!camera.options.singleInstant,
                 scaling: { ...currentScaling() }, boss: currentBoss ? { maxHealth: currentBoss.maxHealth } : null,
                 ...touchLobbyNotes(),
@@ -3439,6 +3442,7 @@ function updateGame(deltaTime) {
         updateRoundIntro(clockDeltaTime); // UI timer: wall clock
         return;
     }
+    tickSeatTags(clockDeltaTime);
 
     // --- Game Playing Logic ---
 
@@ -3743,6 +3747,19 @@ function drawMpWorldOverlays() {
             ctx.fillText(p.label, pos.x + 1, y + 1);
             ctx.fillStyle = p.colour;
             ctx.fillText(p.label, pos.x, y);
+            // Round start (5 s) and after a respawn (2 s): whose ship and which keys, e.g.
+            // "P1 · WASD + SPACE", under the ship in the player's colour
+            if (p.tagTimer > 0) {
+                const ty = pos.y < 40 ? y + 18 : pos.y + 30;
+                const tag = seatTag(p.label, p.bindingId);
+                ctx.globalAlpha = Math.min(1, p.tagTimer / 0.5);
+                ctx.font = 'bold 13px Arial';
+                ctx.fillStyle = 'black';
+                ctx.fillText(tag, pos.x + 1, ty + 1);
+                ctx.fillStyle = p.colour;
+                ctx.fillText(tag, pos.x, ty);
+                ctx.globalAlpha = 1;
+            }
             drawOffscreenArrow(ship.x, ship.y, p.colour, p.label);
         }
     }
@@ -4877,6 +4894,7 @@ function respawnPlayer(p, isInitialSpawn = false, { at = null, invulnerability =
          p.ship = ship;
          applyShipModifiers(p);
          p.respawnTimer = 0;
+         if (!isInitialSpawn && simultaneous()) p.tagTimer = Math.max(p.tagTimer || 0, SEAT_TAG_RESPAWN);
          audioManager.stopThrustSound();
 
          // Make ship invulnerable after respawn (unless initial spawn)
@@ -5529,7 +5547,32 @@ function drawPauseMenu() {
         ctx.fillText(inputHint("(Press P or Esc to Resume)", "(Tap an option)",
             () => `${padGlyph(GP.A)} Select   ${padGlyph(GP.B)} Resume`), viewWidth / 2, boxY + boxH - 12);
     }
+    drawPauseControls(boxY + boxH);
     drawDisconnectNotice(); // "P2's controller disconnected ..." (MP-5)
+}
+
+// Multiplayer pause: a compact controls reminder per player under the menu box, in their colour
+const pauseControlsDrawn = []; // lines drawn last frame (test hook)
+function drawPauseControls(top) {
+    pauseControlsDrawn.length = 0;
+    if (!isMultiplayer() || !simultaneous()) return;
+    const lineH = 20;
+    if (top + 14 + players.length * lineH > viewHeight - 4) return; // no room (phone)
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '15px Arial';
+    players.forEach((p, i) => {
+        const c = introCardFor(p, i);
+        const text = `${seatTag(p.label, p.bindingId)} (${p.name}): ${c.lines.join(' · ')}`;
+        const y = top + 16 + i * lineH;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(16, y - lineH / 2, viewWidth - 32, lineH);
+        ctx.fillStyle = p.colour;
+        ctx.fillText(text, viewWidth / 2, y, viewWidth - 40);
+        pauseControlsDrawn.push(text);
+    });
+    ctx.restore();
 }
 
 // --- Multiplayer screens (canvas) ---
@@ -5628,8 +5671,9 @@ function lobbyPadGlyph(button, letter) {
     return inputHandler.gamepadInfo().connected ? padGlyph(button) : CIRCLED_LETTERS[letter];
 }
 const SOURCE_LABELS = {
-    kbLeft: 'Keys: W A S D · SPACE',
-    kbRight: 'Keys: ← ↑ → ↓ · ENTER',
+    // Shown when a card is too small for the key caps
+    kbLeft: 'W thrust · A D turn · S hyperspace · SPACE fire',
+    kbRight: '↑ thrust · ← → turn · ↓ hyperspace · ENTER fire',
 };
 function sourceLabel(source) {
     if (SOURCE_LABELS[source]) return SOURCE_LABELS[source];
@@ -5647,7 +5691,7 @@ function drawSeatLobby() {
         ? 'P1 flies the ship, P2 steers the UFO'
         : touchLobby
         ? 'Tap the pad on your side to join, tap it again when ready'
-        : 'Each player presses FIRE on their own keys or controller');
+        : 'P1 plays with W A S D + SPACE, P2 with the arrow keys + ENTER, others with controllers');
     // Touch notes: too few touch points; once, the iPad multitasking gesture hint
     const notes = touchLobby ? touchLobbyNotes() : { touchWarning: false, gestureHint: false };
     const noteLines = [];
@@ -5736,12 +5780,15 @@ function drawSeatLobby() {
     if (touchLobby) {
         drawHintLine('Tap your pad: join / ready   Hold it: leave   Keys and controllers can join too', viewHeight - 30);
     } else {
-        drawHintLine('Fire: join / ready   ↓ or S: leave   ← →: colour   ↑: name   Esc: back', viewHeight - 30);
+        drawHintLine('SPACE / ENTER: join, ready   S / ↓: leave   A D / ← →: colour   W / ↑: name   Esc: back', viewHeight - 30);
     }
     drawHintLine(`Controllers: ${lobbyPadGlyph(GP.A, 'A')} join / ready   ${lobbyPadGlyph(GP.B, 'B')} leave   D-pad colour and name`, viewHeight - 12);
 }
 
+// Key caps drawn on each joined keyboard card last frame (test hook, read-only)
+const lobbyCardKeys = [null, null, null, null];
 function drawLobbyCard(seat, x, y, w, h, card, seatInfo) {
+    if (!card) lobbyCardKeys[seat] = null;
     const colour = seatInfo ? seatColour(seatInfo.colour) : '#555555';
     ctx.save();
     ctx.fillStyle = card ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.03)';
@@ -5768,38 +5815,109 @@ function drawLobbyCard(seat, x, y, w, h, card, seatInfo) {
         ctx.font = 'bold 20px Arial';
         ctx.fillStyle = '#FFFFFF';
         ctx.fillText(card.name, x + 12, y + 62);
-        ctx.font = '13px Arial';
-        ctx.fillStyle = '#AAAAAA';
-        ctx.fillText(seatSourceLabel(seatInfo && seatInfo.source), x + 12, y + 84, w - 20);
-        // Key-test lights: thrust, left, right, fire
-        const lights = [['thrust', '▲'], ['rotateLeft', '◀'], ['rotateRight', '▶'], ['fire', '●']];
-        lights.forEach(([action, glyph], i) => {
-            const on = inputHandler.isPressed(action, seat);
-            const lx = x + 22 + i * 30;
-            const ly = y + h - 58;
-            ctx.beginPath();
-            ctx.arc(lx, ly, 10, 0, Math.PI * 2);
-            ctx.fillStyle = on ? colour : 'rgba(255, 255, 255, 0.1)';
-            ctx.fill();
-            ctx.fillStyle = on ? '#000000' : '#888888';
-            ctx.font = '11px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(glyph, lx, ly + 1);
-        });
+        const source = seatInfo && seatInfo.source;
+        // Keyboard seats: their own keys as mini caps that light while held (key test);
+        // controllers and touch: a text line and the ▲◀▶● lights
+        const diagram = lobbyCardDiagram(source, x, y, w, h, role);
+        lobbyCardKeys[seat] = null;
+        if (diagram) {
+            const pressed = (action) => inputHandler.isPressed(action, seat);
+            drawKeyDiagram(diagram, colour, pressed);
+            lobbyCardKeys[seat] = {
+                source, colour, labels: diagram.showLabels ? diagram.labels.map(l => l.text) : [],
+                caps: diagram.caps.map(c => c.key), lit: litCaps(diagram, pressed).map(id => diagram.caps.find(c => c.id === id).key),
+            };
+        } else {
+            ctx.font = '13px Arial';
+            ctx.fillStyle = '#AAAAAA';
+            ctx.fillText(seatSourceLabel(source), x + 12, y + 84, w - 20);
+            if (padIndexOf(source) !== null && h >= 150) {
+                ctx.font = '12px Arial';
+                ctx.fillStyle = '#888888';
+                ctx.fillText(`Stick or D-pad steer · ${seatPadGlyph(source, GP.A)} fire · ${seatPadGlyph(source, GP.B)} hyperspace · Start pause`,
+                    x + 12, y + 101, w - 20);
+            }
+            const lights = [['thrust', '▲'], ['rotateLeft', '◀'], ['rotateRight', '▶'], ['fire', '●']];
+            lights.forEach(([action, glyph], i) => {
+                const on = inputHandler.isPressed(action, seat);
+                const lx = x + 22 + i * 30;
+                const ly = y + h - 50;
+                ctx.beginPath();
+                ctx.arc(lx, ly, 10, 0, Math.PI * 2);
+                ctx.fillStyle = on ? colour : 'rgba(255, 255, 255, 0.1)';
+                ctx.fill();
+                ctx.fillStyle = on ? '#000000' : '#888888';
+                ctx.font = '11px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(glyph, lx, ly + 1);
+            });
+        }
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
         ctx.font = 'bold 16px Arial';
         ctx.fillStyle = card.ready ? '#00FF88' : '#FFD700';
         ctx.fillText(seatStatusLine(card, seatInfo && seatInfo.source), x + 12, y + h - 18, w - 20);
     } else {
-        ctx.font = '16px Arial';
-        ctx.fillStyle = '#AAAAAA';
-        ctx.fillText('Press FIRE to join', x + 12, y + 62);
+        // Each empty card names its own join key: SPACE on P1 (W A S D side), ENTER on P2
+        const text = emptyCardLines(seat, { pad: lobbyPadGlyph(GP.A, 'A'), touch: touchLobbyActive() });
+        ctx.font = 'bold 17px Arial';
+        ctx.fillStyle = '#CCCCCC';
+        ctx.fillText(text.title, x + 12, y + 62, w - 20);
         ctx.font = '12px Arial';
-        ctx.fillStyle = '#777777';
-        ctx.fillText(touchLobbyActive() ? `Side pad · Space · Enter · ${lobbyPadGlyph(GP.A, 'A')}` : `Space · Enter · ${lobbyPadGlyph(GP.A, 'A')}`,
-            x + 12, y + 84, w - 20);
+        ctx.fillStyle = '#888888';
+        ctx.fillText(text.detail, x + 12, y + 82, w - 20);
+        // The keys of this card's keyboard half, dimmed (touch lobbies: the side pads instead)
+        const kb = !touchLobbyActive() ? keyboardForSeat(seat) : null; // P1: W A S D, P2: arrows
+        const diagram = kb ? lobbyCardDiagram(kb, x, y + 18, w, h - 18, role) : null;
+        if (diagram) {
+            ctx.globalAlpha = 0.45;
+            drawKeyDiagram(diagram, '#AAAAAA', () => false);
+            ctx.globalAlpha = 1;
+        }
+    }
+    ctx.restore();
+}
+
+// Key caps on a lobby card: between the name (y + 62) and the status line (y + h - 18)
+function lobbyCardDiagram(source, x, y, w, h, role = null) {
+    const top = y + 70;
+    const bottom = y + h - 36;
+    return keyDiagramLayout(source, { x: x + 12, y: top, w: w - 24, h: bottom - top },
+        { maxCap: 30, align: 'left', role: role === 'SAUCER' ? 'saucer' : null });
+}
+
+// Draw mini key caps (js/keyDiagram.js keyDiagramLayout) in a seat colour; a cap is filled
+// while pressed(action) holds
+function drawKeyDiagram(layout, colour, pressed = () => false) {
+    if (!layout) return;
+    ctx.save();
+    const lit = new Set(litCaps(layout, pressed));
+    for (const c of layout.caps) {
+        const on = lit.has(c.id);
+        const r = Math.min(4, c.w * 0.15);
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(c.x, c.y, c.w, c.h, r);
+        else ctx.rect(c.x, c.y, c.w, c.h);
+        ctx.fillStyle = on ? colour : 'rgba(255, 255, 255, 0.06)';
+        ctx.fill();
+        ctx.strokeStyle = colour;
+        ctx.lineWidth = on ? 2 : 1.5;
+        ctx.stroke();
+        ctx.fillStyle = on ? '#000000' : colour;
+        ctx.font = `bold ${Math.round(c.fontPx)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(c.key, c.x + c.w / 2, c.y + c.h / 2 + 1, c.w - 2);
+    }
+    if (layout.showLabels) {
+        ctx.font = `${Math.round(layout.labelPx)}px Arial`;
+        ctx.fillStyle = '#BBBBBB';
+        ctx.textBaseline = 'middle';
+        for (const l of layout.labels) {
+            ctx.textAlign = l.align;
+            ctx.fillText(l.text, l.x, l.y, l.maxWidth);
+        }
     }
     ctx.restore();
 }
@@ -6103,6 +6221,7 @@ function lobbySnapshot() {
             source: seats[seat] ? seats[seat].source : null,
             colour: seats[seat] ? seats[seat].colour : null,
             colourHex: seats[seat] ? seatColour(seats[seat].colour) : null,
+            keys: lobbyCardKeys[seat] ? { ...lobbyCardKeys[seat], lit: lobbyCardKeys[seat].lit.slice() } : null,
         } : null)),
     };
 }
@@ -7373,7 +7492,15 @@ function introApplies() {
     return isMultiplayer() && !isTimeAttack() && simultaneous()
         && (currentGameState === GameState.PLAYING || currentGameState === GameState.PAUSED); // paused: a missing controller
 }
+// Seat tags under the ships ("P1 · WASD + SPACE"): the first 5 s of a round (counted after the
+// intro card) and 2 s after each respawn
+const SEAT_TAG_ROUND = 5;
+const SEAT_TAG_RESPAWN = 2;
+function tickSeatTags(dt) {
+    for (const p of players) if (p.tagTimer > 0) p.tagTimer = Math.max(0, p.tagTimer - dt);
+}
 function setupRoundIntro() {
+    for (const p of players) p.tagTimer = simultaneous() ? SEAT_TAG_ROUND : 0;
     roundIntro = null;
     if (!introApplies()) return;
     const key = introSessionKey(mode.id, players.map(p => p.bindingId));
@@ -7396,6 +7523,7 @@ function roundIntroSnapshot() {
         full: roundIntro.full, duration: roundIntro.duration, timeLeft: roundIntro.timeLeft,
         ready: roundIntro.ready.slice(), viewers: introViewersDrawn, rules: introRules(),
         cards: players.map((p, i) => ({ source: p.bindingId, ...introCardFor(p, i) })),
+        blocks: introBlocksDrawn.map(b => ({ ...b, keys: b.keys ? b.keys.slice() : null })),
     };
 }
 function fireSideFor(source) {
@@ -7411,8 +7539,11 @@ function introCardFor(p, i) {
         pad: { fire: seatPadGlyph(src, GP.A), hyperspace: seatPadGlyph(src, GP.B) }, fireSide: fireSideFor(src), role,
     });
     const ready = !!(roundIntro && roundIntro.ready[i]);
-    const status = ready ? 'READY' : roundIntro && roundIntro.full ? 'Press FIRE when ready' : 'Get ready';
-    return { lines: card.lines, status, ready };
+    // The seat's own fire key: "Press FIRE (SPACE) when ready" / "(ENTER)" / "(Ⓐ)"
+    const key = fireKeyHint(src, seatPadGlyph(src, GP.A));
+    const status = ready ? 'READY' : roundIntro && roundIntro.full
+        ? (key ? `Press FIRE (${key}) when ready` : 'Press FIRE when ready') : 'Get ready';
+    return { lines: card.lines, status, ready, tag: seatTag(p.label, src), role };
 }
 function introRules() {
     const info = MP_MODE_INFO[mode.id];
@@ -7473,6 +7604,7 @@ function syncMp7Dom() {
 // (drawn for both viewers in the facing layout); controls per player when the HUD is on canvas
 function drawRoundIntro() {
     introViewersDrawn = 0;
+    introBlocksDrawn.length = 0;
     if (!roundIntro || currentGameState !== GameState.PLAYING) return;
     ctx.save();
     const facing = mpLayoutState.layout === 'facing';
@@ -7506,11 +7638,14 @@ function drawRoundIntro() {
     const rules = introRules();
     const secs = Math.max(1, Math.ceil(roundIntro.timeLeft));
     const onCanvas = mpLayoutState.hud !== 'dom';
+    // Keyboard and controller players (not facing): a controls block on their own side
+    const blocks = !facing ? players.filter(p => !isTouchSource(p.bindingId)) : [];
     drawForViewers((region) => {
         introViewersDrawn++;
         const lines = [];
         if (onCanvas) {
             players.forEach((p, i) => {
+                if (blocks.includes(p)) return;
                 const c = introCardFor(p, i);
                 lines.push({ text: `${p.label} ${p.name}: ${c.status}`, colour: p.colour, font: 'bold 18px Arial' });
                 lines.push({ text: c.lines.join(' · '), colour: '#FFFFFF', font: '18px Arial' });
@@ -7534,8 +7669,64 @@ function drawRoundIntro() {
             ctx.font = l.font;
             ctx.fillText(l.text, viewWidth / 2, top + 78 + k * 24, viewWidth - 20);
         });
+        if (!region.half && blocks.length) drawIntroBlocks(blocks, top + h + 14, viewHeight - 16);
     });
     ctx.restore();
+}
+function isTouchSource(source) {
+    return typeof source === 'string' && source.startsWith('touch:');
+}
+
+// Intro controls blocks: players in the left HUD column on the left half, the others on the
+// right, stacked; a keyboard player gets their key caps (lit while held), a controller its lines
+const introBlocksDrawn = [];      // what drawIntroBlocks drew last frame (test hook)
+function drawIntroBlocks(list, top, bottom) {
+    introBlocksDrawn.length = 0;
+    const columns = { left: [], right: [] };
+    for (const p of list) columns[hudColumnFor(p) === 'right' ? 'right' : 'left'].push(p);
+    const halfW = viewWidth / 2;
+    for (const [side, ps] of Object.entries(columns)) {
+        if (!ps.length) continue;
+        const gap = 10;
+        const blockH = Math.min(230, (bottom - top - gap * (ps.length - 1)) / ps.length);
+        if (blockH < 60) continue;
+        const w = Math.min(460, halfW - 32);
+        const x = (side === 'left' ? 0 : halfW) + (halfW - w) / 2;
+        ps.forEach((p, k) => {
+            const i = players.indexOf(p);
+            const c = introCardFor(p, i);
+            const y = top + k * (blockH + gap);
+            ctx.save();
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(x, y, w, blockH);
+            ctx.strokeStyle = p.colour;
+            ctx.lineWidth = c.ready ? 4 : 2;
+            ctx.strokeRect(x, y, w, blockH);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = p.colour;
+            ctx.font = 'bold 20px Arial';
+            ctx.fillText(`${p.label} ${p.name}`, x + w / 2, y + 20, w - 16);
+            const statusY = y + blockH - 18;
+            const box = { x: x + 14, y: y + 38, w: w - 28, h: statusY - 16 - (y + 38) };
+            const diagram = keyDiagramLayout(p.bindingId, box, { maxCap: 44, role: c.role });
+            if (diagram) {
+                drawKeyDiagram(diagram, p.colour, (action) => (p.input || inputHandler).isPressed(action));
+            } else {
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = '17px Arial';
+                const lineH = Math.min(24, box.h / Math.max(1, c.lines.length));
+                c.lines.forEach((line, n) => {
+                    ctx.fillText(line, x + w / 2, box.y + lineH * (n + 0.5) + (box.h - lineH * c.lines.length) / 2, w - 20);
+                });
+            }
+            ctx.fillStyle = c.ready ? '#00FF88' : '#FFD700';
+            ctx.font = 'bold 18px Arial';
+            ctx.fillText(c.status, x + w / 2, statusY, w - 16);
+            ctx.restore();
+            introBlocksDrawn.push({ label: p.label, side, keys: diagram ? diagram.caps.map(cap => cap.key) : null, status: c.status });
+        });
+    }
 }
 
 // --- Help: page 2 "Multiplayer" (◂ ▸, or tap the page button at the top) ---
@@ -7584,16 +7775,39 @@ function drawHelpMultiplayer() {
     };
 
     section('KEYBOARD (two players)');
-    const cols = [left, left + maxW * 0.24, left + maxW * 0.56];
-    y += lh;
-    ctx.fillStyle = '#AAAAAA';
-    ['', 'P1 (left)', 'P2 (right)'].forEach((t, k) => ctx.fillText(t, cols[k], y));
-    ctx.fillStyle = 'white';
-    for (const row of keyboardTable()) {
+    // P1 (left card, W A S D + SPACE) and P2 (right card, arrows + ENTER) as key caps in the
+    // seat colours; the table's text is the fallback on a small screen
+    const halfW = (maxW - 20) / 2;
+    const diagH = Math.round(84 * s);
+    const kbSeats = [['kbLeft', 'P1 · left side · SPACE joins'], ['kbRight', 'P2 · right side · ENTER joins']];
+    const diagrams = kbSeats.map(([src], k) => keyDiagramLayout(src,
+        { x: left + k * (halfW + 20), y: y + lh + 6, w: halfW, h: diagH }, { maxCap: 34, align: 'left' }));
+    if (diagrams.every(Boolean)) {
         y += lh;
-        ctx.fillText(row.action, cols[0], y);
-        ctx.fillText(row.p1, cols[1], y, maxW * 0.3);
-        ctx.fillText(row.p2, cols[2], y, maxW * 0.44);
+        ctx.font = `bold ${px(14)} Arial`;
+        kbSeats.forEach(([, title], k) => {
+            ctx.fillStyle = seatColour(k);
+            ctx.textAlign = 'left';
+            ctx.fillText(title, left + k * (halfW + 20), y, halfW);
+        });
+        diagrams.forEach((d, k) => drawKeyDiagram(d, seatColour(k)));
+        y += diagH + 6;
+        ctx.font = `${px(14)} Arial`;
+        ctx.fillStyle = 'white';
+        const numpad = keyboardTable().find(r => r.action === 'Numpad');
+        line(`P2 also: numpad ${numpad ? numpad.p2 : ''}, RIGHT SHIFT fires. P1: F fires too.`);
+    } else {
+        const cols = [left, left + maxW * 0.24, left + maxW * 0.56];
+        y += lh;
+        ctx.fillStyle = '#AAAAAA';
+        ['', 'P1 (left)', 'P2 (right)'].forEach((t, k) => ctx.fillText(t, cols[k], y));
+        ctx.fillStyle = 'white';
+        for (const row of keyboardTable()) {
+            y += lh;
+            ctx.fillText(row.action, cols[0], y);
+            ctx.fillText(row.p1, cols[1], y, maxW * 0.3);
+            ctx.fillText(row.p2, cols[2], y, maxW * 0.44);
+        }
     }
     line('Anyone pauses (P, Esc) or mutes (M). If a keyboard drops keys, try Auto-fire.');
 

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     MAX_SEATS, MAX_TOUCH_SEATS, KEY_PROFILES, MERGED_EXTRA, SHARED_CODES, lookupCode, lookupShared,
-    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat, hideTouchForGamepad, rumblePads,
+    sourceKind, rotateVector, stickFromDrag, SeatTable, pickRejoinSeat, hideTouchForGamepad, rumblePads, preferredSeat,
 } from '../../js/seats.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `expected ${b}, got ${a}`);
@@ -122,6 +122,26 @@ test('joining takes the lowest free seat and is idempotent', () => {
     assert.equal(t.seatOf('kbLeft'), 1);
     assert.deepEqual(t.sourcesOf(1), ['kbLeft']);
     assert.equal(t.join('nonsense'), null);
+});
+
+test('join with a preferred seat: taken when free, else the lowest free seat; reserved seats first', () => {
+    assert.equal(preferredSeat('kbLeft'), 0);
+    assert.equal(preferredSeat('kbRight'), 1);
+    assert.equal(preferredSeat('pad:0'), null);
+    assert.equal(preferredSeat('touch:a'), null);
+    const t = new SeatTable();
+    t.setMerged(false);
+    assert.equal(t.join('kbRight', { prefer: 1 }), 1);
+    assert.equal(t.colourOf(1), 1, 'colour follows the seat');
+    assert.equal(t.join('pad:0', { prefer: 1 }), 0, 'taken: lowest free');
+    assert.equal(t.join('pad:1', { prefer: 9 }), 2, 'out of range: ignored');
+    assert.equal(t.join('pad:2', { prefer: null }), 3);
+    const r = new SeatTable();
+    r.setMerged(false);
+    r.join('pad:0');
+    r.join('pad:1');
+    r.reserve(1, { id: 'x' });
+    assert.equal(r.join('kbLeft', { prefer: 2 }), 1, 'a reserved seat is taken back first');
 });
 
 test('full at 4 seats', () => {

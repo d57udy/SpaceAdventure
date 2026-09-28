@@ -4,7 +4,9 @@
 //   'seats' - one card per seat; players join with their own input (keyboard half, controller).
 //             Built on a SeatTable (js/seats.js), normally the InputHandler's, so joining a seat
 //             also routes that input to the seat.
-//               Fire          not joined: join (lowest free seat) · joined: ready
+//               Fire          not joined: join · joined: ready. The W A S D half takes P1 and
+//                             the arrow keys P2 when free (seats.js preferredSeat), so each
+//                             sits on their own side; controllers take the lowest free seat.
 //               Hyperspace    joined: leave · ready: unready
 //               Rotate L/R    joined: change colour (skips colours other seats hold)
 //               Thrust        joined: next name (Guest N or a saved profile)
@@ -16,6 +18,8 @@
 // Names: the first seat to join gets the signed-in profile; others are "Guest N" and can
 // cycle through the saved profiles on this device (no typing in the lobby). A profile is
 // never used by two seats at once.
+
+import { preferredSeat } from './seats.js';
 
 export const LOBBY_COUNTDOWN = 3;
 
@@ -122,7 +126,8 @@ export function handleLobbyEvent(lobby, { source, action } = {}) {
     if (seat === null) {
         if (act !== 'fire') return null;
         if (joinedSeats(lobby).length >= lobby.max) return { type: 'full', seat: null };
-        const s = lobby.seats.join(source);
+        const prefer = preferredSeat(source);
+        const s = lobby.seats.join(source, { prefer: prefer !== null && prefer < lobby.max ? prefer : null });
         if (s === null || s >= lobby.max) {
             if (s !== null) lobby.seats.leave(s);
             return { type: 'full', seat: null };

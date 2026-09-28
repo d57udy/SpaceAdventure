@@ -26,6 +26,18 @@ export const KEY_PROFILES = Object.freeze({
     }),
 });
 
+/**
+ * Seat each keyboard half prefers in a seat lobby: the W A S D player sits on the left of the
+ * keyboard and gets P1 (the left card), the arrow-keys player P2 (the right card), whoever
+ * presses first. Controllers and touch pads take the lowest free seat.
+ */
+export const KEYBOARD_SEAT = Object.freeze({ kbLeft: 0, kbRight: 1 });
+
+/** Preferred seat of a source (keyboard halves only), else null. */
+export function preferredSeat(source) {
+    return Object.prototype.hasOwnProperty.call(KEYBOARD_SEAT, source) ? KEYBOARD_SEAT[source] : null;
+}
+
 /** Extra bindings only in merged (single-player) mode; they belong to kbLeft. */
 export const MERGED_EXTRA = Object.freeze({
     hyperspace: ['KeyH'],
@@ -230,9 +242,10 @@ export class SeatTable {
     /**
      * Join a source. Returns its seat (existing seat if already joined), or null
      * when full, in merged mode, for an unknown source, or for a third touch source.
-     * A reserved seat (disconnected controller) is taken first.
+     * A reserved seat (disconnected controller) is taken first; then `prefer` (a seat number,
+     * see preferredSeat) when it is free; then the lowest free seat.
      */
-    join(source) {
+    join(source, { prefer = null } = {}) {
         if (this.merged || !sourceKind(source)) return null;
         const existing = this.seatOf(source);
         if (existing !== null) return existing;
@@ -243,7 +256,8 @@ export class SeatTable {
             this.seats[reserved] = { ...rest, source, reserved: false };
             return reserved;
         }
-        const free = this.seats.findIndex((s) => s === null);
+        const wanted = Number.isInteger(prefer) && prefer >= 0 && prefer < this.maxSeats && this.seats[prefer] === null;
+        const free = wanted ? prefer : this.seats.findIndex((s) => s === null);
         if (free === -1) return null;
         this.seats[free] = { source, colour: this.freeColour(free), reserved: false };
         return free;

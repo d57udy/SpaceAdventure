@@ -25,14 +25,36 @@ test('lobby actions from keyboard seat actions and controller menu actions', () 
     assert.equal(guestName(1), 'Guest 2');
 });
 
-test('fire joins the lowest free seat; the first to join gets the signed-in profile', () => {
+test('fire joins; W A S D prefers P1, the arrow keys P2; the first to join gets the signed-in profile', () => {
     const l = seatLobby();
-    assert.deepEqual(handleLobbyEvent(l, ev('kbRight', 'fire')), { type: 'joined', seat: 0 });
-    assert.deepEqual(handleLobbyEvent(l, ev('kbLeft', 'fire')), { type: 'joined', seat: 1 });
-    assert.deepEqual(l.cards[0], { name: 'TESTER', profile: 'TESTER', ready: false });
-    assert.deepEqual(l.cards[1], { name: 'Guest 2', profile: null, ready: false });
-    assert.equal(l.seats.seatOf('kbRight'), 0);
+    assert.deepEqual(handleLobbyEvent(l, ev('kbRight', 'fire')), { type: 'joined', seat: 1 });
+    assert.deepEqual(handleLobbyEvent(l, ev('kbLeft', 'fire')), { type: 'joined', seat: 0 });
+    assert.deepEqual(l.cards[1], { name: 'TESTER', profile: 'TESTER', ready: false });
+    assert.deepEqual(l.cards[0], { name: 'Guest 1', profile: null, ready: false });
+    assert.equal(l.seats.seatOf('kbRight'), 1);
+    assert.deepEqual([l.seats.colourOf(0), l.seats.colourOf(1)], [0, 1]);
     assert.deepEqual(joinedSeats(l), [0, 1]);
+});
+
+test('controllers take the lowest free seat; a keyboard half whose seat is taken does too', () => {
+    const l = seatLobby();
+    assert.equal(handleLobbyEvent(l, ev('pad:0', 'fire')).seat, 0);
+    assert.equal(handleLobbyEvent(l, ev('kbRight', 'fire')).seat, 1);
+    assert.equal(handleLobbyEvent(l, ev('kbLeft', 'fire')).seat, 2); // P1 is the controller's
+    assert.equal(handleLobbyEvent(l, ev('pad:1', 'fire')).seat, 3);
+    // Arrow keys first, then a controller: the controller fills P1, not P3
+    const m = seatLobby();
+    assert.equal(handleLobbyEvent(m, ev('kbRight', 'fire')).seat, 1);
+    assert.equal(handleLobbyEvent(m, ev('pad:0', 'fire')).seat, 0);
+    assert.equal(handleLobbyEvent(m, ev('kbLeft', 'fire')).seat, 2);
+    // Leave and rejoin: back to the preferred seat
+    handleLobbyEvent(m, ev('kbRight', 'hyperspace'));
+    assert.equal(handleLobbyEvent(m, ev('kbRight', 'fire')).seat, 1);
+    // Two-player mode: the arrow keys still get P2
+    const two = seatLobby({ max: 2 });
+    assert.equal(handleLobbyEvent(two, ev('kbRight', 'fire')).seat, 1);
+    assert.equal(handleLobbyEvent(two, ev('pad:0', 'fire')).seat, 0);
+    assert.equal(handleLobbyEvent(two, ev('kbLeft', 'fire')).type, 'full');
 });
 
 test('non-fire input from an unjoined source is ignored', () => {
@@ -135,14 +157,14 @@ test('countdown: starts with at least 2 players all ready, any change cancels, f
 
 test('line-up in seat order; restore rebuilds seats, sources, colours and names, not ready', () => {
     const l = seatLobby();
-    handleLobbyEvent(l, ev('kbRight', 'fire'));
+    handleLobbyEvent(l, ev('pad:0', 'fire'));
     handleLobbyEvent(l, ev('kbLeft', 'fire'));
     handleLobbyEvent(l, ev('kbLeft', 'rotateLeft')); // colour 1 -> 3 (0 taken)
     handleLobbyEvent(l, ev('kbLeft', 'thrust')); // ALICE
     handleLobbyEvent(l, ev('kbLeft', 'fire'));
     const lineup = seatLineup(l);
     assert.deepEqual(lineup, [
-        { seat: 0, source: 'kbRight', colour: 0, name: 'TESTER', profile: 'TESTER' },
+        { seat: 0, source: 'pad:0', colour: 0, name: 'TESTER', profile: 'TESTER' },
         { seat: 1, source: 'kbLeft', colour: 3, name: 'ALICE', profile: 'ALICE' },
     ]);
     const again = seatLobby();
