@@ -22,7 +22,11 @@ function isRelative(u) {
 
 test('manifest has the required fields', () => {
     assert.equal(manifest.name, 'Space Adventure');
-    assert.ok(manifest.short_name && manifest.short_name.length <= 12);
+    // short_name is the Android launcher label (the WebAPK's android:label) and what the app
+    // drawer search matches: it must contain the full name ("Space Adv" was not findable by
+    // searching "Space Adventure"). Launchers show roughly 12-15 characters.
+    assert.equal(manifest.short_name, 'Space Adventure');
+    assert.ok(manifest.short_name.length <= 15);
     assert.equal(manifest.display, 'fullscreen');
     assert.deepEqual(manifest.display_override, ['fullscreen', 'standalone']);
     assert.equal(manifest.orientation, 'any');
@@ -35,6 +39,52 @@ test('all manifest URLs are relative (works at / and /SpaceAdventure/)', () => {
         assert.ok(isRelative(manifest[key]), `${key}=${manifest[key]}`);
     }
     for (const icon of manifest.icons) assert.ok(isRelative(icon.src), icon.src);
+    for (const shot of manifest.screenshots) assert.ok(isRelative(shot.src), shot.src);
+    for (const app of manifest.related_applications) assert.ok(isRelative(app.url), app.url);
+});
+
+test('id and start_url stay "./" (a changed id makes Chrome treat it as a different app)', () => {
+    assert.equal(manifest.id, './');
+    assert.equal(manifest.start_url, './');
+    assert.equal(manifest.scope, './');
+    // Resolved under GitHub Pages: everything stays inside /SpaceAdventure/
+    const base = new URL('https://d57udy.github.io/SpaceAdventure/manifest.webmanifest');
+    for (const u of [manifest.id, manifest.start_url, manifest.scope]) {
+        assert.equal(new URL(u, base).pathname, '/SpaceAdventure/');
+    }
+});
+
+test('description, categories and install-related fields for a richer install dialog', () => {
+    assert.ok(typeof manifest.description === 'string' && manifest.description.length >= 40, 'description');
+    assert.ok(manifest.description.length <= 300);
+    assert.ok(Array.isArray(manifest.categories) && manifest.categories.includes('games'));
+    assert.equal(manifest.prefer_related_applications, false, 'true would hide the install prompt');
+    // Self-reference so navigator.getInstalledRelatedApps() can tell a browser tab the app is installed
+    assert.deepEqual(manifest.related_applications, [{ platform: 'webapp', url: 'manifest.webmanifest' }]);
+    assert.ok(manifest.launch_handler && ['focus-existing', 'navigate-existing', 'auto', 'navigate-new']
+        .includes(manifest.launch_handler.client_mode));
+    assert.equal(manifest.display_override[0], manifest.display);
+});
+
+test('screenshots: one narrow and one wide, PNG, sizes match the files, within Chrome limits', () => {
+    const shots = manifest.screenshots;
+    assert.ok(Array.isArray(shots));
+    for (const factor of ['narrow', 'wide']) {
+        assert.ok(shots.some((s) => s.form_factor === factor), factor);
+    }
+    for (const s of shots) {
+        assert.equal(s.type, 'image/png');
+        assert.ok(s.label && s.label.length > 0, 'label');
+        const file = join(ROOT, s.src);
+        assert.ok(existsSync(file), s.src);
+        const { width, height } = pngSize(file);
+        assert.equal(`${width}x${height}`, s.sizes, s.src);
+        // Chrome's richer install UI: 320..3840 px per side, long side <= 2.3x the short side
+        for (const d of [width, height]) assert.ok(d >= 320 && d <= 3840, `${s.src} ${d}`);
+        assert.ok(Math.max(width, height) / Math.min(width, height) <= 2.3, s.src);
+        if (s.form_factor === 'narrow') assert.ok(height > width, 'narrow is portrait');
+        if (s.form_factor === 'wide') assert.ok(width > height, 'wide is landscape');
+    }
 });
 
 test('192, 512 and maskable 512 icons exist with matching pixel sizes', () => {
@@ -77,7 +127,8 @@ test('index.html links the manifest, favicon and apple-touch-icon', { skip: !wir
     assert.match(html, /<link[^>]+rel=["']manifest["'][^>]+href=["']manifest\.webmanifest["']/);
     assert.match(html, /<link[^>]+rel=["']icon["'][^>]+href=["']icons\/favicon-32\.png["']/);
     assert.match(html, /<link[^>]+rel=["']apple-touch-icon["'][^>]+href=["']icons\/apple-touch-icon-180\.png["']/);
-    assert.match(html, /<meta[^>]+name=["']apple-mobile-web-app-title["']/);
+    // iOS home screen label: the full name, like the Android short_name
+    assert.match(html, /<meta[^>]+name=["']apple-mobile-web-app-title["'][^>]+content=["']Space Adventure["']/);
     // No absolute URLs: the site lives under /SpaceAdventure/.
     assert.doesNotMatch(html, /(href|src)=["']\//);
 });

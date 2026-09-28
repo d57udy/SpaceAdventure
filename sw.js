@@ -18,7 +18,7 @@
 const CACHE_PREFIX = 'space-adventure-';
 
 // @generated-begin (scripts/update-sw-version.mjs; do not edit by hand)
-const CACHE_VERSION = 'sa-a0bc2361c5f5';
+const CACHE_VERSION = 'sa-594fc698f698';
 const PRECACHE = [
     './',
     'index.html',

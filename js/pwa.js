@@ -9,6 +9,22 @@
 export const CACHE_PREFIX = 'space-adventure-';
 export const IOS_HINT_KEY = 'spaceAdventure_a2hsHintDismissed';
 export const UPDATE_INTERVAL_MS = 60 * 60 * 1000;
+/** Set once the app is known to be installed on this device (Chrome's tab and the
+ * installed Android app share storage), cleared when the browser offers install again. */
+export const INSTALLED_KEY = 'spaceAdventure_appInstalled';
+/** After the user accepts the install prompt without an `appinstalled` event yet. */
+export const INSTALL_CHECK_MS = 45 * 1000;
+
+// What the install notice says. On Android the installed app (a WebAPK) is built by
+// Google's server after the user accepts, which takes a few seconds up to a minute, and
+// may land only in the app drawer (not the home screen), so always say where to look.
+export const INSTALL_TEXT = {
+    installing: 'Installing… Space Adventure will appear on your home screen or in your app list in a few seconds.',
+    installed: 'Installed. Open Space Adventure from your home screen or app drawer (search “Space Adventure”).',
+    check: 'Look for Space Adventure in your app drawer (search “Space Adventure”). Installing can take up to a minute. If it never appears, use the browser menu (⋮), then Add to home screen, then Install.',
+    dismissed: 'Not installed. To install later, use the browser menu (⋮), then Add to home screen or Install app.',
+    openApp: 'Space Adventure is installed on this device. Open it from your home screen or app drawer (search “Space Adventure”) to play full screen.',
+};
 
 // Game states in which it is safe to show the update toast / apply an update.
 // Never during play (or while typing a name).
@@ -70,6 +86,57 @@ export function detectDisplayMode(win, nav, doc) {
     return 'browser';
 }
 
+/**
+ * 'tap' on touch-only devices, 'click' without a touch screen, else 'click or tap'.
+ * Uses the any-pointer media queries (a laptop with a touch screen has both).
+ */
+export function pointerVerb(win) {
+    const fine = mediaMatches(win, '(any-pointer: fine)');
+    const coarse = mediaMatches(win, '(any-pointer: coarse)');
+    if (coarse && !fine) return 'tap';
+    if (fine && !coarse) return 'click';
+    return 'click or tap';
+}
+
+export function updateToastText(verb = 'click or tap') {
+    return `New version available: ${verb} to update`;
+}
+
+/** Shown when the browser refused full screen (a controller press is not a user gesture). */
+export const FULLSCREEN_GESTURE_TEXT = 'Full screen needs a click, a tap or the F key';
+
+/**
+ * Which install button and which install notice to show. Pure (unit tested).
+ *   button: 'install' | 'open-app' | null
+ *   notice: 'installing' | 'installed' | 'check' | 'dismissed' | 'openApp' | null
+ * @param {object} s
+ * @param {boolean} s.standalone      running as the installed app
+ * @param {boolean} s.canInstall      the browser handed us an install prompt
+ * @param {string}  s.phase           'idle' | 'installing' | 'installed' | 'check' | 'dismissed'
+ * @param {boolean} s.knownInstalled  installed on this device (remembered / getInstalledRelatedApps)
+ * @param {boolean} s.noticeDismissed the user closed the current notice
+ * @param {boolean} s.openAppHint     the user tapped "Open the app"
+ */
+export function installView({
+    standalone = false, canInstall = false, phase = 'idle',
+    knownInstalled = false, noticeDismissed = false, openAppHint = false,
+} = {}) {
+    if (standalone) return { button: null, notice: null };
+    if (phase === 'installing') return { button: null, notice: 'installing' };
+    if (canInstall) {
+        // The browser only offers install while the app is not installed.
+        return { button: 'install', notice: phase === 'dismissed' && !noticeDismissed ? 'dismissed' : null };
+    }
+    if (phase === 'installed' || phase === 'check') {
+        return noticeDismissed
+            ? { button: 'open-app', notice: openAppHint ? 'openApp' : null }
+            : { button: null, notice: phase };
+    }
+    if (knownInstalled) return { button: 'open-app', notice: openAppHint ? 'openApp' : null };
+    if (phase === 'dismissed' && !noticeDismissed) return { button: null, notice: 'dismissed' };
+    return { button: null, notice: null };
+}
+
 // --- Controller ------------------------------------------------------------
 
 /**
@@ -111,6 +178,11 @@ export function initPwa({
         reloaded: false,
         deferredPrompt: null,
         installed: false,
+        installPhase: 'idle',      // idle | installing | installed | check | dismissed
+        knownInstalled: false,
+        installedVia: null,        // storage | standalone | related-apps | appinstalled | accepted
+        installNoticeDismissed: false,
+        openAppHint: false,
         iosHintDismissedNow: false,
         lastError: null,
     };
@@ -281,14 +353,53 @@ export function initPwa({
 
     // ---- Install prompt (Android / Chromium) --------------------------------
 
+    function storage() {
+        try { return (win && win.localStorage) || null; } catch { return null; }
+    }
+
+    function rememberInstalled(via) {
+        state.knownInstalled = true;
+        if (!state.installedVia || via !== 'storage') state.installedVia = via;
+        try { const st = storage(); if (st) st.setItem(INSTALLED_KEY, '1'); } catch { /* private mode */ }
+    }
+
+    function forgetInstalled() {
+        state.knownInstalled = false;
+        state.installedVia = null;
+        try { const st = storage(); if (st) st.removeItem(INSTALLED_KEY); } catch { /* ignore */ }
+    }
+
+    let checkTimer = null;
+    function clearCheckTimer() {
+        if (checkTimer !== null && win && typeof win.clearTimeout === 'function') win.clearTimeout(checkTimer);
+        checkTimer = null;
+    }
+    cleanups.push(clearCheckTimer);
+
+    function setPhase(phase) {
+        state.installPhase = phase;
+        state.installNoticeDismissed = false;
+        state.openAppHint = false;
+    }
+
     listen(win, 'beforeinstallprompt', (event) => {
         if (event && typeof event.preventDefault === 'function') event.preventDefault();
         state.deferredPrompt = event;
+        // The browser offers install only while the app is not installed (again), e.g.
+        // after the user removed it: forget what we remembered.
+        if (!isStandalone()) {
+            forgetInstalled();
+            state.installed = false;
+        }
+        if (state.installPhase !== 'installing' && state.installPhase !== 'dismissed') setPhase('idle');
         emitChange();
     });
     listen(win, 'appinstalled', () => {
         state.deferredPrompt = null;
         state.installed = true;
+        clearCheckTimer();
+        rememberInstalled('appinstalled');
+        if (!isStandalone()) setPhase('installed');
         emitChange();
     });
 
@@ -309,9 +420,62 @@ export function initPwa({
         } catch {
             outcome = 'dismissed';
         }
-        if (outcome === 'accepted') state.installed = true;
+        if (outcome === 'accepted') {
+            state.installed = true;
+            if (!state.knownInstalled || state.installedVia !== 'appinstalled') rememberInstalled('accepted');
+            // `appinstalled` can arrive before userChoice resolves: keep "Installed" then.
+            if (state.installPhase !== 'installed') {
+                setPhase('installing');
+                clearCheckTimer();
+                if (win && typeof win.setTimeout === 'function') {
+                    checkTimer = win.setTimeout(() => {
+                        checkTimer = null;
+                        if (state.installPhase === 'installing') { setPhase('check'); emitChange(); }
+                    }, INSTALL_CHECK_MS);
+                }
+            }
+        } else {
+            setPhase('dismissed');
+        }
         emitChange();
         return outcome;
+    }
+
+    function installViewState() {
+        return installView({
+            standalone: isStandalone(),
+            canInstall: canInstall(),
+            phase: state.installPhase,
+            knownInstalled: state.knownInstalled,
+            noticeDismissed: state.installNoticeDismissed,
+            openAppHint: state.openAppHint,
+        });
+    }
+
+    function dismissInstallNotice() {
+        state.installNoticeDismissed = true;
+        state.openAppHint = false;
+        emitChange();
+    }
+
+    function toggleOpenAppHint() {
+        state.openAppHint = !state.openAppHint;
+        emitChange();
+    }
+
+    /** Ask Chrome (Android 84+, desktop 140+) whether this web app is installed. */
+    async function detectInstalled() {
+        if (isStandalone()) { rememberInstalled('standalone'); emitChange(); return true; }
+        let found = false;
+        try {
+            if (nav && typeof nav.getInstalledRelatedApps === 'function') {
+                const apps = await nav.getInstalledRelatedApps();
+                found = Array.isArray(apps) && apps.length > 0;
+            }
+        } catch { found = false; }
+        // A prompt that arrived meanwhile means "not installed" and wins.
+        if (found && !state.deferredPrompt) { rememberInstalled('related-apps'); emitChange(); }
+        return state.knownInstalled;
     }
 
     // ---- Display mode / iOS -------------------------------------------------
@@ -387,6 +551,7 @@ export function initPwa({
     /**
      * Enter or leave fullscreen on <html> (not the canvas, so the HUD and touch
      * controls stay visible). Must be called synchronously from a user gesture.
+     * The device can still rotate freely. Leaving unlocks any earlier lock.
      * Resolves to the new fullscreen state.
      */
     function toggleFullscreen() {
@@ -406,8 +571,10 @@ export function initPwa({
         } catch {
             return Promise.resolve(false);
         }
+        // No orientation lock: locking the current orientation made rotating impossible
+        // (portrait full screen could not turn to landscape for side-by-side multiplayer).
         return Promise.resolve(p)
-            .then(() => (isFullscreen() ? lockOrientation() : false), noop)
+            .then(noop, noop)
             .then(() => isFullscreen());
     }
 
@@ -417,6 +584,14 @@ export function initPwa({
     };
     listen(doc, 'fullscreenchange', onFullscreenChange);
     listen(doc, 'webkitfullscreenchange', onFullscreenChange);
+
+    // ---- Installed-app detection at start -------------------------------------
+
+    try {
+        const st = storage();
+        if (st && st.getItem(INSTALLED_KEY)) { state.knownInstalled = true; state.installedVia = 'storage'; }
+    } catch { /* ignore */ }
+    const installDetected = detectInstalled();
 
     // ---- Snapshot for the test hook -----------------------------------------
 
@@ -434,6 +609,11 @@ export function initPwa({
             standalone: isStandalone(),
             installed: state.installed || isStandalone(),
             canInstall: canInstall(),
+            installPhase: state.installPhase,
+            knownInstalled: state.knownInstalled,
+            installedVia: state.installedVia,
+            installButton: installViewState().button,
+            installNotice: installViewState().notice,
             isIos: ios,
             iosHintVisible: shouldShowIosHint(),
             fullscreenSupported: fullscreenSupported(),
@@ -462,6 +642,10 @@ export function initPwa({
         // install
         canInstall,
         promptInstall,
+        installView: installViewState,
+        installDetected,
+        dismissInstallNotice,
+        toggleOpenAppHint,
         // display mode / iOS
         displayMode,
         isStandalone,

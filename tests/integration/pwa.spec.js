@@ -113,7 +113,13 @@ test('manifest and installability (Chrome DevTools Protocol)', async ({ page }) 
   expect(manifest.url).toBe(new URL('manifest.webmanifest', page.url()).href);
   expect(manifest.errors).toEqual([]);
   const data = JSON.parse(manifest.data);
-  expect(data).toMatchObject({ name: 'Space Adventure', start_url: './', scope: './', display: 'fullscreen' });
+  expect(data).toMatchObject({ name: 'Space Adventure', short_name: 'Space Adventure', start_url: './', scope: './', display: 'fullscreen' });
+  // Screenshots and icons are reachable from the manifest's folder (also under /SpaceAdventure/)
+  for (const src of [...data.icons.map((i) => i.src), ...data.screenshots.map((s) => s.src)]) {
+    const res = await page.request.get(new URL(src, manifest.url).href);
+    expect(res.status(), src).toBe(200);
+    expect(res.headers()['content-type'], src).toContain('image/png');
+  }
   const { installabilityErrors } = await cdp.send('Page.getInstallabilityErrors');
   expect(installabilityErrors).toEqual([]);
 });
@@ -176,7 +182,8 @@ test.describe('update flow', () => {
       await waitForState(page, 'menu');
       await expect.poll(() => hook(page, 'pwa.updateReady'), { timeout: 15000 }).toBe(true);
       await expect(page.locator('#update-toast')).toBeVisible();
-      await expect(page.locator('#update-toast')).toHaveText('New version available: tap to update');
+      // Wording follows the input device (desktop Chromium: "click")
+      await expect(page.locator('#update-toast')).toHaveText(/^New version available: (click|tap|click or tap) to update$/);
 
       // Tap: save, activate the new worker, reload once
       const reloaded = page.waitForEvent('load');
@@ -279,5 +286,106 @@ test.describe('Full screen', () => {
     await expect.poll(async () => (await hook(page, 'settingsRows'))[index].label).toBe('Exit full screen');
     await overlay.click();
     await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false);
+  });
+});
+
+// --- Install feedback -------------------------------------------------------------------
+// Chrome's real install prompt cannot be driven from a test, so a fake beforeinstallprompt
+// event is dispatched. `outcome` is what the fake prompt's userChoice resolves with.
+async function fakeInstallPrompt(page, outcome = 'accepted') {
+  await page.evaluate((result) => {
+    const ev = new Event('beforeinstallprompt', { cancelable: true });
+    ev.prompt = () => { window.__promptCalls = (window.__promptCalls || 0) + 1; return Promise.resolve(); };
+    ev.userChoice = Promise.resolve({ outcome: result, platform: 'web' });
+    window.dispatchEvent(ev);
+  }, outcome);
+}
+
+test.describe('Install feedback', () => {
+  test('Install: accepted shows "Installing…", appinstalled shows where to find the app', async ({ page }) => {
+    const errors = await openFresh(page, { url: './' });
+    await loginWithKeyboard(page, 'INSTALLER');
+    const btn = page.locator('#app-install-btn');
+    const notice = page.locator('#install-notice');
+    await expect(btn).toBeHidden(); // no prompt from the browser yet
+    await expect(notice).toBeHidden();
+
+    await fakeInstallPrompt(page, 'accepted');
+    await expect(btn).toBeVisible();
+    await btn.click();
+    expect(await page.evaluate(() => window.__promptCalls)).toBe(1);
+    await expect(btn).toBeHidden();
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('Installing… Space Adventure will appear on your home screen or in your app list');
+    expect(await hook(page, 'pwa.installNotice')).toBe('installing');
+
+    await page.evaluate(() => window.dispatchEvent(new Event('appinstalled')));
+    await expect(notice).toContainText('Installed. Open Space Adventure from your home screen or app drawer');
+    expect(await page.evaluate(() => localStorage.getItem('spaceAdventure_appInstalled'))).toBe('1');
+
+    // Closing it leaves an "Open the app" button with the same guidance
+    await page.locator('#install-notice-dismiss').click();
+    await expect(notice).toBeHidden();
+    const open = page.locator('#app-open-btn');
+    await expect(open).toBeVisible();
+    await open.click();
+    await expect(notice).toContainText('Space Adventure is installed on this device');
+
+    // Never during play
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'playing');
+    await expect(notice).toBeHidden();
+    expect(errors).toEqual([]);
+  });
+
+  test('Install: dismissed explains how to install later', async ({ page }) => {
+    await openFresh(page, { url: './' });
+    await loginWithKeyboard(page, 'NOTNOW');
+    await fakeInstallPrompt(page, 'dismissed');
+    await page.locator('#app-install-btn').click();
+    await expect(page.locator('#app-install-btn')).toBeHidden();
+    await expect(page.locator('#install-notice')).toContainText('Not installed. To install later, use the browser menu');
+  });
+
+  test('installed earlier, opened in a browser tab: "Open the app" instead of Install', async ({ page }) => {
+    await openFresh(page, { url: './', storage: { spaceAdventure_appInstalled: '1' } });
+    await loginWithKeyboard(page, 'TABBER');
+    await expect(page.locator('#app-install-btn')).toBeHidden();
+    await expect(page.locator('#app-open-btn')).toBeVisible();
+    expect(await hook(page, 'pwa.installButton')).toBe('open-app');
+    // Chrome offering install again means the app was removed: Install comes back
+    await fakeInstallPrompt(page, 'accepted');
+    await expect(page.locator('#app-install-btn')).toBeVisible();
+    await expect(page.locator('#app-open-btn')).toBeHidden();
+  });
+
+  test('inside the installed app (display-mode standalone): no install UI at all', async ({ page }) => {
+    await page.addInitScript(() => {
+      const real = window.matchMedia.bind(window);
+      window.matchMedia = (q) => (q === '(display-mode: standalone)'
+        ? { matches: true, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }
+        : real(q));
+    });
+    await openFresh(page, { url: './' });
+    await loginWithKeyboard(page, 'INAPP');
+    await fakeInstallPrompt(page, 'accepted');
+    await page.evaluate(() => window.dispatchEvent(new Event('appinstalled')));
+    await frames(page, 3);
+    await expect(page.locator('#app-install-btn')).toBeHidden();
+    await expect(page.locator('#app-open-btn')).toBeHidden();
+    await expect(page.locator('#install-notice')).toBeHidden();
+    expect(await hook(page, 'pwa.standalone')).toBe(true);
+  });
+
+  test('keyboard: Tab to the Install button and press Enter opens the prompt', async ({ page }) => {
+    await openFresh(page, { url: './' });
+    await loginWithKeyboard(page, 'TABKEY');
+    await fakeInstallPrompt(page, 'accepted');
+    const btn = page.locator('#app-install-btn');
+    await expect(btn).toBeVisible();
+    await btn.focus();
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(() => window.__promptCalls || 0)).toBe(1);
+    expect(await hook(page, 'state')).toBe('menu'); // Enter did not also start a game
   });
 });
