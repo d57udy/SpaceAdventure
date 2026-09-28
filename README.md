@@ -55,9 +55,19 @@ Single-player: both key sets drive the one ship.
 
 A game controller works too: left stick steers, Ⓐ or RT fires, Ⓑ is hyperspace and Start pauses. For two or more players see [Multiplayer](#multiplayer).
 
+**Back, focus and screen:**
+- The Android back button (and the browser's Back) works like Escape: in play it pauses, in Settings, Help and the other screens it goes back one screen, and only from the main menu does it leave the game. The address stays the same.
+- Switching to another window or app pauses a running game.
+- While you play (and in the multiplayer lobby) the screen stays on where the browser supports the Screen Wake Lock API, so a controller or keyboard game does not dim and lock the screen.
+- Right-click menus do not open over the game.
+
+**Player names** are 3 to 10 letters or digits in any alphabet (Jürgen, Zoë, Łukasz, さくら). They are stored in capitals.
+
 ### Touch (tablets and phones)
 
-On a touch screen the game shows on-screen controls while you play. No keyboard is needed. There are two touch schemes; switch between them with **Settings > Controls** in the main menu (your choice is remembered on that device).
+On a touch screen the game shows on-screen controls while you play. No keyboard is needed.
+
+**Touch screen with a keyboard or mouse** (touch laptops, Chromebooks, an iPad with a keyboard or trackpad): the game follows what you used last. A key press or mouse click hides the on-screen controls and shows keyboard hints (and puts the cursor in the name box at the start); the next touch brings the touch controls and hints back. There are two touch schemes; switch between them with **Settings > Controls** in the main menu (your choice is remembered on that device).
 
 **Drag to Steer (default)**
 
