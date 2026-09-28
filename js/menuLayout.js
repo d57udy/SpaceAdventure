@@ -91,6 +91,14 @@ export function menuGrid({ count, top, bottom, width, minPitch = MIN_TAP, maxPit
     return { cols, perCol, pitch, colW, fits: pitch >= minPitch - 1e-9, cells };
 }
 
+/**
+ * Gap (px) left between stacked rows of pitch `pitch`: `maxGap` normally, shrunk (down to
+ * `minGap`) when the pitch is tight so the row itself (pitch - gap) stays `minH` tall.
+ */
+export function rowGap(pitch, minH = MIN_TAP, maxGap = 5, minGap = 2) {
+    return Math.min(maxGap, Math.max(minGap, pitch - minH));
+}
+
 /** Screens shorter than this use the compact title and tighter spacing. */
 export const COMPACT_HEIGHT = 480;
 

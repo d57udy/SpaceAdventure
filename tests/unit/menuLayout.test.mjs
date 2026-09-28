@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     stackRows, screenTitleLayout, isCompact, exitRegionOk, MIN_EXIT_TAP, COMPACT_HEIGHT,
-    MIN_TAP, MENU_COLUMN_MIN, menuColumn, overlayInsets, fitFontPx, menuGrid,
+    MIN_TAP, MENU_COLUMN_MIN, menuColumn, overlayInsets, fitFontPx, menuGrid, rowGap,
 } from '../../js/menuLayout.js';
 
 const PHONE = 351; // 90% of a 390 x 844 phone's width
@@ -145,4 +145,12 @@ test('menuGrid: one column of >= 44 px rows when they fit, two on a short screen
     assert.equal(narrow.fits, false);
     assert.equal(narrow.pitch, 30);
     assert.deepEqual(menuGrid({ count: 0, top: 0, bottom: 100, width: 300 }).cells, []);
+});
+
+test('rowGap keeps a tight row 44 px tall, shrinking the gap first', () => {
+    assert.equal(rowGap(55), 5); // roomy: the usual 5 px gap
+    assert.equal(rowGap(49), 5);
+    // iPad landscape Settings: 12 rows at a 47.2 px pitch keep 44 px rows
+    assert.ok(Math.abs(47.24 - rowGap(47.24) - MIN_TAP) < 1e-9);
+    assert.equal(rowGap(40), 2); // too tight for 44: the gap never goes below 2
 });

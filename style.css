@@ -266,10 +266,10 @@ body.touch-enabled.state-playing .touch-controls {
     .touch-btn { width: 60px; height: 60px; }
     .touch-btn.fire { width: 70px; height: 70px; }
     .touch-btn.hyper { width: 50px; height: 50px; }
-    .touch-btn.small { width: 42px; height: 42px; }
+    .touch-btn.small { width: 44px; height: 44px; } /* 44 px touch target */
     /* Keep all five HUD values visible on phones */
     .ui-overlay { font-size: 0.8em; flex-wrap: wrap; row-gap: 0; top: 4px; left: 4px; right: 4px; }
-    body.touch-enabled.state-playing:not(.input-gamepad):not(.input-keyboard):not(.mp-round) .ui-overlay { right: calc(3 * 42px + 2 * 10px + 12px); font-size: 0.8em; }
+    body.touch-enabled.state-playing:not(.input-gamepad):not(.input-keyboard):not(.mp-round) .ui-overlay { right: calc(3 * 44px + 2 * 10px + 12px); font-size: 0.8em; }
     #user-display, #score, #credits, #lives, #level,
     body.touch-enabled.state-playing:not(.input-gamepad):not(.input-keyboard):not(.mp-round) .ui-overlay > div { padding: 2px 4px; }
 }
@@ -320,6 +320,17 @@ body.controls-joystick .touch-right .thrust {
 .joystick-base.active {
     opacity: 1;
     border-color: rgba(255, 255, 255, 0.6);
+}
+
+/* Small phones: a smaller resting hint, tucked into the corner, so it clears the status lines
+   and the radar at the bottom centre (still wider than the 120 px stick travel) */
+@media (max-width: 480px), (max-height: 480px) {
+    .joystick-base {
+        left: calc(76px + env(safe-area-inset-left, 0px));
+        top: calc(100% - 76px - env(safe-area-inset-bottom, 0px));
+        width: 130px;
+        height: 130px;
+    }
 }
 
 .joystick-knob {
@@ -517,7 +528,7 @@ body.state-playing .app-notices {
 }
 
 @media (max-width: 480px), (max-height: 480px) {
-    .game-fs-btn { width: 42px; height: 42px; }
+    .game-fs-btn { width: 44px; height: 44px; } /* 44 px touch target */
     .app-btn { font-size: 12px; padding: 6px 8px; min-height: 44px; } /* 44 px touch target */
 }
 

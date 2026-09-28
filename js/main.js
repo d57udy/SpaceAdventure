@@ -26,7 +26,7 @@ import { sanitizeName, nameLength, nameInitials, NAME_MIN_LENGTH, NAME_MAX_LENGT
 import { createBackNav } from './backNav.js';
 import { createWakeLock } from './wakeLock.js';
 import {
-    stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP, MIN_TAP, menuColumn, overlayInsets, fitFontPx, menuGrid,
+    stackRows, screenTitleLayout, isCompact, MIN_EXIT_TAP, MIN_TAP, rowGap, menuColumn, overlayInsets, fitFontPx, menuGrid,
 } from './menuLayout.js';
 import { valueRowArrows, valueRowStep } from './valueRow.js';
 import { Tutorial, detectInputKind, TUTORIAL_VERSION } from './tutorial.js';
@@ -5674,7 +5674,7 @@ function drawSettingsScreen() {
         const isSelected = index === settingsIndex;
         const lineHeight = layout.rows[index].h;
         const top = layout.rows[index].y;
-        const h = lineHeight - 5;
+        const h = lineHeight - rowGap(lineHeight); // a tight pitch shrinks the gap, not the 44 px row
         const y = top + h / 2 + (lineHeight < 30 ? 5 : 7); // text baseline, centred in the row
         if (isSelected) {
             ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
