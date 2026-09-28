@@ -83,6 +83,13 @@ body.state-paused .ui-overlay {
    Full screen, mute and pause buttons (3 x 48 px + gaps) */
 body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay {
     right: calc(3 * 48px + 2 * 10px + 16px);
+    font-size: 1.1em; /* a slim bar: one line on a tablet */
+    flex-wrap: wrap;
+    row-gap: 0;
+}
+
+body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay > div {
+    padding: 3px 8px;
 }
 
 #user-display,
@@ -262,8 +269,9 @@ body.touch-enabled.state-playing .touch-controls {
     .touch-btn.small { width: 42px; height: 42px; }
     /* Keep all five HUD values visible on phones */
     .ui-overlay { font-size: 0.8em; flex-wrap: wrap; row-gap: 0; top: 4px; left: 4px; right: 4px; }
-    body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay { right: calc(3 * 42px + 2 * 10px + 12px); }
-    #user-display, #score, #credits, #lives, #level { padding: 2px 4px; }
+    body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay { right: calc(3 * 42px + 2 * 10px + 12px); font-size: 0.8em; }
+    #user-display, #score, #credits, #lives, #level,
+    body.touch-enabled.state-playing:not(.input-gamepad):not(.mp-round) .ui-overlay > div { padding: 2px 4px; }
 }
 
 /* Muted: dim the speaker and strike it through */
@@ -396,7 +404,7 @@ body.tutorial-buttons.tutorial-step-shoot #touch-fire-btn {
     border: 1px solid rgba(255, 255, 255, 0.45);
     border-radius: 6px;
     padding: 8px 12px;
-    min-height: 36px;
+    min-height: 44px; /* a fingertip on touch screens */
     cursor: pointer;
     touch-action: manipulation;
     -webkit-user-select: none;

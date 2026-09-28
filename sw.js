@@ -18,7 +18,7 @@
 const CACHE_PREFIX = 'space-adventure-';
 
 // @generated-begin (scripts/update-sw-version.mjs; do not edit by hand)
-const CACHE_VERSION = 'sa-594fc698f698';
+const CACHE_VERSION = 'sa-1f05a78551e1';
 const PRECACHE = [
     './',
     'index.html',
@@ -69,6 +69,7 @@ const PRECACHE = [
     'js/valueRow.js',
     'js/versus.js',
     'js/viewport.js',
+    'js/worldSize.js',
     'assets/audio/asteroid_explode_large.mp3',
     'assets/audio/asteroid_explode_medium.mp3',
     'assets/audio/asteroid_explode_small.mp3',
