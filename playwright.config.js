@@ -14,6 +14,9 @@ import { defineConfig, devices } from '@playwright/test';
 //   menus fit, screenshots per project in tests/screenshots/
 //   pwa-chromium           service worker, offline, install, full screen at /       -> pwa spec
 //   pwa-subpath            the same served under /SpaceAdventure/ like GitHub Pages -> pwa spec
+//   chromium-3d            3D prototype (?3d=1): landscape phone 892x412, touch, WebGL through
+//                          SwiftShader (no GPU on CI)                                -> proto3d spec
+//   chromium-3d-desktop    the same at 1280x800 with mouse and keyboard             -> proto3d spec
 //
 // The existing projects block service workers (serviceWorkers: 'block') so they stay
 // deterministic; only the pwa-* projects let the worker run (the page opts in with ?sw=1
@@ -25,9 +28,12 @@ const PORT = Number(process.env.PW_PORT) || 8082; // PW_PORT lets parallel workt
 // test-only /__admin/override endpoint used by the update-flow test.
 const SUBPATH_PORT = Number(process.env.PW_SUBPATH_PORT) || 8083;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js', 'platform.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js', 'platform.spec.js', 'no3d.spec.js'];
 const PWA_SPECS = ['pwa.spec.js'];
 const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js', 'platform.spec.js'];
+// 3D prototype: WebGL needs SwiftShader in headless CI (docs/plans/06-3d-mode.md §5)
+const SPECS_3D = ['proto3d.spec.js'];
+const ARGS_3D = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--mute-audio'];
 // A tall phone (the adaptive, non-square canvas on a small screen)
 const PIXEL_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'phone.spec.js', 'settings.spec.js', 'tutorial.spec.js', 'layout.spec.js'];
 
@@ -128,6 +134,29 @@ export default defineConfig({
         viewport: { width: 1280, height: 800 },
         serviceWorkers: 'allow',
         baseURL: `http://localhost:${SUBPATH_PORT}/SpaceAdventure/`,
+      },
+    },
+    {
+      name: 'chromium-3d',
+      testMatch: SPECS_3D,
+      use: {
+        browserName: 'chromium', launchOptions: { args: ARGS_3D },
+        viewport: { width: 892, height: 412 },
+        deviceScaleFactor: 3.5,
+        isMobile: true,
+        hasTouch: true,
+        serviceWorkers: 'block',
+      },
+    },
+    {
+      name: 'chromium-3d-desktop',
+      testMatch: SPECS_3D,
+      use: {
+        browserName: 'chromium', launchOptions: { args: ARGS_3D },
+        viewport: { width: 1280, height: 800 },
+        hasTouch: false,
+        isMobile: false,
+        serviceWorkers: 'block',
       },
     },
   ],
