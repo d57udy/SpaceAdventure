@@ -1,0 +1,55 @@
+name: UAT on GitHub Pages
+
+# Acceptance tests against the live site, after every Pages build of main (and on demand).
+on:
+  page_build:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Site to test
+        default: https://d57udy.github.io/SpaceAdventure/
+
+jobs:
+  uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit
+      - name: Wait until the live site serves this commit
+        env:
+          BASE: ${{ inputs.base_url || 'https://d57udy.github.io/SpaceAdventure/' }}
+        run: |
+          want=$(grep -o "sa-[0-9a-f]*" sw.js | head -1)
+          for i in $(seq 1 60); do
+            live=$(curl -s "${BASE}sw.js?nocache=$RANDOM" | grep -o "sa-[0-9a-f]*" | head -1)
+            echo "live=$live want=$want"
+            [ "$live" = "$want" ] && exit 0
+            sleep 20
+          done
+          echo "Live site never served $want"; exit 1
+      - name: Playwright UAT
+        env:
+          UAT_BASE_URL: ${{ inputs.base_url || 'https://d57udy.github.io/SpaceAdventure/' }}
+          PW_WORKERS: 3
+        run: npx playwright test -c playwright.uat.config.js --output=test-results/uat
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uat-screenshots
+          path: tests/screenshots/uat/
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: uat-results
+          path: test-results/
+          retention-days: 7
