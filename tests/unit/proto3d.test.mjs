@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startPrototype, basePixelRatio, nextRenderScale } from '../../js/3d/proto3d.js';
 import { deviceQuat } from '../../js/3d/look.js';
+import * as hud3d from '../../js/3d/hud3d.js';
 import { qMul, qFromEulerYXZ, qToYawPitchRoll, qFromAxisAngle, DEG } from '../../js/3d/math3d.js';
 
 function listeners() {
@@ -76,8 +77,9 @@ function fakeEnv({ permission = null, screenAngle = 90, dpr = 3.5 } = {}) {
         for (let i = 0; i < n; i++) { t += ms; const f = raf.shift(); if (f) f(t); }
     };
     const orient = (alpha, beta, gamma) => winL.fire('deviceorientation', { alpha, beta, gamma });
-    const fakeRenderer = () => ({ three: 'fake', drawCalls: 7, setSize() {}, render() {}, burst() {}, probeLitPixels: () => ({ lit: 1 }) });
-    return { win, doc, byId, frames, orient, fakeRenderer, el: (id) => byId.get(id) };
+    const worlds = [];
+    const fakeRenderer = () => ({ three: 'fake', drawCalls: 7, setSize() {}, render() {}, burst() {}, probeLitPixels: () => ({ lit: 1 }), setWorld(w) { worlds.push(w); } });
+    return { win, doc, byId, frames, orient, fakeRenderer, worlds, el: (id) => byId.get(id) };
 }
 
 // Device angles for neutral ⊗ rel at a screen angle (inverse of deviceQuat)
@@ -253,4 +255,36 @@ test('no readings within 1.5 s switches to Joystick; readings later switch back'
     env.orient(0, 0, -90);
     env.frames(2);
     assert.equal(g().lookMode, 'direct');
+});
+
+test('view distance: Far by default; choosing one regenerates the world and shows in the HUD footer', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().viewDistance, 'far');
+    assert.equal(g().world.size, 3200);
+    assert.equal(env.el('p3-view-far').getAttribute('aria-pressed'), 'true');
+    assert.equal(env.worlds.at(-1).size, 3200, 'renderer told the world size');
+    env.el('p3-start').click();
+    await tick();
+    env.frames(5);
+    env.el('p3-pause').click();
+    assert.equal(g().screen, 'paused');
+    const t = g().time;
+    env.el('p3-view-veryfar').click();
+    assert.equal(g().viewDistance, 'veryfar');
+    assert.equal(g().world.size, 4200);
+    assert.equal(env.worlds.at(-1).fogFar, 1870);
+    assert.equal(g().screen, 'menu', 'a new field: Start begins afresh');
+    assert.ok(g().time < t, 'new simulation');
+    assert.equal(env.el('p3-view-veryfar').getAttribute('aria-pressed'), 'true');
+    assert.equal(env.el('p3-view-far').getAttribute('aria-pressed'), 'false');
+    assert.equal(env.el('p3-start').textContent, 'Tap to start');
+    // layout3d=range keeps its two test rocks in every world
+    assert.deepEqual(g().counts, { green: 1, red: 1, rocks: 2, bullets: 0 });
+    const f = hud3d.formatHud({ score: 0, lives: 3, mode: 'direct', view: 'Very far', fps: 60, renderScale: 1 });
+    assert.match(f.right, /View Very far · 60 fps/);
+});
+
+test('the cockpit frame is gone from the HUD', () => {
+    assert.equal(hud3d.drawCockpit, undefined);
 });

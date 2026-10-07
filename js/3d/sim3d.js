@@ -8,7 +8,7 @@
 import { mulberry32 } from '../rng.js';
 import { vAdd, vScale, vLen, vSub, forwardOf, qIdentity } from './math3d.js';
 import {
-    WORLD, ROCK_SIZES, wrapPos, spawnField, spawnOne, splitRock, driftRocks, countRocks, nearestDelta,
+    ROCK_SIZES, worldFor, wrapPos, spawnField, spawnOne, splitRock, driftRocks, countRocks, nearestDelta,
 } from './world3d.js';
 import { spheresOverlap, sweptHit } from './collide3d.js';
 
@@ -18,25 +18,29 @@ export const SIM = Object.freeze({
     maxSpeed: 260,
     drag: 0.35,          // fraction of speed lost per second when not thrusting
     bulletSpeed: 900,
-    bulletLife: 0.85,    // seconds (range ~765, just past the fog)
+    bulletLife: 0.85,    // seconds (range ~765, just past the fog) at the original 1600 cube; per world: worldFor()
     fireInterval: 0.14,  // seconds between shots while Fire is held
     shipRadius: 9,
     pickupBonus: 16,     // generous pickup radius for green crystals
     lives: 3,
     invulnerable: 2.0,   // seconds after a hit
     greenScore: 100,
-    minGreens: 6,
+    minGreens: 6,        // refill minimums at the original 1600 cube; per world: worldFor()
     minReds: 8,
 });
 
 /**
  * @param {object} [o]
  * @param {number} [o.seed]
- * @param {number} [o.size] - world cube side
+ * @param {string} [o.view] - view distance preset (world3d VIEW_DISTANCES); omitted: the original 1600 cube
+ * @param {number} [o.size] - world cube side (overrides the preset's)
  * @param {boolean} [o.field] - false: start with an empty world (tests place rocks themselves)
  */
-export function createSim({ seed = 1, size = WORLD.size, field = true, greens, reds } = {}) {
+export function createSim({ seed = 1, view = null, size, field = true, greens, reds } = {}) {
+    const world = worldFor(view);
+    if (size === undefined) size = world.size;
     const s = {
+        world,
         seed,
         rand: mulberry32(seed),
         size,
@@ -54,7 +58,10 @@ export function createSim({ seed = 1, size = WORLD.size, field = true, greens, r
         stats: { collected: 0, splits: 0, hits: 0, shots: 0 },
     };
     if (field) {
-        s.rocks = spawnField(s.rand, { size, shipPos: s.ship.pos, greens, reds, nextId: () => nextId(s) });
+        s.rocks = spawnField(s.rand, {
+            size, shipPos: s.ship.pos, greens: greens ?? world.greens, reds: reds ?? world.reds,
+            clearance: world.spawnClearance, nextId: () => nextId(s),
+        });
     }
     return s;
 }
@@ -81,7 +88,7 @@ function fire(s) {
         id: nextId(s),
         pos: wrapPos(vAdd(s.ship.pos, vScale(f, SIM.shipRadius + 4)), s.size),
         vel: vAdd(s.ship.vel, vScale(f, SIM.bulletSpeed)),
-        life: SIM.bulletLife,
+        life: s.world.bulletLife,
     });
     s.stats.shots++;
     emit(s, 'fire');
@@ -180,8 +187,9 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
     // Keep the field populated (far from the ship, never pops in view thanks to the fog)
     if (s.refill) {
         const c = countRocks(s.rocks);
-        if (c.green < SIM.minGreens) s.rocks.push(spawnOne(s.rand, 'green', { size: s.size, shipPos: ship.pos, nextId: () => nextId(s) }));
-        if (c.red < SIM.minReds) s.rocks.push(spawnOne(s.rand, 'red', { size: s.size, shipPos: ship.pos, nextId: () => nextId(s) }));
+        const o = { size: s.size, shipPos: ship.pos, clearance: s.world.refillClearance, nextId: () => nextId(s) };
+        if (c.green < s.world.minGreens) s.rocks.push(spawnOne(s.rand, 'green', o));
+        if (c.red < s.world.minReds) s.rocks.push(spawnOne(s.rand, 'red', o));
     }
     return s;
 }

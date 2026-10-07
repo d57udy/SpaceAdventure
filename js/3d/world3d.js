@@ -14,6 +14,61 @@ export const WORLD = Object.freeze({
     reds: 18,            // initial red rocks (mix of large and medium)
 });
 
+/**
+ * View distance presets (owner feedback 2026-10-07: "objects disappear a little too quickly").
+ * `range` is the visible range relative to the original 720 fog end. For each preset the cube
+ * side keeps fogFar <= 0.45 x side, so an object is fully fogged (and culled) well before its
+ * nearest image can jump across the seam at side / 2. Rock and crystal counts scale with the
+ * world volume, so the density per visible volume stays as it was (capped by MAX_FIELD_ROCKS).
+ * Every side is a multiple of 200 (the renderer's space-dust box).
+ */
+export const VIEW_DISTANCES = Object.freeze({
+    normal: Object.freeze({ label: 'Normal', range: 1.5, fogNear: 390, fogFar: 1080, size: 2400 }),
+    far: Object.freeze({ label: 'Far', range: 2, fogNear: 520, fogFar: 1440, size: 3200 }),
+    veryfar: Object.freeze({ label: 'Very far', range: 2.6, fogNear: 675, fogFar: 1870, size: 4200 }),
+});
+export const VIEW_DISTANCE_NAMES = Object.freeze(Object.keys(VIEW_DISTANCES));
+export const DEFAULT_VIEW_DISTANCE = 'far';
+export const MAX_FIELD_ROCKS = 600;    // cap on the initial field (crystals + red rocks)
+export const FOG_SEAM_RATIO = 0.45;    // fogFar <= this x side
+const BASE_MIN_GREENS = 6;             // refill minimums at the original 1600 cube
+const BASE_MIN_REDS = 8;
+const BULLET_SPEED = 900;              // matches SIM.bulletSpeed (sim3d.js)
+
+/**
+ * Everything that depends on the world size: cube side, fog, cull distance, field counts,
+ * refill minimums and spawn distances, bullet life. name: a VIEW_DISTANCES key, or null for
+ * the original 1600 cube (unit tests). maxRocks: cap on greens + reds.
+ */
+export function worldFor(name = DEFAULT_VIEW_DISTANCE, { maxRocks = MAX_FIELD_ROCKS } = {}) {
+    const key = name ? (VIEW_DISTANCES[name] ? name : DEFAULT_VIEW_DISTANCE) : null;
+    const p = key ? VIEW_DISTANCES[key] : null;
+    const size = p ? p.size : WORLD.size;
+    const fogNear = p ? p.fogNear : WORLD.fogNear;
+    const fogFar = p ? p.fogFar : WORLD.fogFar;
+    const volume = (size / WORLD.size) ** 3;
+    const base = WORLD.greens + WORLD.reds;
+    const k = Math.min(1, maxRocks / (base * volume)); // < 1 only when the cap bites
+    const scale = volume * k;
+    return {
+        name: key || 'classic',
+        label: p ? p.label : 'Classic',
+        size,
+        fogNear,
+        fogFar,
+        // Beyond this an object is not drawn: even a large rock's spikes (~80) are then past the
+        // fog end, and it is below side / 2, so a drawn object never switches to another image
+        cullDistance: fogFar + 90,
+        spawnClearance: WORLD.spawnClearance,   // initial field: away from the ship
+        refillClearance: p ? fogFar + 90 : WORLD.fogFar * 0.8, // refills appear out of sight
+        greens: Math.round(WORLD.greens * scale),
+        reds: Math.round(WORLD.reds * scale),
+        minGreens: Math.max(1, Math.round(BASE_MIN_GREENS * scale)),
+        minReds: Math.max(1, Math.round(BASE_MIN_REDS * scale)),
+        bulletLife: p ? +((fogFar + 60) / BULLET_SPEED).toFixed(3) : 0.85, // range just past the fog
+    };
+}
+
 export const ROCK_SIZES = Object.freeze({
     large: { radius: 42, score: 20, next: 'medium' },
     medium: { radius: 24, score: 50, next: 'small' },

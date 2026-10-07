@@ -30,6 +30,7 @@ export const SETTING_DEFS = Object.freeze({
     levelHorizon3d: boolDef(false),
     sensitivity3d: intDef(1, 10, 5),
     sensor3d: enumDef(['auto', 'event'], 'auto'), // auto: RelativeOrientationSensor when available
+    viewDistance3d: enumDef(['normal', 'far', 'veryfar'], 'far'), // world size and fog (js/3d/world3d.js)
 });
 
 export const SETTING_NAMES = Object.freeze(Object.keys(SETTING_DEFS));

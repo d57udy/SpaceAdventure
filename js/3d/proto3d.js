@@ -4,7 +4,8 @@
 // input, fixed-step loop and the read-only test hook window.__spaceAdventure.game3d.
 //
 // URL options: ?3d=1 (required), &seed3d=N (repeatable layout), &layout3d=range (one red
-// rock straight ahead and one crystal behind: used by the browser tests), &lowres3d=1
+// rock straight ahead and one crystal behind: used by the browser tests), &layout3d=far
+// (one red rock FAR_ROCK_DISTANCE straight ahead: past the original fog end), &lowres3d=1
 // (tests only: fixed half-resolution drawing buffer, no antialiasing, 1x HUD, so a software
 // renderer on CI keeps a usable frame rate; real devices never get it).
 //
@@ -16,7 +17,7 @@ import { createSettings } from '../settings.js';
 import { createWakeLock } from '../wakeLock.js';
 import { radialDeadzone, GP, TRIGGER_THRESHOLD, BUTTON_THRESHOLD } from '../gamepad.js';
 import { createSim, stepSim, drainEvents, simCounts, nextId, SIM } from './sim3d.js';
-import { makeRock } from './world3d.js';
+import { makeRock, worldFor, VIEW_DISTANCES, VIEW_DISTANCE_NAMES } from './world3d.js';
 import { vLen } from './math3d.js';
 import {
     createLook, stepLook, recentre, setMode, calibrate, setLevelHorizon, lookAngles, CONTROL_MODES,
@@ -24,7 +25,7 @@ import {
 import {
     createOrientationSource, requestMotionPermission, motionPermissionNeeded, isPortrait, screenAngle,
 } from './sensors.js';
-import { drawCockpit, drawCrosshair, drawHudText, drawJoystick, drawFlash } from './hud3d.js';
+import { drawCrosshair, drawHudText, drawJoystick, drawFlash } from './hud3d.js';
 
 const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
 const MODE_HELP = {
@@ -35,6 +36,7 @@ const MODE_HELP = {
 const NO_DATA_MS = 1500;
 const STICK_RADIUS = 64;
 const MAX_STEPS = 6;
+export const FAR_ROCK_DISTANCE = 1000; // &layout3d=far: beyond the original fog end (720)
 
 /** Drawing-buffer pixel ratio cap: 1.5, and 1.0 on phones with very dense screens (DPR > 2). */
 export function basePixelRatio(dpr) {
@@ -62,7 +64,8 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 #p3-hud { pointer-events: none; }
 /* style.css paints every canvas black; the HUD must stay see-through over the 3D scene */
 #proto3d #p3-hud { background: transparent !important; }
-#proto3d button { font: inherit; color: #fff; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+#proto3d button { font: inherit; color: #fff; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.9); }
 .p3-btn { position: absolute; width: 84px; height: 84px; border-radius: 50%; touch-action: none;
   background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.4); font-size: 15px; font-weight: bold; }
 .p3-btn.p3-on { background: rgba(255,255,255,0.35); }
@@ -131,6 +134,12 @@ const HTML = `
       <button type="button" class="p3-choice" id="p3-sens-down" aria-label="Less sensitive">−</button>
       <span id="p3-sens">5</span>
       <button type="button" class="p3-choice" id="p3-sens-up" aria-label="More sensitive">+</button>
+    </div>
+    <div class="p3-row" role="group" aria-label="View distance">
+      <span>View distance</span>
+      <button type="button" class="p3-choice" id="p3-view-normal" data-view="normal">Normal</button>
+      <button type="button" class="p3-choice" id="p3-view-far" data-view="far">Far</button>
+      <button type="button" class="p3-choice" id="p3-view-veryfar" data-view="veryfar">Very far</button>
     </div>
     <p>Hold the phone comfortably, then tap Start: that position becomes "straight ahead". Recentre or double-tap resets it.</p>
     <p id="p3-portrait-note" class="p3-hidden">Landscape recommended: turn the phone sideways.</p>
@@ -225,7 +234,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     const hctx = hud.getContext('2d');
     try {
         const factory = createRenderer || (await import('./render3d.js')).createRenderer3d;
-        renderer = factory(canvas, { antialias: !lowres });
+        renderer = factory(canvas, { antialias: !lowres, world: worldFor(settings.get('viewDistance3d')) });
     } catch (e) {
         error = String(e && e.message || e);
         say('3D could not start on this device (WebGL 2 not available). Use Back to 2D.', 1e9);
@@ -249,14 +258,21 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     resize();
 
     // --- simulation
+    const viewName = () => settings.get('viewDistance3d');
     function newSim() {
-        if (layout === 'range') {
-            sim = createSim({ seed, field: false });
+        const view = viewName();
+        if (renderer && renderer.setWorld) renderer.setWorld(worldFor(view));
+        if (layout === 'far') {
+            sim = createSim({ seed, view, field: false });
+            const [x, y, z] = sim.ship.pos;
+            sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - FAR_ROCK_DISTANCE], vel: [0, 0, 0], rand: sim.rand }));
+        } else if (layout === 'range') {
+            sim = createSim({ seed, view, field: false });
             const [x, y, z] = sim.ship.pos;
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - 300], vel: [0, 0, 0], rand: sim.rand }));
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'green', pos: [x, y, z + 220], vel: [0, 0, 0], rand: sim.rand }));
         } else {
-            sim = createSim({ seed });
+            sim = createSim({ seed, view });
         }
     }
     newSim();
@@ -271,6 +287,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         $('p3-menu-level').setAttribute('aria-pressed', String(lv));
         $('p3-level').textContent = `Level: ${lv ? 'on' : 'off'}`;
         $('p3-sens').textContent = String(settings.get('sensitivity3d'));
+        for (const v of VIEW_DISTANCE_NAMES) $('p3-view-' + v).setAttribute('aria-pressed', String(v === viewName()));
         const eff = effectiveMode();
         $('p3-mode').textContent = MODE_LABELS[eff] + (eff !== c ? '*' : '');
         root.classList.toggle('p3-joystick', eff === 'joystick');
@@ -368,6 +385,20 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         refreshUi();
     }
 
+    /** A new view distance regenerates the field (a different world size): a fresh start. */
+    function chooseView(v) {
+        if (!VIEW_DISTANCES[v]) return;
+        const was = viewName();
+        settings.set('viewDistance3d', v);
+        if (v === was) { refreshUi(); return; }
+        newSim();
+        if (screen !== 'menu') {
+            screen = 'menu';
+            $('p3-status').textContent = `View distance: ${VIEW_DISTANCES[v].label}. New field, tap to start.`;
+        }
+        refreshUi();
+    }
+
     function toggleLevel() {
         const on = !settings.get('levelHorizon3d');
         settings.set('levelHorizon3d', on);
@@ -390,6 +421,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     });
     for (const m of CONTROL_MODES) $('p3-mode-' + m).addEventListener('click', () => chooseMode(m));
     $('p3-menu-level').addEventListener('click', toggleLevel);
+    for (const v of VIEW_DISTANCE_NAMES) $('p3-view-' + v).addEventListener('click', () => chooseView(v));
     $('p3-sens-down').addEventListener('click', () => { look.sensitivity = settings.set('sensitivity3d', settings.get('sensitivity3d') - 1); refreshUi(); });
     $('p3-sens-up').addEventListener('click', () => { look.sensitivity = settings.set('sensitivity3d', settings.get('sensitivity3d') + 1); refreshUi(); });
 
@@ -602,11 +634,10 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     function drawOverlay() {
         hctx.clearRect(0, 0, cssW, cssH);
         drawFlash(hctx, cssW, cssH, flashHit, flashCollect);
-        drawCockpit(hctx, cssW, cssH);
         drawCrosshair(hctx, cssW, cssH, sim.ship.invulnerable > 0 ? 'rgba(255,140,140,0.9)' : undefined);
         drawHudText(hctx, cssW, cssH, {
             score: sim.score, lives: sim.lives, mode: look.mode, chosenMode: chosenMode(), levelHorizon: look.level,
-            fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
+            view: VIEW_DISTANCES[viewName()].label, fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
         }, { top: 0, left: 0, right: 0 });
         drawJoystick(hctx, stick);
     }
@@ -629,6 +660,9 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             lowres,
             levelHorizon: look.level,
             sensitivity: look.sensitivity,
+            viewDistance: viewName(),
+            world: { ...sim.world, ...(renderer && renderer.world ? { rendered: renderer.world } : {}) },
+            drawnRocks: renderer && renderer.drawnRocks !== undefined ? renderer.drawnRocks : null,
             permission,
             sensorSource: source.source,
             motionData: source.hasData,
@@ -655,6 +689,11 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     }
     const hook = win.__spaceAdventure || (win.__spaceAdventure = {});
     Object.defineProperty(hook, 'game3d', { get: snapshot, configurable: true });
+    /** Last frame's visibility of each rock (distance, drawn, fog 0..1); no pixel reads. */
+    hook.rocks3d = () => sim.rocks.map((r) => {
+        const v = renderer && renderer.rockVisibility ? renderer.rockVisibility(r.id) : null;
+        return { id: r.id, kind: r.kind, size: r.size, ...(v || {}) };
+    });
     hook.probe3d = () => (renderer
         ? renderer.probeLitPixels({ shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt: 0 })
         : null);

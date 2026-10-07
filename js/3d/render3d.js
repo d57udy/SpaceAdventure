@@ -7,14 +7,31 @@
 // Floating origin: the camera always sits at (0, 0, 0) with the ship's orientation and
 // every object is placed at its nearest image relative to the ship (world3d.nearestDelta),
 // so the 3-torus wraps seamlessly and float precision never degrades.
+//
+// Fog is RADIAL (distance from the camera, not view depth): an object at the screen edge
+// fades at the same distance as one straight ahead, so culling at world.cullDistance and
+// the nearest-image switch at side / 2 both happen where everything is fully fogged.
+// Rocks, crystal glows and bullets are drawn with InstancedMesh (a handful of draw calls
+// for hundreds of objects). The sky (stars, planet) never writes depth and is drawn first,
+// scaled inside the camera's far plane, so it always stays behind the field.
 
 import * as THREE from './vendor/three.module.min.js';
-import { nearestDelta, WORLD } from './world3d.js';
+import { nearestDelta, worldFor } from './world3d.js';
 
 const BG = 0x02030a;
 const DUST_COUNT = 520;
-const DUST_BOX = 200; // divides the world size (1600), so the dust does not jump when the ship wraps
+export const DUST_BOX = 200; // divides every world side, so the dust does not jump when the ship wraps
 const SPARK_MAX = 600;
+const SKY_RADIUS = 2300;     // outermost sky geometry (planet far side), scaled to fit the far plane
+
+// Radial fog for every fogged material (patched once, before any shader compiles)
+THREE.ShaderChunk.fog_vertex = THREE.ShaderChunk.fog_vertex.replace('- mvPosition.z', 'length( mvPosition.xyz )');
+
+/** linear-fog factor as three.js computes it (smoothstep): 0 = clear, 1 = fully fogged. */
+export function fogFactor(dist, near, far) {
+    const t = Math.min(1, Math.max(0, (dist - near) / (far - near)));
+    return t * t * (3 - 2 * t);
+}
 
 function makeRng(seed) {
     let a = seed >>> 0;
@@ -68,13 +85,15 @@ function glowTexture() {
 /**
  * @param {HTMLCanvasElement} canvas
  * @param {object} [o]
- * @param {number} [o.worldSize]
+ * @param {object} [o.world] - from world3d.worldFor() (size, fog, cull distance); setWorld() changes it
  * @param {boolean} [o.antialias] - false only for ?lowres3d=1 (tests on a software renderer)
  * @returns {object} renderer interface (see the returned object)
  */
-export function createRenderer3d(canvas, {
-    worldSize = WORLD.size, fogNear = WORLD.fogNear, fogFar = WORLD.fogFar, antialias = true,
-} = {}) {
+export function createRenderer3d(canvas, { world = worldFor(), antialias = true } = {}) {
+    let worldSize = world.size;
+    let fogNear = world.fogNear;
+    let fogFar = world.fogFar;
+    let cullDistance = world.cullDistance;
     const renderer = new THREE.WebGLRenderer({ canvas, antialias, powerPreference: 'high-performance' });
     renderer.setClearColor(BG, 1);
     let contextLost = false;
@@ -84,7 +103,7 @@ export function createRenderer3d(canvas, {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
     scene.fog = new THREE.Fog(BG, fogNear, fogFar);
-    const camera = new THREE.PerspectiveCamera(65, 16 / 9, 0.5, 2600);
+    const camera = new THREE.PerspectiveCamera(65, 16 / 9, 1, 2600);
     scene.add(camera);
 
     scene.add(new THREE.AmbientLight(0x6070a0, 1.1));
@@ -113,18 +132,25 @@ export function createRenderer3d(canvas, {
         const g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
         g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-        const m = new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true, fog: false, depthWrite: false });
-        sky.add(new THREE.Points(g, m));
+        const m = new THREE.PointsMaterial({
+            size: 2, sizeAttenuation: false, vertexColors: true, fog: false, depthWrite: false, depthTest: false,
+        });
+        const stars = new THREE.Points(g, m);
+        stars.renderOrder = -3;
+        stars.frustumCulled = false;
+        sky.add(stars);
         const planet = new THREE.Mesh(
             new THREE.SphereGeometry(260, 32, 16),
-            new THREE.MeshLambertMaterial({ color: 0x3355aa, emissive: 0x0a1430, fog: false }),
+            new THREE.MeshLambertMaterial({ color: 0x3355aa, emissive: 0x0a1430, fog: false, depthWrite: false, depthTest: false }),
         );
         planet.position.set(1300, 450, -1500);
+        planet.renderOrder = -2;
         sky.add(planet);
         const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-            map: glowTexture(), color: 0x4466ff, transparent: true, opacity: 0.35, depthWrite: false, fog: false,
+            map: glowTexture(), color: 0x4466ff, transparent: true, opacity: 0.35, depthWrite: false, depthTest: false, fog: false,
             blending: THREE.AdditiveBlending,
         }));
+        glow.renderOrder = -1;
         glow.scale.setScalar(820);
         glow.position.copy(planet.position);
         sky.add(glow);
@@ -152,15 +178,39 @@ export function createRenderer3d(canvas, {
     const redGeos = [0, 1, 2, 3].map(spikyGeometry);
     const redMat = new THREE.MeshLambertMaterial({ color: 0xff3a4c, emissive: 0x3a0610, flatShading: true });
     const glowTex = glowTexture();
-    const greenGlowMat = new THREE.SpriteMaterial({
+    const greenGlowMat = new THREE.MeshBasicMaterial({
         map: glowTex, color: 0x33ff99, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending,
     });
-    const rockMeshes = new Map(); // id -> { mesh, glow }
+    const glowGeo = new THREE.PlaneGeometry(1, 1);
 
     // --- bullets
     const bulletGeo = new THREE.BoxGeometry(0.9, 0.9, 10);
     const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffe680 });
-    const bulletMeshes = new Map();
+
+    /** An InstancedMesh that grows (doubling) when more instances are needed. */
+    function instanced(geo, mat, capacity) {
+        const pool = { mesh: null, capacity: 0, n: 0 };
+        const make = (cap) => {
+            if (pool.mesh) { scene.remove(pool.mesh); pool.mesh.dispose(); }
+            pool.mesh = new THREE.InstancedMesh(geo, mat, cap);
+            pool.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            pool.mesh.frustumCulled = false; // instances move every frame; the GPU clips
+            pool.mesh.count = 0;
+            pool.capacity = cap;
+            scene.add(pool.mesh);
+        };
+        make(capacity);
+        pool.ensure = (n) => { if (n > pool.capacity) make(Math.max(n, pool.capacity * 2)); };
+        pool.begin = () => { pool.n = 0; };
+        pool.push = (m) => { pool.mesh.setMatrixAt(pool.n++, m); };
+        pool.end = () => { pool.mesh.count = pool.n; pool.mesh.instanceMatrix.needsUpdate = true; };
+        return pool;
+    }
+    const redPools = redGeos.map((g) => instanced(g, redMat, 128));
+    const greenPool = instanced(greenGeo, greenMat, 128);
+    const glowPool = instanced(glowGeo, greenGlowMat, 128);
+    const bulletPool = instanced(bulletGeo, bulletMat, 32);
+    const allPools = [...redPools, greenPool, glowPool, bulletPool];
 
     // --- sparkles (collect / split)
     const sparkPos = new Float32Array(SPARK_MAX * 3);
@@ -178,61 +228,76 @@ export function createRenderer3d(canvas, {
 
     let drawCalls = 0;
     let shipPos = [0, 0, 0];
+    let drawnRocks = 0;
+    const lastSeen = new Map(); // rock id -> { distance, drawn } from the last frame (test hook)
 
-    function sweep(map, alive, remove) {
-        for (const [id, entry] of map) {
-            if (!alive.has(id)) { remove(entry); map.delete(id); }
-        }
-    }
-
-    function syncRocks(rocks) {
-        const alive = new Set();
-        const cull = fogFar + 60;
-        for (const r of rocks) {
-            alive.add(r.id);
-            let e = rockMeshes.get(r.id);
-            if (!e) {
-                const mesh = new THREE.Mesh(r.kind === 'green' ? greenGeo : redGeos[r.shape % redGeos.length], r.kind === 'green' ? greenMat : redMat);
-                let glow = null;
-                if (r.kind === 'green') {
-                    glow = new THREE.Sprite(greenGlowMat);
-                    glow.scale.setScalar(r.radius * 4.2);
-                    scene.add(glow);
-                }
-                mesh.scale.setScalar(r.radius);
-                scene.add(mesh);
-                e = { mesh, glow };
-                rockMeshes.set(r.id, e);
-            }
-            const d = nearestDelta(shipPos, r.pos, worldSize);
-            const far = Math.abs(d[0]) > cull || Math.abs(d[1]) > cull || Math.abs(d[2]) > cull;
-            e.mesh.visible = !far;
-            e.mesh.position.set(d[0], d[1], d[2]);
-            e.mesh.quaternion.setFromAxisAngle(_axis.set(r.spinAxis[0], r.spinAxis[1], r.spinAxis[2]), r.angle);
-            if (e.glow) { e.glow.visible = !far; e.glow.position.copy(e.mesh.position); }
-        }
-        sweep(rockMeshes, alive, (e) => { scene.remove(e.mesh); if (e.glow) scene.remove(e.glow); });
-    }
+    const _m = new THREE.Matrix4();
+    const _p = new THREE.Vector3();
+    const _q = new THREE.Quaternion();
+    const _s = new THREE.Vector3();
     const _axis = new THREE.Vector3();
     const _look = new THREE.Vector3();
+    const _origin = new THREE.Vector3();
+    const _up = new THREE.Vector3(0, 1, 0);
+
+    function syncRocks(rocks) {
+        for (const p of redPools) p.ensure(rocks.length);
+        greenPool.ensure(rocks.length);
+        glowPool.ensure(rocks.length);
+        for (const p of allPools) if (p !== bulletPool) p.begin();
+        lastSeen.clear();
+        drawnRocks = 0;
+        for (const r of rocks) {
+            const d = nearestDelta(shipPos, r.pos, worldSize);
+            const dist = Math.hypot(d[0], d[1], d[2]);
+            const drawn = dist <= cullDistance;
+            lastSeen.set(r.id, { distance: dist, drawn });
+            if (!drawn) continue;
+            drawnRocks++;
+            _p.set(d[0], d[1], d[2]);
+            _q.setFromAxisAngle(_axis.set(r.spinAxis[0], r.spinAxis[1], r.spinAxis[2]), r.angle);
+            _s.setScalar(r.radius);
+            _m.compose(_p, _q, _s);
+            if (r.kind === 'green') {
+                greenPool.push(_m);
+                // Glow billboard: faces the camera plane, like a sprite
+                _s.setScalar(r.radius * 4.2);
+                _m.compose(_p, camera.quaternion, _s);
+                glowPool.push(_m);
+            } else {
+                redPools[r.shape % redPools.length].push(_m);
+            }
+        }
+        for (const p of allPools) if (p !== bulletPool) p.end();
+    }
 
     function syncBullets(bullets) {
-        const alive = new Set();
+        bulletPool.ensure(bullets.length);
+        bulletPool.begin();
         for (const b of bullets) {
-            alive.add(b.id);
-            let m = bulletMeshes.get(b.id);
-            if (!m) {
-                m = new THREE.Mesh(bulletGeo, bulletMat);
-                scene.add(m);
-                bulletMeshes.set(b.id, m);
-            }
             const d = nearestDelta(shipPos, b.pos, worldSize);
-            m.position.set(d[0], d[1], d[2]);
-            _look.set(d[0] + b.vel[0], d[1] + b.vel[1], d[2] + b.vel[2]);
-            m.lookAt(_look);
+            _p.set(d[0], d[1], d[2]);
+            _look.set(b.vel[0], b.vel[1], b.vel[2]);
+            if (_look.lengthSq() < 1e-9) _look.set(0, 0, -1);
+            // Object3D.lookAt for a non-camera: +Z points along the velocity
+            _m.lookAt(_look, _origin, _up);
+            _q.setFromRotationMatrix(_m);
+            _s.set(1, 1, 1);
+            _m.compose(_p, _q, _s);
+            bulletPool.push(_m);
         }
-        sweep(bulletMeshes, alive, (m) => scene.remove(m));
+        bulletPool.end();
     }
+
+    /** Sky scale and camera far plane for the current fog distance. */
+    function applyWorld() {
+        scene.fog.near = fogNear;
+        scene.fog.far = fogFar;
+        camera.far = Math.max(cullDistance + 200, 1200);
+        sky.scale.setScalar(Math.min(1, (camera.far * 0.95) / SKY_RADIUS));
+        camera.updateProjectionMatrix();
+    }
+    applyWorld();
 
     function syncDust() {
         const h = DUST_BOX / 2;
@@ -318,6 +383,27 @@ export function createRenderer3d(canvas, {
             for (let i = 0; i < px.length; i += 16) if (px[i] + px[i + 1] + px[i + 2] > 60) lit++;
             return { lit, width: w, height: h };
         },
+        /** Change the world (view distance): cube side, fog, cull distance, far plane, sky scale. */
+        setWorld(w) {
+            worldSize = w.size;
+            fogNear = w.fogNear;
+            fogFar = w.fogFar;
+            cullDistance = w.cullDistance;
+            sparks.length = 0;
+            applyWorld();
+        },
+        /** World settings in effect (test hook). */
+        get world() { return { size: worldSize, fogNear, fogFar, cullDistance, cameraFar: camera.far }; },
+        /**
+         * How visible a rock was in the last frame (test hook, no pixel reads): distance from
+         * the ship, drawn (inside the cull distance) and the fog factor (0 clear, 1 fully fogged).
+         */
+        rockVisibility(id) {
+            const e = lastSeen.get(id);
+            if (!e) return null;
+            return { distance: e.distance, drawn: e.drawn, fog: fogFactor(e.distance, fogNear, fogFar) };
+        },
+        get drawnRocks() { return drawnRocks; },
         get drawCalls() { return drawCalls; },
         dispose() { renderer.dispose(); },
     };

@@ -158,7 +158,7 @@ Recommendations in bold.
 
 Open the game with `?3d=1` (also on GitHub Pages). Without the parameter nothing changes: `js/main.js` only checks the parameter and then loads `js/3d/proto3d.js` with a dynamic import.
 
-- **What it is:** a feel test, not the game. Cockpit view (ship = camera), wrap-around cube (side 1600, fog 260–720 hides the seam, every object drawn at its nearest copy), fixed star background with a distant planet, space dust, 12 green crystals and 18 red spiky rocks (large and medium) that drift, simple projectile bullets, splitting, lives with a red flash and vibration, a cockpit frame, crosshair and HUD (score, lives, speed, control type, frames per second, render scale). The field refills far away so it never runs empty. No UFOs, boss, power-ups, sound, high scores or credits yet.
+- **What it is:** a feel test, not the game. Cockpit view (ship = camera), wrap-around cube (side 1600, fog 260–720 hides the seam, every object drawn at its nearest copy), fixed star background with a distant planet, space dust, 12 green crystals and 18 red spiky rocks (large and medium) that drift, simple projectile bullets, splitting, lives with a red flash and vibration, a cockpit frame (removed 7 October, §10.1), crosshair and HUD (score, lives, speed, control type, frames per second, render scale). The field refills far away so it never runs empty. No UFOs, boss, power-ups, sound, high scores or credits yet.
 - **Controls (§8.1):** Direct (phone pose relative to the neutral pose, all axes, 1:1), Rate (tilt sets pitch/yaw/roll rates; 4° dead zone, full rate at 35°, curve exponent 1.6, about 100°/s and 140°/s roll at sensitivity 5) and Joystick (floating stick on the left 45 % of the screen; two ⟲ ⟳ roll buttons above Fire; Thrust moves next to Fire so the left thumb stays on the stick). Level horizon works in all three (no roll, pitch ±85°). The pose held when tapping Start is "straight ahead"; Recentre and double-tap reset it; a screen rotation recentres automatically. Desktop: pointer-lock mouse plus keys; controller: sticks, RT, A/RB.
 - **Sensors:** `deviceorientation` (relative, never the compass event) converted to a quaternion with screen-angle compensation (unit-tested against the three.js DeviceOrientationControls formula at 0, 90, -90 and 180). On Android Chrome `RelativeOrientationSensor` (screen frame) is used while it delivers readings (setting `spaceAdventure_sensor3d`: `auto` or `event`). iPhone permission is requested inside the Start (or control type) button click; denied or no sensor falls back to Joystick with a message.
 - **Performance:** drawing-buffer pixel ratio capped at 1.5 (1.0 on phones with a pixel ratio above 2, such as the Pixel 7 Pro), render scale lowered in 0.1 steps (down to 0.5) while below 45 fps and raised again after 3 s at 57+ fps, fixed 1/60 s simulation steps separate from rendering, screen wake lock while playing.
@@ -166,6 +166,26 @@ Open the game with `?3d=1` (also on GitHub Pages). Without the parameter nothing
 - **Offline:** every `.js` under `js/3d/` is in the single precache (owner decision §8.3), about 0.8 MB more stored for every player.
 - **Tests:** unit tests for the maths, look models, world, collisions, simulation and the entry on a fake DOM; Playwright projects `chromium-3d` (landscape phone, touch) and `chromium-3d-desktop` with SwiftShader, which save `tests/screenshots/3d-*.png` (in the CI `screenshots` artifact); `no3d.spec.js` checks that 2D never requests a 3D file.
 - **To try on the phones:** frame rate (bottom line), whether Direct, Rate or Joystick feels best, whether Level horizon should be the default, the sensitivity, rock density and speed, and whether the iPhone asks for motion access again on every launch of the installed app.
+
+### 10.1 Owner feedback on the Pixel 7 Pro and changes (7 and 8 October 2026)
+
+Feedback: "works well; keep all 3 control options; Level horizon doesn't really help; objects disappear a little too quickly, we need to see farther; Pixel shows at lowest 60 fps; remove the cockpit frame."
+
+- **Controls:** Direct, Rate and Joystick all stay. Level horizon stays as a toggle, default off (unchanged).
+- **View distance:** new choice on the prototype screen, setting `spaceAdventure_viewDistance3d` (`normal`, `far`, `veryfar`; default `far`), shown in the HUD footer next to the frame rate. Changing it regenerates the field (a different world size; a paused game becomes a fresh start). The numbers (`js/3d/world3d.js` `VIEW_DISTANCES`, `worldFor()`):
+
+  | View distance | Visible range | Fog near–far | Cube side | Fog far / side | Crystals + red rocks | Refill minimum | Bullet life |
+  |---|---|---|---|---|---|---|---|
+  | (before) | 1× | 260–720 | 1600 | 0.45 | 12 + 18 = 30 | 6 + 8 | 0.85 s |
+  | Normal | 1.5× | 390–1080 | 2400 | 0.45 | 41 + 61 = 102 | 20 + 27 | 1.27 s |
+  | Far (default) | 2× | 520–1440 | 3200 | 0.45 | 96 + 144 = 240 | 48 + 64 | 1.67 s |
+  | Very far | 2.6× | 675–1870 | 4200 | 0.445 | 217 + 326 = 543 | 109 + 145 | 2.14 s |
+
+  Counts scale with the world volume, so the density per visible volume stays within 4 % of before (the unit tests allow 15 %); the initial field is capped at 600 objects. Objects are culled at fog far + 90 (below half the cube side, so a drawn object never jumps to another wrapped copy); refills appear beyond that distance, out of sight. Bullets reach just past the fog end.
+- **Rendering changes for the larger world:** fog is now radial (distance from the camera rather than view depth, a one-line patch of three.js's `fog_vertex` chunk), so objects at the screen edges fade at the same distance as objects straight ahead and never pop at the seam. Rocks, crystals, crystal glows and bullets are drawn with `InstancedMesh` (about a dozen draw calls in total, whatever the rock count). The star sky and planet no longer write depth, are drawn first and are scaled inside the camera's far plane (cull distance + 200), so they always stay behind the field. The space dust box (200) divides every cube side.
+- **Cockpit frame removed:** no canopy struts or dashboard strip. The crosshair, score/lives/speed and footer text get a soft dark shadow and the buttons a text shadow so they stay readable over rocks and stars.
+- **Performance:** the Pixel 7 Pro reported at least 60 fps before this change. Very far draws up to about 4.5 times as many rocks as Far; if it drops below 45 fps the adaptive render scale reacts as before. To check on the phones: the frame rate at Far and Very far, and whether Far is the right default.
+- **Tests:** unit tests for the presets (fog far ≤ 0.45 × side, cull before the seam, density within 15 %, counts capped, refills out of sight, bullet range) and the view-distance choice on the fake DOM; Playwright (CI): the choice persists across a reload and changes the world size, a red rock 1000 ahead (`&layout3d=far`, beyond the old fog end of 720) is visible at Far and fogged out at Normal, read through the hook `window.__spaceAdventure.rocks3d()` (distance, drawn, fog factor) rather than pixels; screenshot `3d-*-far.png`.
 
 ## Sources
 

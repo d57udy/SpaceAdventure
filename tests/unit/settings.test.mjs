@@ -24,7 +24,7 @@ test('defaults', () => {
         musicVolume: 5, sfxVolume: 10, rumble: true, offerTutorial: true, muted: false,
         mpLayout: 'auto', mpAutoFire: false, mpFireSideA: 'outer', mpFireSideB: 'outer', mpStereo: true,
         renderQuality: 'auto',
-        control3d: 'direct', levelHorizon3d: false, sensitivity3d: 5, sensor3d: 'auto',
+        control3d: 'direct', levelHorizon3d: false, sensitivity3d: 5, sensor3d: 'auto', viewDistance3d: 'far',
     });
     assert.deepEqual(defaultSettings(), s.all());
     assert.deepEqual([...SETTING_NAMES].sort(), Object.keys(s.all()).sort());
@@ -227,7 +227,7 @@ test('SETTING_DEFS is frozen and every default is valid', () => {
     }
 });
 
-test('3D prototype settings: control type, level horizon, sensitivity, sensor source', () => {
+test('3D prototype settings: control type, level horizon, sensitivity, sensor source, view distance', () => {
     const store = new FakeStorage();
     const storage = store.map;
     const s = createSettings({ storage: store });
@@ -242,4 +242,8 @@ test('3D prototype settings: control type, level horizon, sensitivity, sensor so
     assert.equal(storage.get('spaceAdventure_levelHorizon3d'), 'true');
     assert.equal(s.set('sensitivity3d', 42), 10);
     assert.equal(s.set('control3d', 'tilt'), 'joystick', 'unknown control type rejected');
+    assert.equal(s.get('viewDistance3d'), 'far');
+    s.set('viewDistance3d', 'veryfar');
+    assert.equal(storage.get('spaceAdventure_viewDistance3d'), 'veryfar');
+    assert.equal(s.set('viewDistance3d', 'endless'), 'veryfar', 'unknown view distance rejected');
 });

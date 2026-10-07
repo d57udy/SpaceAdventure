@@ -1,4 +1,5 @@
-// 2D overlay for the 3D prototype: cockpit frame, crosshair, HUD text, joystick, hit flash.
+// 2D overlay for the 3D prototype: crosshair, HUD text, joystick, hit flash. (The cockpit
+// frame was removed after the Pixel 7 Pro test, 2026-10-07: the text has a shadow instead.)
 // Drawn on a 2D canvas layered over the WebGL canvas. formatHud() is pure (unit-testable);
 // the draw functions only use the CanvasRenderingContext2D they are given.
 
@@ -10,37 +11,10 @@ export function formatHud(info) {
     const left = `SCORE ${info.score | 0}   LIVES ${'♥'.repeat(Math.min(lives, 9)) || '0'}`;
     const mode = MODE_LABELS[info.mode] || info.mode;
     const chosen = info.chosenMode && info.chosenMode !== info.mode ? ` (${MODE_LABELS[info.chosenMode] || info.chosenMode} unavailable)` : '';
-    const right = `${mode}${chosen} · Level ${info.levelHorizon ? 'on' : 'off'} · ${Math.round(info.fps || 0)} fps · ${(info.renderScale || 1).toFixed(2)}×`;
+    const view = info.view ? `View ${info.view} · ` : '';
+    const right = `${mode}${chosen} · Level ${info.levelHorizon ? 'on' : 'off'} · ${view}${Math.round(info.fps || 0)} fps · ${(info.renderScale || 1).toFixed(2)}×`;
     const speed = `SPD ${Math.round(info.speed || 0)}`;
     return { left, right, speed };
-}
-
-/** Thin canopy frame and a dashboard strip: a fixed frame of reference against motion sickness. */
-export function drawCockpit(ctx, w, h) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(120, 170, 220, 0.35)';
-    ctx.lineWidth = 2;
-    const top = h * 0.07;
-    const side = Math.min(w * 0.1, 90);
-    // Canopy struts from the top corners
-    ctx.beginPath();
-    ctx.moveTo(0, top * 0.4); ctx.lineTo(side, top); ctx.lineTo(w - side, top); ctx.lineTo(w, top * 0.4);
-    ctx.moveTo(side, top); ctx.lineTo(side * 0.35, h * 0.8);
-    ctx.moveTo(w - side, top); ctx.lineTo(w - side * 0.35, h * 0.8);
-    ctx.stroke();
-    // Dashboard: a low strip in the centre bottom
-    const dw = Math.min(w * 0.42, 420);
-    const dh = Math.max(18, h * 0.06);
-    ctx.fillStyle = 'rgba(20, 30, 45, 0.55)';
-    ctx.beginPath();
-    ctx.moveTo(w / 2 - dw / 2 - dh, h);
-    ctx.lineTo(w / 2 - dw / 2, h - dh);
-    ctx.lineTo(w / 2 + dw / 2, h - dh);
-    ctx.lineTo(w / 2 + dw / 2 + dh, h);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
 }
 
 export function drawCrosshair(ctx, w, h, color = 'rgba(180, 255, 220, 0.85)') {
@@ -49,6 +23,8 @@ export function drawCrosshair(ctx, w, h, color = 'rgba(180, 255, 220, 0.85)') {
     ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+    ctx.shadowBlur = 3;
     ctx.beginPath();
     ctx.moveTo(cx - r * 2, cy); ctx.lineTo(cx - r * 0.6, cy);
     ctx.moveTo(cx + r * 0.6, cy); ctx.lineTo(cx + r * 2, cy);
@@ -69,8 +45,11 @@ export function drawHudText(ctx, w, h, info, insets = { top: 0, left: 0, right: 
     ctx.font = `bold ${fs}px Arial, sans-serif`;
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#d8fff0';
-    ctx.shadowColor = 'black';
-    ctx.shadowBlur = 3;
+    // No cockpit frame behind the text any more: a soft dark shadow keeps it readable on rocks and stars
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
     ctx.textAlign = 'left';
     ctx.fillText(t.left, 12 + insets.left, 10 + insets.top);
     ctx.font = `${Math.round(fs * 0.8)}px Arial, sans-serif`;

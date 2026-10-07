@@ -100,7 +100,7 @@ async function holdButton(page, selector, ms) {
 
 const poll = (page, key, opts = {}) => expect.poll(() => g3get(page, key), { timeout: T, ...opts });
 
-test('renders the cockpit: draw calls and lit pixels, three.js r185', async ({ page }, testInfo) => {
+test('renders the 3D view: draw calls and lit pixels, three.js r185', async ({ page }, testInfo) => {
   const errors = await open3d(page);
   const s = await g3(page);
   expect(s.three).toBe('185');
@@ -279,6 +279,57 @@ test('Portrait shows "landscape recommended"', async ({ page }, testInfo) => {
   await expect(page.locator('#p3-portrait-note')).toBeVisible();
   expect(await g3get(page, 'portrait')).toBe(true);
   await shot(page, testInfo, 'portrait-warning');
+});
+
+test('View distance: Far by default, the choice persists and changes the world size', async ({ page }, testInfo) => {
+  const errors = await open3d(page);
+  let s = await g3(page);
+  expect(s.viewDistance).toBe('far');
+  expect(s.world.size).toBe(3200);
+  expect(s.world.rendered.fogFar).toBe(1440);
+  await expect(page.locator('#p3-view-far')).toHaveAttribute('aria-pressed', 'true');
+  await page.click('#p3-view-veryfar');
+  await poll(page, 'viewDistance').toBe('veryfar');
+  s = await g3(page);
+  expect(s.world.size).toBe(4200);
+  expect(s.world.rendered).toMatchObject({ size: 4200, fogFar: 1870 });
+  expect(s.world.rendered.cameraFar).toBeGreaterThan(s.world.cullDistance);
+  expect(s.counts.rocks).toBe(s.world.greens + s.world.reds);
+  expect(await page.evaluate(() => localStorage.getItem('spaceAdventure_viewDistance3d'))).toBe('veryfar');
+  // Persists across a reload
+  await page.reload();
+  await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
+    && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+  expect(await g3get(page, 'viewDistance')).toBe('veryfar');
+  await expect(page.locator('#p3-view-veryfar')).toHaveAttribute('aria-pressed', 'true');
+  await start(page);
+  await play(page, 500);
+  // Hundreds of rocks, still a handful of draw calls (instancing)
+  await poll(page, 'drawCalls').toBeGreaterThan(0);
+  expect(await g3get(page, 'drawCalls')).toBeLessThan(30);
+  expect(await g3get(page, 'drawnRocks')).toBeGreaterThan(50);
+  await shot(page, testInfo, 'far');
+  expect(errors).toEqual([]);
+});
+
+test('A red rock beyond the old fog end (720) is visible at Far, fogged out at Normal', async ({ page }) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=far', storage: { spaceAdventure_control3d: 'joystick' } });
+  await start(page);
+  const red = async () => (await page.evaluate(() => window.__spaceAdventure.rocks3d())).find((r) => r.kind === 'red');
+  await expect.poll(async () => (await red()).drawn, { timeout: T }).toBe(true);
+  let r = await red();
+  expect(r.distance).toBeGreaterThan(720);
+  expect(r.distance).toBeLessThan(1440);
+  expect(r.fog).toBeLessThan(0.9); // clearly visible, not just a fogged ghost
+  // Normal view distance: the same layout, the rock is (almost) fully fogged
+  await page.keyboard.press('KeyP');
+  await poll(page, 'screen').toBe('paused');
+  await page.click('#p3-view-normal');
+  await poll(page, 'viewDistance').toBe('normal');
+  await expect.poll(async () => (await red()).fog, { timeout: T }).toBeGreaterThan(0.9);
+  r = await red();
+  expect(r.distance).toBeGreaterThan(900);
+  expect(errors).toEqual([]);
 });
 
 test('Back to 2D reloads the normal game without the parameter', async ({ page }) => {

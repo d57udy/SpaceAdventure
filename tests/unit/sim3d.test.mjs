@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSim, stepSim, drainEvents, simCounts, SIM, nextId } from '../../js/3d/sim3d.js';
-import { makeRock, WORLD } from '../../js/3d/world3d.js';
+import { makeRock, WORLD, worldFor, wrappedDistance } from '../../js/3d/world3d.js';
 import { qIdentity, qFromAxisAngle, vLen } from '../../js/3d/math3d.js';
 
 const run = (s, input, seconds) => { for (let i = 0; i < Math.round(seconds * 60); i++) stepSim(s, input); };
@@ -101,4 +101,29 @@ test('a seeded 30 s run keeps the field populated', () => {
     const c = simCounts(s);
     assert.ok(c.green >= SIM.minGreens && c.red >= SIM.minReds, JSON.stringify(c));
     assert.ok(s.stats.shots > 100);
+});
+
+test('view distance presets: world size, field, bullet range and out-of-sight refills', () => {
+    for (const view of ['normal', 'far', 'veryfar']) {
+        const w = worldFor(view);
+        const s = createSim({ seed: 3, view });
+        assert.equal(s.size, w.size, view);
+        assert.equal(s.world.name, view);
+        const c = simCounts(s);
+        assert.equal(c.green, w.greens, view);
+        assert.equal(c.red, w.reds, view);
+        for (const r of s.rocks) for (const v of r.pos) assert.ok(v >= 0 && v < w.size);
+        // A bullet lives long enough to reach the fog end
+        stepSim(s, { q: qIdentity(), fire: true });
+        assert.ok(Math.abs(s.bullets[0].life - (w.bulletLife - SIM.dt)) < 1e-9, view);
+    }
+    // Refills: drop below the minimum and new rocks appear beyond the cull distance
+    const s = createSim({ seed: 4, view: 'far' });
+    const keep = s.rocks.filter((r) => r.kind === 'red');
+    s.rocks = keep;
+    const before = new Set(s.rocks.map((r) => r.id));
+    stepSim(s, { q: qIdentity() });
+    const fresh = s.rocks.filter((r) => !before.has(r.id));
+    assert.ok(fresh.length >= 1);
+    for (const r of fresh) assert.ok(wrappedDistance(s.ship.pos, r.pos, s.size) >= s.world.refillClearance, 'out of sight');
 });
