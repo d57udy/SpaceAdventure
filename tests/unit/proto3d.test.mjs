@@ -1,0 +1,222 @@
+// The 3D prototype entry (js/3d/proto3d.js) on a minimal fake DOM with a fake renderer:
+// wiring of the start button, motion permission, control types, buttons and the test hook.
+// The real WebGL path is covered by tests/integration/proto3d.spec.js (chromium-3d project).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { startPrototype, basePixelRatio, nextRenderScale } from '../../js/3d/proto3d.js';
+import { deviceQuat } from '../../js/3d/look.js';
+import { qMul, qFromEulerYXZ, qToYawPitchRoll, qFromAxisAngle, DEG } from '../../js/3d/math3d.js';
+
+function listeners() {
+    const map = {};
+    return {
+        addEventListener(t, f) { (map[t] ||= []).push(f); },
+        removeEventListener(t, f) { map[t] = (map[t] || []).filter((g) => g !== f); },
+        fire(t, e = {}) { for (const f of map[t] || []) f(e); },
+    };
+}
+
+function classList() {
+    const s = new Set();
+    return {
+        add: (...c) => c.forEach((x) => s.add(x)),
+        remove: (...c) => c.forEach((x) => s.delete(x)),
+        toggle: (c, on) => { const v = on === undefined ? !s.has(c) : !!on; if (v) s.add(c); else s.delete(c); return v; },
+        contains: (c) => s.has(c),
+    };
+}
+
+const ctx2d = new Proxy({}, { get: (t, k) => (k in t ? t[k] : () => ({ addColorStop() {} })), set: (t, k, v) => { t[k] = v; return true; } });
+
+function fakeEnv({ permission = null, screenAngle = 90, dpr = 3.5 } = {}) {
+    const byId = new Map();
+    const makeEl = (id = '') => {
+        const l = listeners();
+        const el = {
+            id, style: {}, attrs: {}, textContent: '', disabled: false, width: 0, height: 0,
+            classList: classList(),
+            ...l,
+            setAttribute(k, v) { this.attrs[k] = String(v); },
+            getAttribute(k) { return this.attrs[k]; },
+            setPointerCapture() {}, requestPointerLock() {},
+            getContext(kind) { return kind === '2d' ? ctx2d : null; },
+            querySelector(sel) { return byId.get(sel.replace(/^#/, '')) || null; },
+            querySelectorAll() { return []; },
+            appendChild() {},
+            click() { l.fire('click', { target: el, preventDefault() {} }); },
+            pointer(type, e = {}) { l.fire(type, { target: el, pointerId: 1, pointerType: 'touch', clientX: 0, clientY: 0, button: 0, preventDefault() {}, ...e }); },
+        };
+        Object.defineProperty(el, 'innerHTML', {
+            set(html) { for (const m of html.matchAll(/id="([^"]+)"/g)) byId.set(m[1], makeEl(m[1])); },
+        });
+        return el;
+    };
+    const docL = listeners();
+    const doc = {
+        ...docL, hidden: false, visibilityState: 'visible', pointerLockElement: null,
+        head: { appendChild() {} },
+        body: { classList: classList(), appendChild() {} },
+        createElement: () => makeEl(),
+        exitPointerLock() {},
+    };
+    const raf = [];
+    const winL = listeners();
+    const win = {
+        ...winL, document: doc, innerWidth: 892, innerHeight: 412, devicePixelRatio: dpr,
+        location: { search: '?3d=1&seed3d=1&layout3d=range', href: 'http://x/?3d=1&seed3d=1&layout3d=range', replace(u) { this.replaced = u; } },
+        navigator: { vibrate() { return true; } },
+        screen: { orientation: { angle: screenAngle } },
+        requestAnimationFrame(f) { raf.push(f); },
+        DeviceOrientationEvent: function DeviceOrientationEvent() {},
+    };
+    if (permission) win.DeviceOrientationEvent.requestPermission = () => Promise.resolve(permission);
+    let t = performance.now();
+    const frames = (n = 1, ms = 1000 / 60) => {
+        for (let i = 0; i < n; i++) { t += ms; const f = raf.shift(); if (f) f(t); }
+    };
+    const orient = (alpha, beta, gamma) => winL.fire('deviceorientation', { alpha, beta, gamma });
+    const fakeRenderer = () => ({ three: 'fake', drawCalls: 7, setSize() {}, render() {}, burst() {}, probeLitPixels: () => ({ lit: 1 }) });
+    return { win, doc, byId, frames, orient, fakeRenderer, el: (id) => byId.get(id) };
+}
+
+// Device angles for neutral ⊗ rel at a screen angle (inverse of deviceQuat)
+function anglesFor(q, screen) {
+    const e = qMul(qMul(q, qFromAxisAngle([0, 0, 1], screen * DEG)), [Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
+    const r = qToYawPitchRoll(e);
+    return [r.yaw / DEG, r.pitch / DEG, -r.roll / DEG];
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+async function boot(opts) {
+    globalThis.localStorage = undefined;
+    const env = fakeEnv(opts);
+    await startPrototype({ win: env.win, createRenderer: env.fakeRenderer });
+    return env;
+}
+
+test('pixel ratio cap and adaptive render scale', () => {
+    assert.equal(basePixelRatio(3.5), 1);
+    assert.equal(basePixelRatio(2), 1.5);
+    assert.equal(basePixelRatio(1), 1);
+    assert.deepEqual(nextRenderScale(1, 30, 0), { scale: 0.9, goodSeconds: 0 });
+    assert.deepEqual(nextRenderScale(0.5, 20, 0), { scale: 0.5, goodSeconds: 0 });
+    assert.deepEqual(nextRenderScale(0.8, 60, 2), { scale: 0.9, goodSeconds: 0 });
+    assert.deepEqual(nextRenderScale(0.8, 60, 0), { scale: 0.8, goodSeconds: 1 });
+});
+
+test('menu first; start with permission granted; Direct follows the phone 1:1', async () => {
+    const env = await boot({ permission: 'granted' });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().loaded, true);
+    assert.equal(g().screen, 'menu');
+    assert.equal(g().permission, 'unknown');
+    assert.equal(env.el('p3-start').textContent, 'Enable motion & start');
+    env.el('p3-start').click();
+    await tick();
+    assert.equal(g().permission, 'granted');
+    assert.equal(g().screen, 'playing');
+    assert.equal(g().mode, 'joystick', 'no motion data yet');
+    const N = deviceQuat(0, 0, -90, 90);
+    env.orient(0, 0, -90);
+    env.frames(2);
+    assert.equal(g().mode, 'direct');
+    assert.ok(Math.abs(g().yaw) < 1e-3 && Math.abs(g().roll) < 1e-3);
+    env.orient(...anglesFor(qMul(N, qFromEulerYXZ(10 * DEG, 30 * DEG, 25 * DEG)), 90));
+    env.frames(2);
+    assert.ok(Math.abs(g().yaw - 30) < 0.01, `yaw ${g().yaw}`);
+    assert.ok(Math.abs(g().pitch - 10) < 0.01, `pitch ${g().pitch}`);
+    assert.ok(Math.abs(g().roll - 25) < 0.01, `roll ${g().roll}`);
+    env.el('p3-recentre').click();
+    env.frames(2);
+    assert.ok(Math.abs(g().yaw) < 1e-3 && Math.abs(g().pitch) < 1e-3 && Math.abs(g().roll) < 1e-3, 'recentre zeroes');
+    // Level horizon: roll blocked
+    env.el('p3-level').click();
+    env.orient(...anglesFor(qMul(N, qFromEulerYXZ(0, 0, 40 * DEG)), 90));
+    env.frames(2);
+    assert.equal(g().levelHorizon, true);
+    assert.ok(Math.abs(g().roll) < 1e-3);
+    assert.equal(g().drawCalls, 7);
+    assert.equal(g().pixelRatio, 1, 'DPR 3.5 phone renders at 1.0');
+});
+
+test('permission denied falls back to Joystick with a message', async () => {
+    const env = await boot({ permission: 'denied' });
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-start').click();
+    await tick();
+    env.orient(0, 0, -90);
+    env.frames(3);
+    assert.equal(g().permission, 'denied');
+    assert.equal(g().chosenMode, 'direct');
+    assert.equal(g().mode, 'joystick');
+    assert.match(g().message, /denied/);
+});
+
+test('joystick mode: drag rotates, roll buttons roll, thrust moves, fire splits the red ahead', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    assert.equal(g().permission, 'unknown', 'joystick never asks for motion');
+    assert.equal(g().mode, 'joystick');
+    const zone = env.el('p3-stick-zone');
+    zone.pointer('pointerdown', { clientX: 100, clientY: 300 });
+    zone.pointer('pointermove', { clientX: 164, clientY: 300 });
+    env.frames(30);
+    assert.ok(g().yaw < -10, `turned right: ${g().yaw}`);
+    zone.pointer('pointerup');
+    env.el('p3-roll-right').pointer('pointerdown');
+    env.frames(20);
+    env.el('p3-roll-right').pointer('pointerup');
+    assert.ok(Math.abs(g().roll) > 5, `rolled: ${g().roll}`);
+    // Straighten up and shoot the red rock straight ahead (layout3d=range)
+    env.el('p3-recentre').click();
+    env.frames(1);
+    const before = g().counts.rocks;
+    env.el('p3-fire').pointer('pointerdown');
+    env.frames(5);
+    assert.ok(g().counts.bullets > 0);
+    env.frames(40);
+    env.el('p3-fire').pointer('pointerup');
+    assert.ok(g().counts.rocks > before, `split: ${before} -> ${g().counts.rocks}`);
+    assert.ok(g().score > 0);
+    const z0 = g().shipPos[2];
+    env.el('p3-thrust').pointer('pointerdown');
+    env.frames(60);
+    env.el('p3-thrust').pointer('pointerup');
+    assert.ok(g().shipPos[2] < z0 - 20, 'moved forward');
+    // Pause and Back to 2D
+    env.el('p3-pause').click();
+    assert.equal(g().screen, 'paused');
+    env.el('p3-back2d').click();
+    assert.equal(env.win.location.replaced, 'http://x/');
+});
+
+test('rate mode integrates the tilt; no sensor data falls back to Joystick', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-mode-rate').click();
+    await tick();
+    env.el('p3-start').click();
+    await tick();
+    assert.equal(g().permission, 'not-required');
+    env.frames(120); // > 1.5 s without data
+    assert.equal(g().mode, 'joystick');
+    assert.match(g().message, /No motion sensor/);
+    const N = deviceQuat(0, 0, -90, 90);
+    env.orient(0, 0, -90);
+    env.frames(2);
+    assert.equal(g().mode, 'rate');
+    env.orient(...anglesFor(qMul(N, qFromEulerYXZ(0, 30 * DEG, 0)), 90));
+    env.frames(30);
+    const y1 = g().yaw;
+    env.frames(30);
+    assert.ok(g().yaw > y1 + 10, `keeps turning: ${y1} -> ${g().yaw}`);
+    env.orient(0, 0, -90);
+    env.frames(2);
+    const y2 = g().yaw;
+    env.frames(30);
+    assert.ok(Math.abs(g().yaw - y2) < 1e-6, 'stops at neutral');
+});

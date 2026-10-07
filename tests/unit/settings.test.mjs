@@ -24,6 +24,7 @@ test('defaults', () => {
         musicVolume: 5, sfxVolume: 10, rumble: true, offerTutorial: true, muted: false,
         mpLayout: 'auto', mpAutoFire: false, mpFireSideA: 'outer', mpFireSideB: 'outer', mpStereo: true,
         renderQuality: 'auto',
+        control3d: 'direct', levelHorizon3d: false, sensitivity3d: 5, sensor3d: 'auto',
     });
     assert.deepEqual(defaultSettings(), s.all());
     assert.deepEqual([...SETTING_NAMES].sort(), Object.keys(s.all()).sort());
@@ -224,4 +225,21 @@ test('SETTING_DEFS is frozen and every default is valid', () => {
         assert.ok(r.ok, n);
         assert.equal(r.value, SETTING_DEFS[n].default);
     }
+});
+
+test('3D prototype settings: control type, level horizon, sensitivity, sensor source', () => {
+    const store = new FakeStorage();
+    const storage = store.map;
+    const s = createSettings({ storage: store });
+    assert.equal(s.get('control3d'), 'direct');
+    assert.equal(s.get('levelHorizon3d'), false);
+    assert.equal(s.get('sensitivity3d'), 5);
+    assert.equal(s.get('sensor3d'), 'auto');
+    s.set('control3d', 'rate');
+    s.cycle('control3d');
+    assert.equal(storage.get('spaceAdventure_control3d'), 'joystick');
+    s.set('levelHorizon3d', true);
+    assert.equal(storage.get('spaceAdventure_levelHorizon3d'), 'true');
+    assert.equal(s.set('sensitivity3d', 42), 10);
+    assert.equal(s.set('control3d', 'tilt'), 'joystick', 'unknown control type rejected');
 });

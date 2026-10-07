@@ -25,6 +25,11 @@ export const SETTING_DEFS = Object.freeze({
     mpFireSideB: enumDef(['outer', 'inner'], 'outer'), // touch player in zone b (right / top)
     mpStereo: boolDef(true), // pan each player's sounds to their side (side by side)
     renderQuality: enumDef(['auto', 'sharp', 'fast'], 'auto'),
+    // 3D cockpit prototype (?3d=1, docs/plans/06-3d-mode.md §8)
+    control3d: enumDef(['direct', 'rate', 'joystick'], 'direct'),
+    levelHorizon3d: boolDef(false),
+    sensitivity3d: intDef(1, 10, 5),
+    sensor3d: enumDef(['auto', 'event'], 'auto'), // auto: RelativeOrientationSensor when available
 });
 
 export const SETTING_NAMES = Object.freeze(Object.keys(SETTING_DEFS));

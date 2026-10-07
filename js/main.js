@@ -2440,6 +2440,15 @@ function spawnPowerUpAt(x, y) {
 // --- Initialization ---
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Hidden 3D prototype (docs/plans/06-3d-mode.md, Phase 0): ?3d=1 hands the page to
+    // js/3d/proto3d.js. Dynamic import, so the 2D game never loads any 3D file.
+    if (new URLSearchParams(location.search).get('3d') === '1') {
+        import('./3d/proto3d.js').then((m) => m.startPrototype()).catch((err) => {
+            console.error('[3d] prototype failed to load, back to 2D:', err);
+            location.replace(location.pathname);
+        });
+        return;
+    }
     console.log("DOM Loaded - Initializing Game");
     canvas = document.getElementById('gameCanvas');
     if (!canvas) { console.error("Canvas element not found!"); return; }
