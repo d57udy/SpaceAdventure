@@ -69,10 +69,13 @@ function glowTexture() {
  * @param {HTMLCanvasElement} canvas
  * @param {object} [o]
  * @param {number} [o.worldSize]
+ * @param {boolean} [o.antialias] - false only for ?lowres3d=1 (tests on a software renderer)
  * @returns {object} renderer interface (see the returned object)
  */
-export function createRenderer3d(canvas, { worldSize = WORLD.size, fogNear = WORLD.fogNear, fogFar = WORLD.fogFar } = {}) {
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+export function createRenderer3d(canvas, {
+    worldSize = WORLD.size, fogNear = WORLD.fogNear, fogFar = WORLD.fogFar, antialias = true,
+} = {}) {
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias, powerPreference: 'high-performance' });
     renderer.setClearColor(BG, 1);
     let contextLost = false;
     canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); contextLost = true; });

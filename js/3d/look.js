@@ -192,6 +192,16 @@ export function recentre(look, device) {
     look.rates = { pitch: 0, yaw: 0, roll: 0 };
 }
 
+/**
+ * First reading after a start without one (the grace period): it becomes the neutral pose.
+ * Direct keeps the current view (no jump), Rate starts with zero tilt. No-op once calibrated.
+ */
+export function calibrate(look, device) {
+    if (!device || look.neutral) return;
+    if (look.mode === 'direct') anchor(look, device);
+    else look.neutral = device.slice();
+}
+
 export function setMode(look, mode, device) {
     if (!CONTROL_MODES.includes(mode) || mode === look.mode) return;
     look.mode = mode;

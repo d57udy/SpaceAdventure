@@ -4,7 +4,13 @@
 // input, fixed-step loop and the read-only test hook window.__spaceAdventure.game3d.
 //
 // URL options: ?3d=1 (required), &seed3d=N (repeatable layout), &layout3d=range (one red
-// rock straight ahead and one crystal behind: used by the browser tests).
+// rock straight ahead and one crystal behind: used by the browser tests), &lowres3d=1
+// (tests only: fixed half-resolution drawing buffer, no antialiasing, 1x HUD, so a software
+// renderer on CI keeps a usable frame rate; real devices never get it).
+//
+// Start never waits for motion: the game starts at once with the chosen control type. If no
+// motion reading arrives within NO_DATA_MS of wall time (no sensor, permission denied or
+// still being asked), it switches to Joystick and switches back when readings arrive.
 
 import { createSettings } from '../settings.js';
 import { createWakeLock } from '../wakeLock.js';
@@ -13,7 +19,7 @@ import { createSim, stepSim, drainEvents, simCounts, nextId, SIM } from './sim3d
 import { makeRock } from './world3d.js';
 import { vLen } from './math3d.js';
 import {
-    createLook, stepLook, recentre, setMode, setLevelHorizon, lookAngles, CONTROL_MODES,
+    createLook, stepLook, recentre, setMode, calibrate, setLevelHorizon, lookAngles, CONTROL_MODES,
 } from './look.js';
 import {
     createOrientationSource, requestMotionPermission, motionPermissionNeeded, isPortrait, screenAngle,
@@ -89,6 +95,7 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 #p3-portrait-note { color: #ffd27a; }
 .p3-hidden { display: none !important; }
 #proto3d.p3-menu-open .p3-game { display: none !important; }
+#proto3d:not(.p3-menu-open) #p3-menu { display: none !important; }
 `;
 
 const HTML = `
@@ -147,6 +154,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     const seedParam = parseInt(params.get('seed3d'), 10);
     const seed = Number.isFinite(seedParam) ? seedParam : (Date.now() & 0x7fffffff);
     const layout = params.get('layout3d');
+    const lowres = params.get('lowres3d') === '1';
 
     const style = doc.createElement('style');
     style.textContent = CSS;
@@ -168,7 +176,8 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     let permission = 'unknown'; // unknown | granted | denied | not-required | unavailable
     let message = '';
     let messageUntil = 0;
-    let startedAt = 0;
+    let clock = 0; // time of the last frame (rAF clock, wall time)
+    let motionSince = 0; // wall time (ms) the current wait for motion readings began
     let noDataWarned = false;
     let sim = null;
     let look = createLook({
@@ -177,6 +186,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     let renderer = null;
     let error = null;
     let fps = 0, frameCount = 0, fpsT = 0;
+    let frames = 0, steps = 0; // test hook: frames drawn and fixed sim steps run
     let renderScale = 1, goodSeconds = 0, scaleT = 0;
     let pixelRatio = 1;
     let acc = 0, lastT = 0;
@@ -193,10 +203,13 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     const chosenMode = () => settings.get('control3d');
     const motionOk = () => permission === 'granted' || permission === 'not-required';
     const motionReady = () => motionOk() && source.hasData;
-    function effectiveMode() {
+    const noMotion = () => permission === 'denied' || permission === 'unavailable';
+    /** Still within the grace period after Start (or a mode change) without readings? */
+    const motionGrace = (now = performance.now()) => !!motionSince && !noMotion() && now - motionSince < NO_DATA_MS;
+    function effectiveMode(now) {
         const c = chosenMode();
         if (c === 'joystick') return 'joystick';
-        return motionReady() ? c : 'joystick';
+        return motionReady() || motionGrace(now) ? c : 'joystick';
     }
     function say(text, ms = 4000) {
         message = text;
@@ -210,7 +223,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     const hctx = hud.getContext('2d');
     try {
         const factory = createRenderer || (await import('./render3d.js')).createRenderer3d;
-        renderer = factory(canvas);
+        renderer = factory(canvas, { antialias: !lowres });
     } catch (e) {
         error = String(e && e.message || e);
         say('3D could not start on this device (WebGL 2 not available). Use Back to 2D.', 1e9);
@@ -220,9 +233,9 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     function resize() {
         cssW = Math.max(1, win.innerWidth);
         cssH = Math.max(1, win.innerHeight);
-        pixelRatio = basePixelRatio(win.devicePixelRatio) * renderScale;
+        pixelRatio = lowres ? 0.5 : basePixelRatio(win.devicePixelRatio) * renderScale;
         if (renderer) renderer.setSize(cssW, cssH, pixelRatio);
-        const hdpr = Math.min(win.devicePixelRatio || 1, 2);
+        const hdpr = lowres ? 1 : Math.min(win.devicePixelRatio || 1, 2);
         hud.width = Math.round(cssW * hdpr);
         hud.height = Math.round(cssH * hdpr);
         hctx.setTransform(hdpr, 0, 0, hdpr, 0, 0);
@@ -268,25 +281,36 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     function permissionMessage() {
         if (permission === 'denied') return 'Motion access denied: using Joystick. iPhone: allow Motion & Orientation Access, then reload.';
         if (permission === 'unavailable') return 'No motion sensor in this browser: using Joystick.';
+        if (permission === 'unknown') return 'Waiting for motion access: using Joystick for now.';
         return '';
     }
 
-    /** Ask for motion access if needed (synchronously inside a click handler). */
+    let motionRequest = null;
+    /**
+     * Ask for motion access if needed (synchronously inside a click handler: iOS) and start
+     * the motion source once allowed. Never awaited by Start: the answer may take a while
+     * (or never come), so the game reads `permission` / readings as they arrive.
+     */
     function ensureMotion(mode) {
+        if (mode !== 'joystick' && motionOk()) source.start();
         if (mode === 'joystick' || permission !== 'unknown') return Promise.resolve(permission);
-        return requestMotionPermission(win).then((r) => {
+        if (motionRequest) return motionRequest;
+        motionRequest = requestMotionPermission(win).then((r) => {
             permission = r;
+            motionRequest = null;
             if (motionOk()) source.start();
             const m = permissionMessage();
             if (m) say(m, 6000);
+            refreshUi();
             return r;
-        });
+        }, () => { motionRequest = null; return permission; });
+        return motionRequest;
     }
 
     function begin() {
         if (screen === 'over' || screen === 'menu') {
             if (screen === 'over') newSim();
-            startedAt = performance.now();
+            motionSince = performance.now();
             noDataWarned = false;
             $('p3-status').textContent = 'Phase 0 feel test: fly into green crystals, shoot red rocks.';
             look = createLook({ mode: look.mode, levelHorizon: settings.get('levelHorizon3d'), sensitivity: settings.get('sensitivity3d') });
@@ -334,8 +358,11 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     function chooseMode(m) {
         if (!CONTROL_MODES.includes(m)) return;
         settings.set('control3d', m);
-        ensureMotion(m).then(() => refreshUi());
-        if (motionOk()) source.start();
+        ensureMotion(m);
+        if (screen === 'playing' && m !== 'joystick' && !motionReady()) {
+            motionSince = performance.now();
+            noDataWarned = false;
+        }
         refreshUi();
     }
 
@@ -348,12 +375,8 @@ export async function startPrototype({ win = window, createRenderer = null } = {
 
     $('p3-start').addEventListener('click', () => {
         if (!renderer) return;
-        const p = ensureMotion(chosenMode()); // must run inside the click (iOS)
-        if (motionOk()) source.start();
-        p.then(() => {
-            if (motionOk()) source.start();
-            begin();
-        });
+        ensureMotion(chosenMode()); // must run inside the click (iOS); never awaited
+        begin(); // start at once: no data within NO_DATA_MS switches to Joystick (frame loop)
     });
     $('p3-restart').addEventListener('click', () => { newSim(); screen = 'menu'; begin(); });
     $('p3-back2d').addEventListener('click', () => {
@@ -522,13 +545,15 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     function frame(t) {
         win.requestAnimationFrame(frame);
         const now = t || performance.now();
+        clock = now;
         const dtReal = lastT ? Math.min(0.1, (now - lastT) / 1000) : 0;
         lastT = now;
 
         // Frame rate and adaptive render scale
         frameCount++;
+        frames++;
         if (now - fpsT >= 500) { fps = (frameCount * 1000) / (now - fpsT || 1); frameCount = 0; fpsT = now; }
-        if (screen === 'playing' && now - scaleT >= 1000) {
+        if (screen === 'playing' && !lowres && now - scaleT >= 1000) {
             scaleT = now;
             const n = nextRenderScale(renderScale, fps, goodSeconds);
             goodSeconds = n.goodSeconds;
@@ -545,19 +570,23 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         lastSource = src;
         lastAngle = ang;
 
-        const eff = effectiveMode();
+        const eff = effectiveMode(now);
         const device = chosenMode() !== 'joystick' && motionReady() ? source.quat() : null;
         if (eff !== look.mode) { setMode(look, eff, device); refreshUi(); }
-        if (screen === 'playing' && chosenMode() !== 'joystick' && !motionReady() && !noDataWarned && now - startedAt > NO_DATA_MS) {
+        // The first reading is the neutral pose: take it on the frame it arrives, not on the
+        // next sim step (a second reading could replace it before then)
+        if (device && eff !== 'joystick') calibrate(look, device);
+        if (screen === 'playing' && chosenMode() !== 'joystick' && !motionReady() && !noDataWarned && !motionGrace(now)) {
             noDataWarned = true;
             say(permissionMessage() || 'No motion sensor found: using Joystick.', 5000);
         }
 
         if (screen === 'playing') {
             acc += dtReal;
-            let steps = 0;
-            while (acc >= SIM.dt && steps < MAX_STEPS) { stepOnce(SIM.dt, device); acc -= SIM.dt; steps++; }
-            if (steps === MAX_STEPS) acc = 0;
+            let n = 0;
+            while (acc >= SIM.dt && n < MAX_STEPS) { stepOnce(SIM.dt, device); acc -= SIM.dt; n++; }
+            if (n === MAX_STEPS) acc = 0;
+            steps += n;
         }
         wakeLock.sync(screen === 'playing');
         if (message && now > messageUntil) { message = ''; $('p3-msg').textContent = ''; }
@@ -588,8 +617,14 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             loaded: !!renderer,
             error,
             screen,
-            mode: effectiveMode(),
+            mode: effectiveMode(clock || undefined),
+            lookMode: look.mode, // the mode the last frame actually applied
             chosenMode: chosenMode(),
+            menuOpen: root.classList.contains('p3-menu-open'),
+            frames,
+            steps,
+            time: r4(sim.time),
+            lowres,
             levelHorizon: look.level,
             sensitivity: look.sensitivity,
             permission,

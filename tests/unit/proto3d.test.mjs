@@ -69,7 +69,8 @@ function fakeEnv({ permission = null, screenAngle = 90, dpr = 3.5 } = {}) {
         requestAnimationFrame(f) { raf.push(f); },
         DeviceOrientationEvent: function DeviceOrientationEvent() {},
     };
-    if (permission) win.DeviceOrientationEvent.requestPermission = () => Promise.resolve(permission);
+    if (permission === 'never') win.DeviceOrientationEvent.requestPermission = () => new Promise(() => {});
+    else if (permission) win.DeviceOrientationEvent.requestPermission = () => Promise.resolve(permission);
     let t = performance.now();
     const frames = (n = 1, ms = 1000 / 60) => {
         for (let i = 0; i < n; i++) { t += ms; const f = raf.shift(); if (f) f(t); }
@@ -116,7 +117,8 @@ test('menu first; start with permission granted; Direct follows the phone 1:1', 
     await tick();
     assert.equal(g().permission, 'granted');
     assert.equal(g().screen, 'playing');
-    assert.equal(g().mode, 'joystick', 'no motion data yet');
+    assert.equal(g().mode, 'direct', 'chosen mode during the grace period, before any reading');
+    assert.equal(g().menuOpen, false);
     const N = deviceQuat(0, 0, -90, 90);
     env.orient(0, 0, -90);
     env.frames(2);
@@ -219,4 +221,36 @@ test('rate mode integrates the tilt; no sensor data falls back to Joystick', asy
     const y2 = g().yaw;
     env.frames(30);
     assert.ok(Math.abs(g().yaw - y2) < 1e-6, 'stops at neutral');
+});
+
+test('Start never waits for motion: a permission prompt that never answers still starts at once', async () => {
+    const env = await boot({ permission: 'never' });
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-start').click(); // no tick: begins synchronously inside the click
+    assert.equal(g().screen, 'playing');
+    assert.equal(g().menuOpen, false);
+    assert.equal(g().permission, 'unknown');
+    env.frames(30); // 0.5 s: still in the grace period, chosen mode
+    assert.equal(g().mode, 'direct');
+    assert.ok(g().steps > 0 && g().time > 0, 'the game runs');
+    env.frames(90); // > 1.5 s without readings: Joystick, one message
+    assert.equal(g().mode, 'joystick');
+    assert.equal(g().lookMode, 'joystick');
+    assert.match(g().message, /motion/i);
+});
+
+test('no readings within 1.5 s switches to Joystick; readings later switch back', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-start').click();
+    await tick();
+    assert.equal(g().permission, 'not-required');
+    env.frames(60);
+    assert.equal(g().mode, 'direct');
+    env.frames(60);
+    assert.equal(g().mode, 'joystick');
+    assert.match(g().message, /No motion sensor/);
+    env.orient(0, 0, -90);
+    env.frames(2);
+    assert.equal(g().lookMode, 'direct');
 });
