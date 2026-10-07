@@ -12,7 +12,7 @@ import { qConj, qRotate, vDot, vSub, vLen, vAdd, vScale } from './math3d.js';
 import { nearestDelta } from './world3d.js';
 
 export const RADAR = Object.freeze({
-    maxBlips: 150,           // nearest objects drawn (both circles together)
+    maxBlips: 24,            // nearest objects drawn (both circles together); more gets unreadable at Very far
     beyondCrystals: 3,       // crystals beyond the view distance still shown (dimmed)
     threatFraction: 0.25,    // a red rock within this share of the view distance ...
     threatTime: 6,           // ... reaching its closest approach within this many seconds ...
