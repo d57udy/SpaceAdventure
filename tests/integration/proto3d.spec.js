@@ -168,6 +168,13 @@ test('Rate: tilt keeps turning, back to neutral stops', async ({ page }) => {
   expect(Math.abs((await g3get(page, 'yaw')) - y3)).toBeLessThan(0.01);
 });
 
+test('the HUD layer is see-through so the 3D scene is visible', async ({ page }) => {
+  await open3d(page);
+  await start(page);
+  const bg = await page.evaluate(() => getComputedStyle(document.getElementById('p3-hud')).backgroundColor);
+  expect(['rgba(0, 0, 0, 0)', 'transparent']).toContain(bg);
+});
+
 test('Joystick: dragging on the left half rotates the ship', async ({ page }, testInfo) => {
   await open3d(page, { storage: { spaceAdventure_control3d: 'joystick' } });
   await start(page);
@@ -179,12 +186,14 @@ test('Joystick: dragging on the left half rotates the ship', async ({ page }, te
   await page.mouse.down();
   await page.mouse.move(x + 60, y - 20, { steps: 4 });
   await poll(page, 'stick').toMatchObject({ active: true });
-  await play(page, 600);
+  // Read the direction after a short turn: held much longer (slow CI frames, screenshots) the
+  // nose passes straight up and the yaw/pitch angles flip by 180°.
+  await play(page, 150);
+  const s = await g3(page);
   await shot(page, testInfo, 'joystick');
   await page.mouse.up();
-  const s = await g3(page);
-  expect(s.yaw).toBeLessThan(-2); // dragged right: turned right
-  expect(s.pitch).toBeGreaterThan(0.5); // dragged up: nose up
+  expect(s.yaw).toBeLessThan(-0.5); // dragged right: turned right
+  expect(s.pitch).toBeGreaterThan(0.1); // dragged up: nose up
 });
 
 for (const mode of ['direct', 'rate', 'joystick']) {

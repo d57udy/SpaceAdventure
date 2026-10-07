@@ -60,6 +60,8 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
   font-family: Arial, sans-serif; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #proto3d canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 #p3-hud { pointer-events: none; }
+/* style.css paints every canvas black; the HUD must stay see-through over the 3D scene */
+#proto3d #p3-hud { background: transparent !important; }
 #proto3d button { font: inherit; color: #fff; cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .p3-btn { position: absolute; width: 84px; height: 84px; border-radius: 50%; touch-action: none;
   background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.4); font-size: 15px; font-weight: bold; }
