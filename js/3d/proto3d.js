@@ -81,6 +81,8 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 #p3-roll-right { right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(116px + env(safe-area-inset-bottom, 0px)); }
 #p3-stick-zone { position: absolute; left: 0; top: 22%; bottom: 0; width: 45%; display: none; touch-action: none; }
 #proto3d.p3-joystick #p3-stick-zone { display: block; }
+#p3-insets { position: absolute; visibility: hidden; pointer-events: none; width: 0; height: 0;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0; }
 #p3-topbar { position: absolute; top: calc(8px + env(safe-area-inset-top, 0px)); right: calc(8px + env(safe-area-inset-right, 0px));
   display: flex; gap: 8px; }
 .p3-small { min-width: 48px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: rgba(20,30,50,0.7);
@@ -109,6 +111,7 @@ const HTML = `
 <canvas id="p3-canvas"></canvas>
 <canvas id="p3-hud"></canvas>
 <div id="p3-stick-zone" class="p3-game" aria-label="Joystick area"></div>
+<div id="p3-insets" aria-hidden="true"></div>
 <button type="button" id="p3-thrust" class="p3-btn p3-game" aria-label="Thrust">THRUST</button>
 <button type="button" id="p3-fire" class="p3-btn p3-game" aria-label="Fire">FIRE</button>
 <button type="button" id="p3-roll-left" class="p3-btn p3-roll p3-game" aria-label="Roll left">⟲</button>
@@ -254,10 +257,21 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         hud.width = Math.round(cssW * hdpr);
         hud.height = Math.round(cssH * hdpr);
         hctx.setTransform(hdpr, 0, 0, hdpr, 0, 0);
-        layoutR = radarLayout(cssW, cssH);
+        relayoutRadar();
         const portrait = isPortrait(win);
         $('p3-portrait-note').classList.toggle('p3-hidden', !portrait);
         $('p3-portrait-banner').classList.toggle('p3-hidden', !portrait);
+    }
+    function relayoutRadar() {
+        // Safe-area insets come from the CSS env() values the buttons use
+        // (read from a hidden probe padded by them)
+        const probe = $('p3-insets');
+        const cs = probe && win.getComputedStyle ? win.getComputedStyle(probe) : null;
+        const px = (n) => (cs ? parseFloat(cs[n]) || 0 : 0);
+        layoutR = radarLayout(cssW, cssH, {
+            rollButtons: root.classList.contains('p3-joystick') && root.classList.contains('p3-free'),
+            insets: { top: px('paddingTop'), right: px('paddingRight'), bottom: px('paddingBottom') },
+        });
     }
     win.addEventListener('resize', resize);
     resize();
@@ -297,6 +311,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         $('p3-mode').textContent = MODE_LABELS[eff] + (eff !== c ? '*' : '');
         root.classList.toggle('p3-joystick', eff === 'joystick');
         root.classList.toggle('p3-free', !lv);
+        relayoutRadar();
         const label = screen === 'paused' ? 'Resume' : screen === 'over' ? 'Play again' : (c !== 'joystick' && permission === 'unknown' && motionPermissionNeeded(win) ? 'Enable motion & start' : 'Tap to start');
         $('p3-start').textContent = label;
         $('p3-restart').classList.toggle('p3-hidden', screen !== 'paused');

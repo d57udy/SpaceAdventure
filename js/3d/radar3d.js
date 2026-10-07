@@ -156,28 +156,27 @@ export function edgeMarker(ship, rocks, { size, range, aspect }) {
 }
 
 /**
- * Where the two circles go: bottom centre between Thrust and Fire, above the footer line.
- * When the screen is too narrow (portrait) they move up above the buttons. Button boxes
- * mirror proto3d.js CSS (84 px round buttons 16 px from the edges; Thrust moves next to
- * Fire in Joystick mode; roll buttons above them).
- * @returns {{ r: number, front: {cx, cy}, rear: {cx, cy}, lifted: boolean }}
+ * Where the two circles go (owner feedback 2026-10-07: keep the centre of the screen clear):
+ * stacked on the right edge, FRONT on top, REAR below, between the top bar (Pause) and the
+ * buttons on the right (Fire; roll buttons above it when they show). Labels sit left of each
+ * circle. Button boxes mirror proto3d.js CSS (84 px round buttons 16 px from the edges, 64 px
+ * roll buttons at bottom 116). rollButtons: the roll buttons are visible (Joystick, no level
+ * horizon). insets: safe-area insets in CSS px.
+ * @returns {{ r: number, front: {cx, cy}, rear: {cx, cy}, label: 'left' }}
  */
-export function radarLayout(w, h) {
-    const r = Math.round(Math.max(30, Math.min(70, Math.min(w, h) * 0.11)));
+export function radarLayout(w, h, { rollButtons = false, insets = {} } = {}) {
+    const it = insets.top || 0, ir = insets.right || 0, ib = insets.bottom || 0;
     const gap = 10;
-    const half = 2 * r + gap / 2; // half the width of both circles
-    const footerTop = h - Math.max(18, h * 0.06) + 2;
-    const leftClear = 16 + 84 + 10;          // Thrust (left)
-    const rightClear = 116 + 84 + 10;        // Fire + Thrust in Joystick mode (right)
-    const fits = w / 2 - half >= leftClear && w / 2 + half <= w - rightClear;
-    const label = 12; // room for the FRONT / REAR labels above the circles
-    let cy = footerTop - 6 - r;
-    if (!fits) cy = h - (16 + 84 + 16 + 64 + 12) - r; // above Thrust/Fire and the roll buttons
-    cy = Math.max(r + label, cy);
+    const top = it + 8 + 44 + 10;                                 // below the top bar
+    const bottom = h - ib - (rollButtons ? 116 + 64 : 16 + 84) - 10; // above the right buttons
+    const fit = Math.floor((bottom - top - gap) / 4);
+    const r = Math.max(22, Math.min(70, Math.round(Math.min(w, h) * 0.11), fit));
+    const cx = w - ir - 12 - r;
+    const frontY = top + r;
     return {
         r,
-        front: { cx: w / 2 - r - gap / 2, cy },
-        rear: { cx: w / 2 + r + gap / 2, cy },
-        lifted: !fits,
+        front: { cx, cy: frontY },
+        rear: { cx, cy: frontY + 2 * r + gap },
+        label: 'left',
     };
 }

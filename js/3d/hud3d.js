@@ -144,12 +144,19 @@ export function drawRadar(ctx, layout, radar, colors, time = 0) {
         ctx.moveTo(cx - 4, cy); ctx.lineTo(cx + 4, cy);
         ctx.moveTo(cx, cy - 4); ctx.lineTo(cx, cy + 4);
         ctx.stroke();
-        // Label above the circle
+        // Label left of the circle (stacked layout) or above it
         ctx.font = `${Math.max(9, Math.round(10 * unit))}px Arial, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
         ctx.fillStyle = 'rgba(170, 210, 240, 0.7)';
-        ctx.fillText(hemi === 'front' ? '▲ FRONT' : '▼ REAR', cx, cy - r - 2);
+        const text = hemi === 'front' ? '▲ FRONT' : '▼ REAR';
+        if (layout.label === 'left') {
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, cx - r - 6, cy);
+        } else {
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(text, cx, cy - r - 2);
+        }
         // Far first, so near blips are drawn on top
         const blips = [...radar[hemi]].sort((a, b) => a.near - b.near);
         for (const b of blips) {

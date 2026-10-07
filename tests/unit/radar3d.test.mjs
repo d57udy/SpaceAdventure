@@ -120,31 +120,35 @@ test('edge marker: nearest crystal outside the view, only when no crystal is on 
     assert.equal(edgeMarker(ship(), [], { size: SIZE, range: RANGE, aspect }), null);
 });
 
-test('layout: between Thrust and Fire above the footer; lifted above the buttons in portrait', () => {
-    const buttons = (w, h) => [
-        { x0: 16, x1: 100, y0: h - 100, y1: h - 16 },                 // Thrust (left)
+test('layout: stacked on the right edge, front on top, clear of the top bar and the right buttons', () => {
+    const buttons = (w, h, roll) => [
         { x0: w - 200, x1: w - 116, y0: h - 100, y1: h - 16 },        // Thrust (Joystick mode)
         { x0: w - 100, x1: w - 16, y0: h - 100, y1: h - 16 },         // Fire
-        { x0: w - 160, x1: w - 96, y0: h - 180, y1: h - 116 },        // roll buttons
-        { x0: w - 80, x1: w - 16, y0: h - 180, y1: h - 116 },
+        ...(roll ? [
+            { x0: w - 160, x1: w - 96, y0: h - 180, y1: h - 116 },    // roll buttons
+            { x0: w - 80, x1: w - 16, y0: h - 180, y1: h - 116 },
+        ] : []),
+        { x0: w - 120, x1: w - 8, y0: 8, y1: 52 },                    // top bar (Pause)
     ];
-    for (const [w, h] of [[892, 412], [1280, 800], [412, 892], [740, 360]]) {
-        const L = radarLayout(w, h);
-        const footerTop = h - Math.max(18, h * 0.06) + 2;
-        for (const c of [L.front, L.rear]) {
-            assert.ok(c.cy + L.r <= footerTop, `${w}x${h}: clear of the footer`);
-            assert.ok(c.cy - L.r >= 0 && c.cx - L.r >= 0 && c.cx + L.r <= w, `${w}x${h}: on screen`);
-            for (const b of buttons(w, h)) {
-                const nx = Math.max(b.x0, Math.min(c.cx, b.x1)), ny = Math.max(b.y0, Math.min(c.cy, b.y1));
-                assert.ok(Math.hypot(c.cx - nx, c.cy - ny) > L.r, `${w}x${h}: clear of a button`);
+    for (const roll of [false, true]) {
+        for (const [w, h] of [[892, 412], [1280, 800], [412, 892], [740, 360], [915, 412]]) {
+            const L = radarLayout(w, h, { rollButtons: roll });
+            assert.ok(L.front.cy < L.rear.cy, 'front on top');
+            assert.equal(L.front.cx, L.rear.cx, 'one column');
+            assert.ok(L.front.cx > w * 0.75, `${w}x${h}: on the right`);
+            assert.ok(L.rear.cy - L.front.cy >= 2 * L.r, 'circles do not overlap');
+            for (const c of [L.front, L.rear]) {
+                assert.ok(c.cy - L.r >= 0 && c.cx - L.r >= 0 && c.cx + L.r <= w, `${w}x${h}: on screen`);
+                for (const b of buttons(w, h, roll)) {
+                    const nx = Math.max(b.x0, Math.min(c.cx, b.x1)), ny = Math.max(b.y0, Math.min(c.cy, b.y1));
+                    assert.ok(Math.hypot(c.cx - nx, c.cy - ny) > L.r, `${w}x${h} roll=${roll}: clear of a button`);
+                }
             }
         }
-        assert.ok(L.front.cx < L.rear.cx, 'front on the left');
-        assert.ok(Math.abs((L.front.cx + L.rear.cx) / 2 - w / 2) < 1e-9, 'centred');
     }
-    assert.equal(radarLayout(892, 412).lifted, false);
-    assert.equal(radarLayout(412, 892).lifted, true);
     assert.ok(radarLayout(1280, 800).r > radarLayout(892, 412).r, 'larger on desktop');
+    const inset = radarLayout(892, 412, { insets: { top: 20, right: 30 } });
+    assert.ok(inset.front.cx < radarLayout(892, 412).front.cx, 'respects the right inset');
     assert.ok(near(verticalFov(16 / 9), 2 * Math.atan(9 / 16) * 180 / Math.PI, 1e-9));
     assert.equal(verticalFov(0.46), 80, "tall screens capped");
 });
