@@ -18,7 +18,7 @@
 const CACHE_PREFIX = 'space-adventure-';
 
 // @generated-begin (scripts/update-sw-version.mjs; do not edit by hand)
-const CACHE_VERSION = 'sa-7b560e36179c';
+const CACHE_VERSION = 'sa-10a4d9cdede1';
 const PRECACHE = [
     './',
     'index.html',
@@ -32,6 +32,7 @@ const PRECACHE = [
     'js/boss.js',
     'js/bullet.js',
     'js/camera.js',
+    'js/difficulty.js',
     'js/entity.js',
     'js/gamepad.js',
     'js/ghost.js',
@@ -42,6 +43,7 @@ const PRECACHE = [
     'js/lobby.js',
     'js/main.js',
     'js/menuLayout.js',
+    'js/mode3d.js',
     'js/modes.js',
     'js/mpIntro.js',
     'js/mpRecords.js',
@@ -73,15 +75,22 @@ const PRECACHE = [
     'js/viewport.js',
     'js/wakeLock.js',
     'js/worldSize.js',
+    'js/3d/audio3d.js',
     'js/3d/collide3d.js',
+    'js/3d/haptics3d.js',
     'js/3d/hud3d.js',
     'js/3d/look.js',
     'js/3d/math3d.js',
+    'js/3d/perf3d.js',
+    'js/3d/progress3d.js',
     'js/3d/proto3d.js',
     'js/3d/radar3d.js',
     'js/3d/render3d.js',
+    'js/3d/rules3d.js',
     'js/3d/sensors.js',
     'js/3d/sim3d.js',
+    'js/3d/spawn3d.js',
+    'js/3d/tutorial3d.js',
     'js/3d/vendor/three.core.min.js',
     'js/3d/vendor/three.module.min.js',
     'js/3d/world3d.js',
