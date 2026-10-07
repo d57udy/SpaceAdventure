@@ -157,6 +157,17 @@ Auto picks side by side in landscape and facing in portrait. Turning the tablet 
 
 Every player has a colour, a hull mark and a number; HUD panel text is at least 18 px. The multiplayer pause menu also has **Mute**.
 
+## 3D prototype (?3d=1)
+
+A hidden first-person 3D feel test (Phase 0 of [docs/plans/06-3d-mode.md](docs/plans/06-3d-mode.md)). Add `?3d=1` to the address, for example `https://d57udy.github.io/SpaceAdventure/?3d=1`. Without the parameter the normal game is unchanged and loads no 3D file. **Back to 2D** returns to the normal game.
+
+- **Goal:** fly into green crystals (+100), shoot red spiky rocks (they split large, medium, small); hitting a red rock costs a life. The world is a wrap-around cube.
+- **Control types** (chosen on the prototype screen, remembered): **Direct** (the phone is the ship: turn, tilt and roll it), **Rate** (tilt away from the start position to keep turning, like a joystick), **Joystick** (drag on the left half to turn, ⟲ ⟳ to roll). **Level horizon** blocks roll in all three. **Recentre** (or a double-tap) makes the current phone position "straight ahead".
+- **Phone:** hold it in landscape, then tap **Start**. iPhone and iPad ask for motion access on that tap; without it (or without a motion sensor) the prototype uses Joystick.
+- **Desktop:** click to capture the mouse (mouse turns), W or ↑ thrust, Space or F fire, A/D or Q/E roll, ←/→ turn, R recentre, L level horizon, M control type, P pause, Esc releases the mouse. A game controller: left stick turns, right stick rolls, RT thrust, A or RB fire.
+- The bottom line shows the control type, frames per second and the render scale (lowered automatically on slow devices). Other URL options: `&seed3d=N` repeats a layout.
+- three.js r185 is included in `js/3d/vendor/` (MIT licence) and cached for offline play like the rest of the game.
+
 ## Install, full screen and offline play
 
 Space Adventure is an installable web app. After the first visit it also works offline, sounds included.
@@ -209,7 +220,8 @@ npx playwright install chromium webkit
 # Unit tests (Node's built-in runner, no browser)
 npm run test:unit
 
-# Integration and acceptance tests (Playwright: desktop keyboard, iPad touch, Pixel 7 Pro phone)
+# Integration and acceptance tests (Playwright: desktop keyboard, iPad touch, Pixel 7 Pro phone,
+# 3D prototype with WebGL through SwiftShader: --project=chromium-3d --project=chromium-3d-desktop)
 npm run test:e2e
 
 # Everything
@@ -223,7 +235,7 @@ On `localhost` the service worker stays off unless you add `?sw=1` to the addres
 
 ### Before committing: `npm run sw:version`
 
-The service worker caches every game file under a version that is a hash of their contents. **Run `npm run sw:version` before committing any change to `index.html`, `style.css`, `manifest.webmanifest`, `js/*.js`, `assets/audio/*.mp3` or `icons/*.png`**, and after adding or removing such a file. Otherwise players keep the old files. `npm run sw:check` and the unit tests fail while `sw.js` is out of date. `npm run icons` regenerates the PNG icons from `icons/icon.svg` (needs ImageMagick).
+The service worker caches every game file under a version that is a hash of their contents. **Run `npm run sw:version` before committing any change to `index.html`, `style.css`, `manifest.webmanifest`, `js/*.js`, `js/3d/` (all `.js` files, three.js included), `assets/audio/*.mp3` or `icons/*.png`**, and after adding or removing such a file. Otherwise players keep the old files. `npm run sw:check` and the unit tests fail while `sw.js` is out of date. `npm run icons` regenerates the PNG icons from `icons/icon.svg` (needs ImageMagick).
 
 GitHub Actions (`.github/workflows/test.yml`) runs `sw:check`, the unit tests and the Playwright tests on every push and pull request.
 

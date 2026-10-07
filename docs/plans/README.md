@@ -13,6 +13,7 @@ This folder holds the implementation plan for the next round of improvements and
 | 8 | Game controller support | [03-tutorial-music-gamepad.md](03-tutorial-music-gamepad.md#item-8-game-controller-support) | M–L |
 | – | Multiplayer investigation (all options) | [04-multiplayer.md](04-multiplayer.md) | – |
 | – | **Local multiplayer plan** (decided scope) | [05-local-multiplayer.md](05-local-multiplayer.md) | about 3–4 weeks, in 8 phases |
+| – | **3D cockpit mode** (investigation October 2026; Phase 0 prototype built, `?3d=1`) | [06-3d-mode.md](06-3d-mode.md) | about 4–6 weeks, in 5 phases |
 
 Sizes: S = under a day, M = 1–2 days, L = 2–3 days, XL = a week or more. Each includes unit, integration and acceptance tests.
 
