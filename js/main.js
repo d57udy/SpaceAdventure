@@ -2444,14 +2444,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // js/3d/proto3d.js. Dynamic import, so the 2D game never loads any 3D file.
     if (new URLSearchParams(location.search).get('3d') === '1') {
         // Still register the service worker, so a first visit via ?3d=1 installs the offline
-        // cache too. initPwa creates no DOM; no 2D UI (toast, app bar) is set up here. The
-        // state is never 'safe', so an update is never applied while the prototype runs.
+        // cache too. initPwa creates no DOM; no 2D UI (toast, app bar) is set up here. A
+        // waiting update is applied by itself (one reload) while the 3D start or game-over
+        // screen shows; never during a run or while paused.
+        const hook3d = window.__spaceAdventure || (window.__spaceAdventure = {});
+        const screen3d = () => {
+            try { return (hook3d.game3d && hook3d.game3d.screen) || 'menu'; } catch { return 'menu'; }
+        };
         try {
-            pwa = initPwa({ getState: () => 'playing' });
+            pwa = initPwa({ getState: () => (['menu', 'over'].includes(screen3d()) ? 'menu' : 'playing') });
+            const tryUpdate = () => { if (pwa.getPwaState().updateReady) pwa.applyUpdate(); };
+            pwa.onUpdateReady(tryUpdate);
+            setInterval(tryUpdate, 2000); // an update found mid-run applies at the next menu
         } catch (err) {
             console.error('[3d] PWA setup failed:', err);
         }
-        const hook3d = window.__spaceAdventure || (window.__spaceAdventure = {});
         Object.defineProperty(hook3d, 'pwa', { get: () => (pwa ? pwa.getPwaState() : null), configurable: true, enumerable: true });
         import('./3d/proto3d.js').then((m) => m.startPrototype()).catch((err) => {
             console.error('[3d] prototype failed to load, back to 2D:', err);
