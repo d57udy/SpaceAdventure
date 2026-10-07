@@ -2,20 +2,21 @@
 
 This plan turns the Phase 0 prototype (`?3d=1`, [06-3d-mode.md](06-3d-mode.md) §10) into the complete 3D game. It builds on the investigation in plan 06 and on everything the owner decided and tested since. Where this plan differs from plan 06 §6 (roadmap), this plan wins.
 
-Status: **planned 8 October 2026**. Not started. The prototype stays behind `?3d=1` until Phase 6.
+Status: **planned 8 October 2026**, owner answers to the open questions added the same day (§1, items 11 to 15). Not started. The prototype stays behind `?3d=1` until Phase 6.
 
 ## Summary
 
 | Topic | Plan |
 |---|---|
-| Biggest gameplay gap | Random collisions are more than 10 times rarer in 3D than in 2D (§2.1). Danger now comes from three sources aimed at the player: **incoming rocks**, **asteroid clusters** and **hunter UFOs** (owner decision, 8 October 2026). |
-| Level structure | Each level is a **sector** with a fixed set of crystals, most of them inside clusters. Collect them all to finish the level. Red rocks don't have to be cleared. Boss every 2 levels, as in 2D. |
-| Content | UFOs, boss, the 7 power-ups, hyperspace, lives, combos, scoring, Easy/Medium/Hard and adaptive difficulty, all mapped from 2D. |
+| Biggest gameplay gap | Random collisions are more than 10 times rarer in 3D than in 2D (§2.1). Danger now comes from **incoming rocks** and **asteroid clusters**, plus **UFOs that behave as in 2D** (owner decisions, 8 October 2026). |
+| Level structure | **As in 2D:** a level ends when no red and no green rocks are left (and the boss is destroyed on boss levels). Each level has a fixed set of rocks, partly in clusters and partly arriving as incoming waves. Boss every 2 levels. |
+| Content | Hits, UFOs, boss, the 7 power-ups, hyperspace, lives, combos, scoring, Easy/Medium/Hard and adaptive difficulty, all following the 2D rules. |
+| Assistance | No separate settings: aim assist and the other aids switch on automatically from the adaptive difficulty level (Assisting, Balanced, Challenging), §2.9. |
 | Progression | **Separate 3D high-score board**; **credits, upgrades and achievements shared** with 2D. |
 | Controls | Direct, Rate and Joystick (all kept), Level horizon toggle (default off), desktop mouse and keys, game controller. |
-| HUD | No cockpit frame. Two-circle radar stacked on the right edge. Crosshair, lead marker, edge arrows, threat and damage-direction warnings. |
+| HUD | No cockpit frame. Two-circle radar stacked on the right edge (live since 8 October 2026). Crosshair, edge arrows, threat and damage-direction warnings. |
 | View distance | Normal, Far (default, above 70 fps on the Pixel 7 Pro), Very far. |
-| Menu | Phases 1 to 5: the 3D game stays behind `?3d=1`. Phase 6: **"Start 3D" becomes the first main-menu entry and the default**, 2D stays one tap away. |
+| Menu | Phases 1 to 5: the 3D game stays behind `?3d=1`. From Phase 4 the 2D and 3D menus switch to each other. Phase 6: **"Start 3D" becomes the first main-menu entry and the default**, 2D stays one tap away. |
 | Hosting | Unchanged: static files on free GitHub Pages, everything precached for offline play, installable app. |
 | Testing | Unit tests and a headless **balance harness** locally (Node only). Every browser test runs on GitHub Actions, never on the Mac. |
 | Size | About **5 to 7 weeks of agent time** in 6 phases, with a phone test by the owner after phases 1, 2, 3 and 5. |
@@ -29,11 +30,19 @@ From plan 06 §8, the prototype feedback (§10.1) and this conversation:
 3. Wrap-around cube world, every object drawn at its nearest copy, fog hides the seam.
 4. **Far** view distance is the default (owner: "far is fine, still >70fps").
 5. **Two-circle radar** (front and rear), stacked on the right edge (owner, 8 October 2026: "too close to the center of the screen").
-6. Danger fixes 1, 2 and 3: incoming rocks, clusters, hunter UFOs (owner, 8 October 2026).
+6. Danger fixes: incoming rocks, clusters and UFOs (owner, 8 October 2026). UFOs follow the 2D rules (item 13).
 7. Separate 3D high-score board; credits, upgrades and achievements shared.
 8. 3D precached for everyone, offline.
 9. No multiplayer in 3D for now.
 10. "Start 3D" becomes the default and first menu entry once the 3D game is complete.
+
+Owner answers, 8 October 2026:
+
+11. **Finishing a level works exactly as in 2D:** no red and no green rocks left. Green crystals can be shot as in 2D (destroyed, no points, "wasted"); the prototype only lets you collect them, which Phase 1 fixes.
+12. **Hits as in 2D.**
+13. **UFOs as in 2D.**
+14. **Aim assist and other assistance switch on automatically** with the adaptive difficulty level; no separate settings.
+15. **Switching between 2D and 3D is in the menu.**
 
 ## 2. Gameplay design
 
@@ -53,35 +62,43 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 
 ### 2.2 Incoming rocks (fix 1)
 
-- Some red rocks spawn **just beyond the fog** (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). Each is aimed at the point where the ship will be when the rock arrives, plus a random miss offset. About a third would hit a ship that doesn't react.
-- Speed 70 to 120 units per second at level 1 (×0.8 Easy, ×1.2 Hard), plus 4 % per level. Large or medium, so shooting one splits it into pieces that keep flying toward you.
-- Rate: Medium level 1 one every 8 s, Easy 12 s, Hard 5 s; 0.4 s less per level, at least 3 s. At most 4 incoming rocks at once. No new one in the 3 s after a respawn.
-- They fade in through the fog like every other object. The radar threat flash (already built) marks them once they're within 25 % of the view distance on a closing course. A short warning tone and a light vibration come with it.
-- Incoming rocks that miss keep drifting and join the field. The field is trimmed far from the ship so the total stays within budget.
+- Each level's red rocks are a **fixed set** (§2.5). About a third of them don't start in the field: they arrive during the level as **incoming rocks**. This keeps the 2D rule that a level ends once every rock is gone.
+- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives, plus a random miss offset, so about a third would hit a ship that doesn't react.
+- Speed 70 to 120 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 4 % per level. Large or medium, so shooting one splits it into pieces that keep flying toward you.
+- Timing: Medium level 1 one every 8 s, Easy 12 s, Hard 5 s; 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
+- They fade in through the fog like every other object. The radar threat flash (already built) marks them once they're within 25 % of the view distance on a closing course.
 
 ### 2.3 Asteroid clusters (fix 2)
 
 - Most red rocks are gathered into **clusters**: spheres of radius 250 to 400 holding 18 to 30 rocks (mostly medium and small) that drift slowly together and tumble.
-- **Most of the level's crystals sit inside clusters**, so collecting means flying through danger. The space between clusters is calm and has a few scattered rocks.
-- At Far, level 1: 6 clusters of about 22 rocks plus 20 scattered, about 150 red rocks in total, the same as today. Inside a cluster, the average flight between collisions drops to about 1,100 units, so crossing one without dodging is a real risk.
+- **Most of the level's crystals sit inside clusters**, so collecting means flying through danger. The space between clusters is calm and has a few scattered rocks and crystals. Crystals come in the three 2D sizes with the 2D scores (`greenScore`) and don't split.
+- At Far, level 1: 6 clusters of about 18 rocks, 15 scattered and about 50 incoming, about 170 red rocks over the level (fewer at any one time than today). Inside a cluster, the average flight between collisions drops to about 1,100 units, so crossing one without dodging is a real risk.
 - Clusters scale with the view distance (more clusters, not denser ones, in a bigger cube), with level (+1 cluster every 2 levels, rocks +2 per cluster per level) and with difficulty. The total stays under `MAX_FIELD_ROCKS` (600).
 - The radar shows each cluster's rocks as usual. Clusters beyond the view distance appear as a faint ring on the radar rim, so you can find the next one.
 
-### 2.4 Hunter UFOs (fix 3)
+### 2.4 UFOs (as in 2D)
 
-- Purple saucers, as in 2D: score 200, 1 hit to destroy.
-- They come in from beyond the fog, close to 300 to 500 units, then circle and strafe the player at that range. They avoid the inside of clusters.
-- They fire **dodgeable bullets** (speed 320, life 3 s) aimed at where the ship will be, with the 2D accuracy per difficulty (`ufoAccuracy`: 0.6 Easy up to Hard's value) and the 2D fire rate (`fireRate` 2 s, with ±50 % jitter). Like in 2D, they also shoot crystals.
-- At most 1 at once at levels 1 and 2, 2 from level 3, 3 from level 6. Spawn timing follows 2D's `ufoSpawnMultiplier`.
-- The radar shows them as a purple saucer glyph. An edge arrow points to any UFO within the view distance that's off screen. A **damage-direction marker** (a red arc at the screen edge) shows where a hit came from.
+The 2D rules (`js/ufo.js`, `js/main.js` `updateUfoSpawning`, `js/modes.js` `SOLO_BASE`), carried over one to one:
 
-### 2.5 Level structure
+- **Appearance:** one at a time (`ufoMaxActive` 1), a new one about every 15 s (`ufoBaseInterval`, times the difficulty's `ufoSpawnMultiplier` and the adaptive `ufoSpawnMod`). Purple saucer, radius 15, score 200, one hit to destroy.
+- **Movement:** appears at the edge of the visible area and flies in a straight line at speed 100, wrapping around the world.
+- **Shooting:** every 2 s (±20 %). 30 % of the shots go at a green crystal near the UFO, the rest at the player. Accuracy per difficulty (`ufoAccuracy`: 0.6 Easy, 0.8 Medium, Hard's value) times the adaptive `ufoAccuracyMod`. UFO bullets destroy greens they hit and split reds.
+- **Collisions:** ramming a UFO costs a life and destroys it; a shield absorbs it (§2.5).
 
-- Each level is a **sector**: a new seeded field of clusters, scattered rocks and a fixed number of crystals (Far: 24 at level 1, +3 per level, at most 60). Crystals don't refill during a level.
-- **Level complete:** all crystals collected, and the boss destroyed on boss levels. Red rocks don't have to be cleared. Hunting every rock in a 3D cube would be tedious, unlike 2D's single screen.
-- A HUD counter shows the crystals left. When only 3 are left, each one gets an edge arrow.
-- Between levels: a short "Sector N" banner, 3 s of invulnerability, and a new field generated around the ship (nothing within 320).
-- Lives, the extra-life threshold, combos (a quick series of crystals) and the score values match 2D. One rock or bullet hit costs a life; the ship respawns at its position with 3 s of invulnerability, and rocks within 150 are pushed away.
+Two things need a 3D translation so the behaviour *feels* the same, not just has the same numbers:
+- **Staying in play:** a 2D UFO crosses a small screen and stays near you; in a 3D cube a random straight line would carry it into the fog within seconds. In 3D its straight line is chosen to pass within half the view distance of the ship, which is what a 2D UFO does on its screen.
+- **Aim spread:** 2D spreads shots up to ±(1 − accuracy) × 180° in a plane. The same angle as a 3D cone would almost never hit (the same geometry problem as §2.1), so the 3D cone is set to give **the same hit chance as 2D at the same distance**. The balance harness checks this.
+
+The radar shows UFOs as a purple saucer glyph. An edge arrow points to a UFO within the view distance that's off screen, and a red **damage-direction arc** at the screen edge shows where a hit came from.
+
+### 2.5 Levels and hits (as in 2D)
+
+- **Each level has a fixed set of rocks** (2D: 10 plus 3 per level, scaled to the world). In 3D the count follows the view distance's world size, split into clusters, scattered rocks and incoming rocks (§2.2, §2.3). Rocks don't refill.
+- **Level complete:** no red and no green rocks left, no hostile UFO, and the boss destroyed on boss levels, exactly the 2D condition.
+- **Shooting a green** destroys it with no points ("wasted", a small green burst), as in 2D. It still counts as gone.
+- **Finding the last rocks:** a cube is much bigger than a screen, so once 5 or fewer rocks are left, every one of them shows on the radar at any distance and gets an edge arrow with its distance.
+- Between levels: a short "Level N" banner, 3 s of invulnerability, and a new field around the ship (nothing within 320).
+- **Hits, as in 2D:** touching a red rock, being rammed by a UFO or hit by a UFO bullet costs a life. The rock splits (or the UFO is destroyed). A **shield** power-up absorbs one hit, breaks, and gives 1 s of protection so the fragments don't hit straight away. After losing a life the ship respawns with 3 s of invulnerability. Lives, the extra-life score (with the adaptive `extraLifeThresholdMod`), combos and score values match 2D.
 
 ### 2.6 Boss (every 2 levels)
 
@@ -92,7 +109,7 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 
 ### 2.7 Power-ups
 
-- The same 7 types, drop chances (`js/powerup.js`) and durations as 2D, dropped by destroyed rocks and UFOs. They float as spinning glyph billboards and show as squares on the radar.
+- As in 2D: the same 7 types, type chances (`js/powerup.js`) and durations; a 30 % chance of a drop when a red rock or UFO is destroyed, plus one at a random place every 20 s (times the adaptive `powerUpSpawnMod`). In 3D the timed one appears within the view distance so it can be found. They float as spinning glyph billboards and show as squares on the radar.
 - In 3D: **Shield** is a bubble around the ship; **Magnet** pulls crystals within a sphere; **Triple shot** fires 3 bullets 3° apart; **Rapid fire**, **Speed boost**, **Score multiplier** and **Extra life** work as in 2D.
 - Active power-ups show as chips with a timer bar on the HUD, top left under the score.
 
@@ -100,11 +117,19 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 
 Kept, as plan 06 recommended. A button next to Fire (H on desktop, B on a controller) jumps to a random point clear of rocks, with the same risk rules and cooldown as 2D.
 
-### 2.9 Aiming
+### 2.9 Assistance follows the adaptive difficulty
 
-- A **lead marker** in front of a moving target that's near the crosshair, and brackets around the current target.
-- **Aim assist** (Off, Low, High; default Low): a bullet bends slightly toward a target within 2° (Low) or 4° (High) of the crosshair.
-- A hit flash on the target, and a short explosion of debris particles when a rock splits.
+There are no assistance settings. The 2D adaptive difficulty (`DynamicDifficulty`, extracted from `main.js` in Phase 1) runs in 3D unchanged: it watches accuracy, crystal collection, deaths per minute and score rate, and its level shows on the HUD as in 2D (**Assisting**, **Balanced** or **Challenging**). Its existing effects apply in 3D the same way: rock speed, UFO timing and accuracy, power-up timing, green share and the extra-life score. On top of that it now switches the 3D aids:
+
+| Aid | Assisting | Balanced | Challenging |
+|---|---|---|---|
+| Aim assist (bullets bend toward a target near the crosshair) | within 4° | within 2° | off |
+| Lead marker in front of moving targets | on | on | off |
+| Edge arrow to the nearest crystal | always | when no crystal is on screen (as the prototype) | only for the last 5 rocks |
+| Threat warning (radar flash, tone, vibration) | flash, tone and vibration | flash, tone and vibration | radar flash only |
+| Collection radius bonus | +50 % | as now | as now |
+
+Easy, Medium and Hard set the starting point, as in 2D. The 2D game gets no new aids from this. Target brackets around the current target and the hit flash are always on.
 
 ## 3. HUD and controls
 
@@ -117,11 +142,11 @@ Kept, as plan 06 recommended. A button next to Fire (H on desktop, B on a contro
 
 ## 4. Menus, settings and progression
 
-- **3D screens** (DOM overlay in the 3D page, built like the prototype's start screen): Play, Settings, High Scores, Help, Back to 2D. Pause menu: Resume, Restart, Settings, Quit to 3D menu.
-- **3D settings:** control type, Level horizon, sensitivity, invert up/down, view distance, aim assist, field of view (60 to 95°, default 70°), vignette during fast turns, left-handed layout. Shared with 2D (same keys): colours (Colour-safe), vibration, music tune and volume, sound effects volume, controller rumble.
+- **3D screens** (DOM overlay in the 3D page, built like the prototype's start screen): Play, Settings, High Scores, Help, **Switch to 2D**. Pause menu: Resume, Restart, Settings, Quit to 3D menu.
+- **3D settings:** control type, Level horizon, sensitivity, invert up/down, view distance, field of view (60 to 95°, default 70°), vignette during fast turns, left-handed layout. No assistance settings (§2.9). Shared with 2D (same keys): colours (Colour-safe), vibration, music tune and volume, sound effects volume, controller rumble.
 - **High scores:** separate 3D board, top 10 per profile (key `asteroids_highScores3d`, same format as 2D), name entry with the existing name rules. The 2D High Scores screen gets a 2D / 3D switch.
 - **Credits, upgrades, achievements:** shared, through the existing `js/persistence.js`, `js/upgrades.js` and `js/achievementManager.js`. 3D events count toward the existing achievements (score, level, rocks destroyed, UFOs destroyed). New 3D achievements are optional and not planned.
-- **Switching between 2D and 3D:** a full page change (`./` and `./?3d=1`). Both come from the offline cache, so this takes about a second, and the 2D and 3D games never share live state. This is simpler and safer than running both in one page.
+- **Switching between 2D and 3D in the menu** (owner, 8 October 2026): the 2D main menu gets a **Start 3D** row (from Phase 4; first and default from Phase 6), and the 3D menu a **Switch to 2D** row. The choice is remembered, so the installed app opens where you left it. Under the hood it's a page change (`./` and `./?3d=1`) served from the offline cache in about a second, so the two games never share live state.
 - **Updates:** the 3D page applies a waiting update on its menu and game-over screens (fixed 8 October 2026) and shows the build version in its menu.
 
 ## 5. Architecture
@@ -130,7 +155,7 @@ Kept, as plan 06 recommended. A button next to Fire (H on desktop, B on a contro
 - **Pure, DOM-free modules** (unit-tested without a browser):
   - `rules3d.js`: levels, difficulty, crystal counts, threat rates, scoring tables.
   - `spawn3d.js`: sectors, clusters, incoming rocks, field trimming.
-  - `ufo3d.js`: hunter movement, aiming with lead, firing.
+  - `ufo3d.js`: 2D-rule UFO movement, aiming with the 3D spread, firing.
   - `boss3d.js`: core, weak points, turrets, escorts.
   - `powerup3d.js`: drops and effects.
   - `sim3d.js` (grows): the fixed-step game simulation calling the modules above.
@@ -148,7 +173,7 @@ Kept, as plan 06 recommended. A button next to Fire (H on desktop, B on a contro
 
 ### 6.2 Balance harness (new)
 - `scripts/balance3d.mjs` runs the pure simulation headless for seeded minutes with two scripted pilots: one flies straight at the nearest crystal and never dodges; the other also turns away from threats.
-- It reports threats per minute, collisions per minute, crystals per minute and level time per difficulty and level.
+- It reports threats per minute, collisions per minute, crystals per minute, level time, and the UFO hit chance compared with 2D, per difficulty, level and adaptive level.
 - A unit test checks the targets in §2.1 within a tolerance band, so later changes can't silently make the game trivial or unfair again. It runs in Node only and takes seconds.
 
 ### 6.3 Unit tests (Node)
@@ -166,10 +191,10 @@ After phases 1, 2, 3 and 5 on the Pixel 7 Pro (and an iPhone if available): feel
 
 | Phase | Content | Size | Done when |
 |---|---|---|---|
-| 1 Danger and levels | `rules3d`, `spawn3d`: sectors, clusters, incoming rocks, crystals-left counter, level complete and banner, respawn rules, damage-direction marker, threat tone; balance harness; extract `DynamicDifficulty` and the difficulty table from `main.js` | L | Harness meets §2.1 targets; owner phone check: "I get hit when I'm careless" |
-| 2 Hunters | Hunter UFOs, UFO bullets, lead marker, target brackets, aim assist, explosions, sound effects in 3D (stereo pan by direction) | L | UFOs a fair threat in the harness and on the phone |
+| 1 Danger and levels | `rules3d`, `spawn3d`: fixed rock set per level, clusters, incoming rocks, 2D level-complete rule, shootable greens, 2D hit and shield rules, last-5 radar and arrows, rocks-left counter, level banner, damage-direction marker, threat tone; balance harness; extract `DynamicDifficulty` and the difficulty table from `main.js` | L | Harness meets §2.1 targets; owner phone check: "I get hit when I'm careless" |
+| 2 UFOs and assistance | 2D-rule UFOs with the 3D translations (§2.4), UFO bullets, adaptive difficulty in 3D with its HUD label, the 3D aids table (§2.9: aim assist, lead marker, arrows, warnings), target brackets, explosions, sound effects in 3D (stereo pan by direction) | L | UFO hit chance matches 2D in the harness; aids change with the adaptive level; owner phone check |
 | 3 Boss, power-ups, hyperspace | Boss with weak points, turrets, escorts, boss glow and arrow; 7 power-ups; hyperspace | XL | Matches 2D single-player content; owner phone check |
-| 4 Menus and progression | `game3d` entry, `ui3d`, `input3d`; 3D menu, pause menu, settings, Help page; 3D high scores and name entry; shared credits, upgrades and achievements; 2D High Scores 2D / 3D switch; version label | L | A full game from menu to high-score entry; 2D suite green and unchanged |
+| 4 Menus and progression | `game3d` entry, `ui3d`, `input3d`; 3D menu, pause menu, settings, Help page; **Start 3D** row in the 2D menu and **Switch to 2D** in the 3D menu; 3D high scores and name entry; shared credits, upgrades and achievements; 2D High Scores 2D / 3D switch; version label | L | A full game from menu to high-score entry; 2D suite green and unchanged |
 | 5 Platform and comfort | 3D tutorial (asks first, like 2D), music, vibration and rumble, controller, desktop polish, field of view, vignette, invert, left-handed layout, capability check and slow-device offer to switch to 2D | L | Every input type tested; owner phone check |
 | 6 Launch | "Start 3D" first in the main menu and the default; remove the `?3d=1` gate (keep it as a direct link); context-loss handling; iPhone motion-permission check in the installed app; docs and README | M | Live on Pages, works offline and installed, 2D unchanged |
 
@@ -184,10 +209,8 @@ S = under a day, M = 1 to 2 days, L = 2 to 3 days, XL = a week or more. Phases 1
 5. **Making 3D the default:** slower devices could land in 3D first. The capability check offers 2D in that case, and 2D stays one tap away.
 6. **CI only:** SwiftShader in CI is slow, so browser tests use short seeded scenarios and the harness covers long play.
 
-## 9. Open questions (defaults used unless you decide otherwise)
+## 9. Open questions
 
-1. **Level goal:** collect all sector crystals, red rocks optional (**default**), or also clear every red rock as in 2D?
-2. **Hits:** one hit costs a life as in 2D (**default**), or a small shield bar that absorbs one or two hits?
-3. **UFOs shoot crystals** as in 2D (**default yes**)?
-4. **Aim assist** default Low (**default**)?
-5. **Switching 2D and 3D** by a page change (**default**), which is simpler and keeps both games independent?
+None at the moment; the five from the first draft are answered in §1 (items 11 to 15).
+
+One reading to confirm during the Phase 2 phone check: "assistive game support level" is taken to mean the adaptive difficulty level shown on the HUD (Assisting, Balanced, Challenging), with Easy, Medium and Hard as its starting point.
