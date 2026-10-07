@@ -1,16 +1,28 @@
-// The 3D prototype's game simulation: ship physics, bullets, collecting greens, splitting
-// reds, lives. Pure and seeded (js/rng.js mulberry32): the same seed and inputs give the
-// same run, so unit tests and ?seed3d=N screenshots are repeatable. Fixed step (1/60 s),
-// separate from rendering (proto3d.js runs as many steps as real time needs).
+// The 3D game simulation: ship physics, bullets, crystals, red rocks, levels, lives.
+// Pure and seeded (js/rng.js mulberry32): the same seed and inputs give the same run, so
+// unit tests, the balance harness (scripts/balance3d.mjs) and ?seed3d=N screenshots are
+// repeatable. Fixed step (1/60 s), separate from rendering.
+//
+// Rules follow the 2D game (docs/plans/07-3d-game.md §2.5, owner decision 2026-10-08):
+// - a level is a fixed set of rocks (rules3d.js levelPlan, spawn3d.js); it ends when no red
+//   rock and no crystal is left (and nothing else blocks it: UFOs and the boss, later phases);
+// - flying into a crystal collects it (2D score, combo, streak bonus); shooting one destroys
+//   it with no points ("wasted"); shooting a red rock splits it (no points, as in 2D);
+// - touching a red rock costs a life (the rock splits); a shield absorbs one hit and gives
+//   1 s of protection; after a lost life the ship is gone for 2 s, then respawns where it
+//   was with 3 s of protection and nearby rocks pushed out; extra life every 10000 points.
 //
 // The ship's orientation comes from the look model (look.js); the simulation only reads it.
 
 import { mulberry32 } from '../rng.js';
+import { Combo } from '../players.js';
 import { vAdd, vScale, vLen, vSub, forwardOf, qIdentity } from './math3d.js';
-import {
-    ROCK_SIZES, worldFor, wrapPos, spawnField, spawnOne, splitRock, driftRocks, countRocks, nearestDelta,
-} from './world3d.js';
+import { worldFor, wrapPos, spawnField, splitRock, driftRocks, countRocks, nearestDelta } from './world3d.js';
 import { spheresOverlap, sweptHit } from './collide3d.js';
+import {
+    RULES3D, levelPlan, planRockCount, difficultyOf, ddaOf, crystalScore, nextExtraLife, isBossLevel, DEFAULT_DIFFICULTY_3D,
+} from './rules3d.js';
+import { spawnLevel, createIncoming, spawnIncoming, steerIncoming, incomingInFlight, pushRocksAway } from './spawn3d.js';
 
 export const SIM = Object.freeze({
     dt: 1 / 60,
@@ -22,11 +34,6 @@ export const SIM = Object.freeze({
     fireInterval: 0.14,  // seconds between shots while Fire is held
     shipRadius: 9,
     pickupBonus: 16,     // generous pickup radius for green crystals
-    lives: 3,
-    invulnerable: 2.0,   // seconds after a hit
-    greenScore: 100,
-    minGreens: 6,        // refill minimums at the original 1600 cube; per world: worldFor()
-    minReds: 8,
 });
 
 /**
@@ -34,30 +41,52 @@ export const SIM = Object.freeze({
  * @param {number} [o.seed]
  * @param {string} [o.view] - view distance preset (world3d VIEW_DISTANCES); omitted: the original 1600 cube
  * @param {number} [o.size] - world cube side (overrides the preset's)
- * @param {boolean} [o.field] - false: start with an empty world (tests place rocks themselves)
+ * @param {boolean} [o.field] - false: start with an empty world and no levels (tests place rocks themselves)
+ * @param {string} [o.difficulty] - 'easy' | 'medium' | 'hard'
+ * @param {number} [o.level] - starting level
+ * @param {object} [o.dda] - adaptive difficulty modifiers (rules3d.js NEUTRAL_DDA fields)
+ * @param {number} [o.greens] / [o.reds] - field: a plain random field of these counts (no levels)
  */
-export function createSim({ seed = 1, view = null, size, field = true, greens, reds } = {}) {
+export function createSim({
+    seed = 1, view = null, size, field = true, difficulty = DEFAULT_DIFFICULTY_3D, level = 1, dda = null, greens, reds, lives,
+} = {}) {
     const world = worldFor(view);
     if (size === undefined) size = world.size;
+    const diff = difficultyOf(difficulty);
     const s = {
         world,
         seed,
         rand: mulberry32(seed),
         size,
         time: 0,
-        ship: { pos: [size / 2, size / 2, size / 2], vel: [0, 0, 0], q: qIdentity(), invulnerable: 0 },
+        difficulty: diff.id,
+        dda: ddaOf(dda),
+        ship: {
+            pos: [size / 2, size / 2, size / 2], vel: [0, 0, 0], q: qIdentity(),
+            invulnerable: 0, shield: 0, respawn: 0, alive: true,
+        },
         rocks: [],
         bullets: [],
+        clusters: [],
+        ufos: [],              // later phases (Phase 2): hostile UFOs block the level end
+        boss: null,            // Phase 3
         score: 0,
-        lives: SIM.lives,
+        lives: lives ?? diff.startingLives,
+        nextExtraLife: RULES3D.extraLifeScore,
+        level,
+        levels: field && greens === undefined && reds === undefined,
+        incoming: null,
+        banner: null,          // { text, t } while the level banner shows
+        combo: new Combo(),
         over: false,
         fireCooldown: 0,
         nextIdValue: 1,
-        refill: field,
         events: [],
-        stats: { collected: 0, splits: 0, hits: 0, shots: 0 },
+        stats: { collected: 0, wasted: 0, splits: 0, redsShot: 0, hits: 0, shieldHits: 0, shots: 0, levels: 0, bestCombo: 0 },
     };
-    if (field) {
+    if (s.levels) {
+        startLevel(s, level);
+    } else if (field) {
         s.rocks = spawnField(s.rand, {
             size, shipPos: s.ship.pos, greens: greens ?? world.greens, reds: reds ?? world.reds,
             clearance: world.spawnClearance, nextId: () => nextId(s),
@@ -75,11 +104,38 @@ function emit(s, type, data = {}) {
     if (s.events.length > 200) s.events.splice(0, s.events.length - 200);
 }
 
-/** Take (and clear) the events since the last call: 'fire', 'collect', 'split', 'hit', 'gameover'. */
+/**
+ * Take (and clear) the events since the last call: 'fire', 'collect', 'wasted', 'split',
+ * 'hit', 'shieldHit', 'respawn', 'extraLife', 'combo', 'comboLost', 'level', 'gameover'.
+ */
 export function drainEvents(s) {
     const e = s.events;
     s.events = [];
     return e;
+}
+
+/** A level's field around the ship, its incoming rocks, banner and a short protection. */
+function startLevel(s, level) {
+    s.level = level;
+    const plan = levelPlan(level, { difficulty: s.difficulty, dda: s.dda, boss: isBossLevel(level) });
+    const f = spawnLevel(s.rand, plan, { size: s.size, shipPos: s.ship.pos, nextId: () => nextId(s), clearance: s.world.spawnClearance });
+    s.rocks = f.rocks;
+    s.clusters = f.clusters;
+    s.incoming = createIncoming(plan);
+    s.plan = plan;
+    s.banner = { text: `LEVEL ${level}`, t: RULES3D.bannerSeconds };
+    if (level > 1) s.ship.invulnerable = Math.max(s.ship.invulnerable, RULES3D.levelInvulnerable);
+    emit(s, 'level', { level, rocks: planRockCount(plan) });
+}
+
+/** Rocks left in the level: on the field plus incoming ones not sent yet. */
+export function rocksLeft(s) {
+    return s.rocks.length + (s.incoming ? s.incoming.left : 0);
+}
+
+/** Something other than rocks keeps the level going (UFOs: Phase 2, boss: Phase 3). */
+export function levelBlocked(s) {
+    return (s.ufos || []).some((u) => u.alive !== false && !u.friendly) || !!(s.boss && s.boss.alive !== false);
 }
 
 function fire(s) {
@@ -94,15 +150,98 @@ function fire(s) {
     emit(s, 'fire');
 }
 
-function hitRed(s, rock, hitDir, byShip) {
+function removeRock(s, rock) {
     const i = s.rocks.indexOf(rock);
-    if (i < 0) return;
-    s.rocks.splice(i, 1);
+    if (i >= 0) s.rocks.splice(i, 1);
+    return i >= 0;
+}
+
+function hitRed(s, rock, hitDir, byShip) {
+    if (!removeRock(s, rock)) return;
     const pieces = splitRock(rock, s.rand, { hitDir, nextId: () => nextId(s) });
+    for (const p of pieces) if (rock.cluster) p.cluster = rock.cluster;
     s.rocks.push(...pieces);
-    if (!byShip) s.score += ROCK_SIZES[rock.size].score;
     s.stats.splits++;
-    emit(s, 'split', { pos: rock.pos.slice(), size: rock.size, pieces: pieces.length, byShip: !!byShip });
+    if (!byShip) s.stats.redsShot++;
+    emit(s, 'split', { pos: rock.pos.slice(), size: rock.size, pieces: pieces.length, byShip: !!byShip, id: rock.id });
+}
+
+function addScore(s, pts) {
+    s.score += pts;
+    while (s.score >= s.nextExtraLife) {
+        s.lives++;
+        s.nextExtraLife = nextExtraLife(s.nextExtraLife, s.dda);
+        emit(s, 'extraLife', { lives: s.lives });
+    }
+}
+
+function collect(s, rock) {
+    removeRock(s, rock);
+    const r = s.combo.addCollection();
+    const pts = crystalScore(rock.size, {
+        difficulty: s.difficulty, multiplier: (s.ship.multiplier || 0) > 0, comboMultiplier: s.combo.multiplier, streakBonus: r.streakBonus,
+    });
+    s.stats.collected++;
+    s.stats.bestCombo = Math.max(s.stats.bestCombo, s.combo.count);
+    emit(s, 'collect', { pos: rock.pos.slice(), points: pts, size: rock.size, combo: s.combo.count, multiplier: s.combo.multiplier });
+    if (r.milestone) emit(s, 'combo', { milestone: r.milestone, bonus: r.streakBonus });
+    addScore(s, pts);
+}
+
+/** The ship touched something deadly. `from`: world vector ship → cause (damage direction). */
+function shipHit(s, from) {
+    const ship = s.ship;
+    if (ship.shield > 0) {
+        ship.shield = 0;
+        ship.invulnerable = Math.max(ship.invulnerable, RULES3D.shieldGrace);
+        s.stats.shieldHits++;
+        emit(s, 'shieldHit', { from });
+        return;
+    }
+    s.lives = Math.max(0, s.lives - 1);
+    s.stats.hits++;
+    const lost = s.combo.break();
+    if (lost.lost) emit(s, 'comboLost', { count: lost.count });
+    emit(s, 'hit', { pos: ship.pos.slice(), lives: s.lives, from });
+    ship.alive = false;
+    ship.vel = [0, 0, 0];
+    if (s.lives <= 0) {
+        s.over = true;
+        emit(s, 'gameover', { score: s.score, level: s.level });
+    } else {
+        ship.respawn = RULES3D.respawnDelay;
+    }
+}
+
+function respawnShip(s) {
+    const ship = s.ship;
+    ship.alive = true;
+    ship.respawn = 0;
+    ship.invulnerable = RULES3D.respawnInvulnerable;
+    pushRocksAway(s.rocks, ship.pos, RULES3D.respawnPush, s.size);
+    if (s.incoming) s.incoming.timer = Math.max(s.incoming.timer, RULES3D.incomingHoldAfterRespawn);
+    emit(s, 'respawn', { lives: s.lives });
+}
+
+/** Incoming rocks: send the next when due (at once when everything else is cleared), steer the hidden ones. */
+function stepIncoming(s, dt) {
+    const inc = s.incoming;
+    if (!inc) return;
+    const lock = s.world.fogNear; // fully visible from here: flies straight
+    for (const r of s.rocks) if (r.incoming) steerIncoming(r, s.ship.pos, s.ship.vel, s.size, lock);
+    if (inc.left <= 0 || !s.ship.alive) return;
+    inc.timer -= dt;
+    const others = s.rocks.length - incomingInFlight(s.rocks);
+    if (others === 0 && inc.timer > 0) inc.timer = 0; // the rest of the level is cleared: no waiting
+    if (inc.timer <= 0 && incomingInFlight(s.rocks) < RULES3D.maxIncomingInFlight) {
+        s.rocks.push(spawnIncoming(s.rand, inc, {
+            shipPos: s.ship.pos, shipVel: s.ship.vel, size: s.size, distance: s.world.cullDistance, nextId: () => nextId(s), time: s.time,
+        }));
+        inc.left--;
+        inc.sent++;
+        inc.timer = inc.interval;
+        emit(s, 'incoming', { left: inc.left });
+    }
 }
 
 /**
@@ -115,41 +254,60 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
     s.time += dt;
     if (input.q) s.ship.q = input.q.slice();
     driftRocks(s.rocks, dt, s.size);
+    if (s.banner) {
+        s.banner.t -= dt;
+        if (s.banner.t <= 0) s.banner = null;
+    }
 
     const ship = s.ship;
     if (!s.over) {
-        // Ship physics: thrust along the nose, gentle drag, speed cap
-        if (input.thrust) {
-            ship.vel = vAdd(ship.vel, vScale(forwardOf(ship.q), SIM.accel * dt));
+        const lost = s.combo.update(dt);
+        if (lost && lost.lost) emit(s, 'comboLost', { count: lost.count });
+        if (!ship.alive) {
+            ship.respawn -= dt;
+            if (ship.respawn <= 0) respawnShip(s);
         } else {
-            ship.vel = vScale(ship.vel, Math.max(0, 1 - SIM.drag * dt));
-        }
-        const sp = vLen(ship.vel);
-        if (sp > SIM.maxSpeed) ship.vel = vScale(ship.vel, SIM.maxSpeed / sp);
-        ship.pos = wrapPos(vAdd(ship.pos, vScale(ship.vel, dt)), s.size);
-        if (ship.invulnerable > 0) ship.invulnerable = Math.max(0, ship.invulnerable - dt);
+            // Ship physics: thrust along the nose, gentle drag, speed cap
+            if (input.thrust) {
+                ship.vel = vAdd(ship.vel, vScale(forwardOf(ship.q), SIM.accel * dt));
+            } else {
+                ship.vel = vScale(ship.vel, Math.max(0, 1 - SIM.drag * dt));
+            }
+            const sp = vLen(ship.vel);
+            if (sp > SIM.maxSpeed) ship.vel = vScale(ship.vel, SIM.maxSpeed / sp);
+            ship.pos = wrapPos(vAdd(ship.pos, vScale(ship.vel, dt)), s.size);
+            if (ship.invulnerable > 0) ship.invulnerable = Math.max(0, ship.invulnerable - dt);
+            if (ship.shield > 0) ship.shield = Math.max(0, ship.shield - dt);
 
-        s.fireCooldown = Math.max(0, s.fireCooldown - dt);
-        if (input.fire && s.fireCooldown <= 0) {
-            fire(s);
-            s.fireCooldown = SIM.fireInterval;
+            s.fireCooldown = Math.max(0, s.fireCooldown - dt);
+            if (input.fire && s.fireCooldown <= 0) {
+                fire(s);
+                s.fireCooldown = SIM.fireInterval;
+            }
         }
+        if (s.levels) stepIncoming(s, dt);
     }
 
-    // Bullets: swept against red rocks (earliest hit wins)
+    // Bullets: swept against every rock (earliest hit wins); crystals are destroyed, reds split
     for (let i = s.bullets.length - 1; i >= 0; i--) {
         const b = s.bullets[i];
         const move = vScale(b.vel, dt);
         let best = null;
         let bestT = 2;
         for (const r of s.rocks) {
-            if (r.kind !== 'red') continue;
             const t = sweptHit(b.pos, move, r.pos, r.radius, s.size);
             if (t >= 0 && t < bestT) { bestT = t; best = r; }
         }
         if (best) {
             s.bullets.splice(i, 1);
-            hitRed(s, best, b.vel, false);
+            if (best.kind === 'green') {
+                // As in 2D: a shot crystal is lost (no points)
+                removeRock(s, best);
+                s.stats.wasted++;
+                emit(s, 'wasted', { pos: best.pos.slice(), id: best.id });
+            } else {
+                hitRed(s, best, b.vel, false);
+            }
             continue;
         }
         b.pos = wrapPos(vAdd(b.pos, move), s.size);
@@ -157,44 +315,38 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
         if (b.life <= 0) s.bullets.splice(i, 1);
     }
 
-    if (!s.over) {
-        // Collect greens (generous radius), collide with reds
+    if (!s.over && ship.alive && ship.invulnerable <= 0) {
+        // Collect crystals (generous radius), collide with reds. As in 2D, neither happens
+        // while the ship is protected (after a respawn, a shield hit or a new level).
         for (let i = s.rocks.length - 1; i >= 0; i--) {
             const r = s.rocks[i];
             if (!r) continue;
             if (r.kind === 'green') {
-                if (spheresOverlap(ship.pos, SIM.shipRadius + SIM.pickupBonus, r.pos, r.radius, s.size)) {
-                    s.rocks.splice(i, 1);
-                    s.score += SIM.greenScore;
-                    s.stats.collected++;
-                    emit(s, 'collect', { pos: r.pos.slice() });
-                }
-            } else if (ship.invulnerable <= 0 && spheresOverlap(ship.pos, SIM.shipRadius, r.pos, r.radius, s.size)) {
-                s.lives = Math.max(0, s.lives - 1);
-                ship.invulnerable = SIM.invulnerable;
-                s.stats.hits++;
-                emit(s, 'hit', { pos: r.pos.slice(), lives: s.lives });
-                hitRed(s, r, vSub([0, 0, 0], nearestDelta(r.pos, ship.pos, s.size)), true);
-                if (s.lives <= 0) {
-                    s.over = true;
-                    ship.vel = [0, 0, 0];
-                    emit(s, 'gameover', { score: s.score });
-                }
+                if (spheresOverlap(ship.pos, SIM.shipRadius + SIM.pickupBonus, r.pos, r.radius, s.size)) collect(s, r);
+            } else if (spheresOverlap(ship.pos, SIM.shipRadius, r.pos, r.radius, s.size)) {
+                const from = nearestDelta(ship.pos, r.pos, s.size);
+                hitRed(s, r, vSub([0, 0, 0], from), true);
+                shipHit(s, from);
+                if (!ship.alive || s.over) break;
             }
         }
     }
 
-    // Keep the field populated (far from the ship, never pops in view thanks to the fog)
-    if (s.refill) {
-        const c = countRocks(s.rocks);
-        const o = { size: s.size, shipPos: ship.pos, clearance: s.world.refillClearance, nextId: () => nextId(s) };
-        if (c.green < s.world.minGreens) s.rocks.push(spawnOne(s.rand, 'green', o));
-        if (c.red < s.world.minReds) s.rocks.push(spawnOne(s.rand, 'red', o));
+    // Level complete: the 2D rule (nothing left), with a living ship
+    if (s.levels && !s.over && ship.alive && rocksLeft(s) === 0 && !levelBlocked(s)) {
+        s.stats.levels++;
+        startLevel(s, s.level + 1);
     }
     return s;
 }
 
 /** Counts for the HUD / test hook. */
 export function simCounts(s) {
-    return { ...countRocks(s.rocks), bullets: s.bullets.length };
+    return {
+        ...countRocks(s.rocks),
+        bullets: s.bullets.length,
+        left: rocksLeft(s),
+        incoming: incomingInFlight(s.rocks),
+        incomingLeft: s.incoming ? s.incoming.left : 0,
+    };
 }

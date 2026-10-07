@@ -1,0 +1,67 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+    DIFFICULTY_3D, NEUTRAL_DDA, ddaOf, difficultyOf, RULES3D, CRYSTAL_SIZES, levelPlan, planRockCount, crystalScore,
+    nextExtraLife, isBossLevel,
+} from '../../js/3d/rules3d.js';
+import { AsteroidSize } from '../../js/asteroid.js';
+
+test('difficulty table: the 2D values', () => {
+    // js/main.js Difficulty (2D): lives, speed, UFO and score multipliers
+    assert.deepEqual(
+        Object.values(DIFFICULTY_3D).map((d) => [d.startingLives, d.asteroidSpeedMultiplier, d.ufoSpawnMultiplier, d.ufoAccuracy, d.scoreMultiplier]),
+        [[4, 0.8, 1.5, 0.6, 0.75], [3, 1.0, 1.0, 0.8, 1.0], [2, 1.2, 0.7, 0.95, 1.5]],
+    );
+    assert.equal(difficultyOf('nonsense').id, 'medium');
+    // Faster incoming rocks on harder settings
+    assert.ok(DIFFICULTY_3D.easy.incomingInterval > DIFFICULTY_3D.medium.incomingInterval);
+    assert.ok(DIFFICULTY_3D.medium.incomingInterval > DIFFICULTY_3D.hard.incomingInterval);
+});
+
+test('crystal scores are the 2D green scores; sizes get smaller', () => {
+    assert.deepEqual(
+        [CRYSTAL_SIZES.large.score, CRYSTAL_SIZES.medium.score, CRYSTAL_SIZES.small.score],
+        [AsteroidSize.LARGE.greenScore, AsteroidSize.MEDIUM.greenScore, AsteroidSize.SMALL.greenScore],
+    );
+    assert.ok(CRYSTAL_SIZES.large.radius > CRYSTAL_SIZES.medium.radius && CRYSTAL_SIZES.medium.radius > CRYSTAL_SIZES.small.radius);
+});
+
+test('crystal score: the 2D formula (difficulty, ×2 power-up, × combo, + streak)', () => {
+    assert.equal(crystalScore('large'), 100);
+    assert.equal(crystalScore('medium', { difficulty: 'easy' }), Math.round(50 * 0.75));
+    assert.equal(crystalScore('large', { multiplier: true, comboMultiplier: 3, streakBonus: 1000 }), 100 * 2 * 3 + 1000);
+});
+
+test('extra life threshold and the adaptive modifier', () => {
+    assert.equal(RULES3D.extraLifeScore, 10000);
+    assert.equal(nextExtraLife(10000), 20000);
+    assert.equal(nextExtraLife(10000, { extraLifeThresholdMod: 0.5 }), 15000);
+});
+
+test('dda: missing fields are neutral', () => {
+    assert.deepEqual(ddaOf(null), { ...NEUTRAL_DDA });
+    assert.deepEqual(ddaOf({ asteroidSpeedMod: 1.3, junk: 5 }), { ...NEUTRAL_DDA, asteroidSpeedMod: 1.3 });
+});
+
+test('level plan: grows with the level; boss levels have 40 % of the rocks', () => {
+    const a = levelPlan(1), b = levelPlan(5);
+    assert.ok(planRockCount(b) > planRockCount(a));
+    assert.ok(b.incoming.count > a.incoming.count && b.greens > a.greens);
+    assert.ok(b.incoming.interval < a.incoming.interval);
+    assert.ok(levelPlan(40).incoming.interval >= RULES3D.incomingMinInterval);
+    assert.equal(isBossLevel(1), false);
+    assert.equal(isBossLevel(2), true);
+    const boss = levelPlan(2, { boss: true });
+    const normal = levelPlan(2);
+    assert.ok(Math.abs(planRockCount(boss) / planRockCount(normal) - RULES3D.bossFieldShare) < 0.15);
+});
+
+test('level plan: difficulty and adaptive modifiers change speed, incoming timing and crystals', () => {
+    const e = levelPlan(1, { difficulty: 'easy' }), h = levelPlan(1, { difficulty: 'hard' });
+    assert.ok(e.speedMult < h.speedMult);
+    assert.ok(e.incoming.speed[1] < h.incoming.speed[1]);
+    assert.ok(e.incoming.interval > h.incoming.interval);
+    const helped = levelPlan(1, { dda: { greenRatioMod: 1.3, asteroidSpeedMod: 0.6 } });
+    assert.ok(helped.greens > levelPlan(1).greens, 'more crystals for a struggling player');
+    assert.ok(helped.speedMult < levelPlan(1).speedMult);
+});

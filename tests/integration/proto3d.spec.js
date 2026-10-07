@@ -234,7 +234,7 @@ test('Thrust moves the ship; Fire shoots and splits the red rock ahead', async (
   await page.mouse.up();
   const s1 = await g3(page);
   expect(s1.stats.splits).toBeGreaterThan(0);
-  expect(s1.score).toBeGreaterThan(0);
+  expect(s1.stats.redsShot).toBeGreaterThan(0); // no points for red rocks, as in 2D
   // Thrust
   await holdButton(page, '#p3-thrust', 1000);
   const s2 = await g3(page);
@@ -294,7 +294,10 @@ test('View distance: Far by default, the choice persists and changes the world s
   expect(s.world.size).toBe(4200);
   expect(s.world.rendered).toMatchObject({ size: 4200, fogFar: 1870 });
   expect(s.world.rendered.cameraFar).toBeGreaterThan(s.world.cullDistance);
-  expect(s.counts.rocks).toBe(s.world.greens + s.world.reds);
+  // A new level 1 field: every rock counted, incoming ones still to come
+  expect(s.level).toBe(1);
+  expect(s.rocksLeft).toBe(s.counts.rocks + s.incomingLeft);
+  expect(s.incomingLeft).toBeGreaterThan(0);
   expect(await page.evaluate(() => localStorage.getItem('spaceAdventure_viewDistance3d'))).toBe('veryfar');
   // Persists across a reload
   await page.reload();
@@ -361,4 +364,43 @@ test('Back to 2D reloads the normal game without the parameter', async ({ page }
   await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: T });
   expect(new URL(page.url()).searchParams.get('3d')).toBeNull();
   expect(await page.evaluate(() => 'game3d' in window.__spaceAdventure)).toBe(false);
+});
+
+test('A level ends as in 2D: collect the last crystal, shoot the last red rock, level 2 begins', async ({ page }, testInfo) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=last', storage: { spaceAdventure_control3d: 'joystick' } });
+  let s = await g3(page);
+  expect(s.levels).toBe(true);
+  expect(s.level).toBe(1);
+  expect(s.rocksLeft).toBe(2);
+  expect(s.lastFew).toBe(true);
+  await start(page);
+  // Both are on screen straight ahead: on the radar, no arrows needed
+  s = await g3(page);
+  expect(s.radar.front.length).toBe(2);
+  expect(s.markers).toEqual([]);
+  // Fly into the crystal 100 ahead
+  await holdButton(page, '#p3-thrust', 1200);
+  await poll(page, 'counts').toMatchObject({ green: 0, red: 1 });
+  expect((await g3(page)).score).toBeGreaterThan(0);
+  // Shoot the small red rock: nothing left, the next level's field appears
+  await holdButton(page, '#p3-fire', 600);
+  await poll(page, 'level').toBe(2);
+  s = await g3(page);
+  expect(s.banner).toBe('LEVEL 2');
+  expect(s.rocksLeft).toBeGreaterThan(2);
+  expect(s.invulnerable).toBeGreaterThan(0);
+  await shot(page, testInfo, 'level2');
+  expect(errors).toEqual([]);
+});
+
+test('A real level 1: HUD hook has level, rocks left and incoming rocks arrive during play', async ({ page }) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=3', storage: { spaceAdventure_control3d: 'joystick' } });
+  const s0 = await g3(page);
+  expect(s0.level).toBe(1);
+  expect(s0.rocksLeft).toBe(s0.counts.rocks + s0.incomingLeft);
+  await start(page);
+  // The first incoming rock is sent after the difficulty interval (Medium 5.5 s of game time)
+  await play(page, 6500);
+  await poll(page, 'incomingLeft').toBeLessThan(s0.incomingLeft);
+  expect(errors).toEqual([]);
 });

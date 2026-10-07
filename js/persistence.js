@@ -1,11 +1,29 @@
 import { MP_KEYS, parseOrEmpty, isBoard, isRivalry, filterBoard, filterRivalry, ghostKeysForUser } from './mpRecords.js';
 
 const HIGH_SCORES_BASE_KEY = 'asteroids_highScores';
+const HIGH_SCORES_3D_BASE_KEY = 'asteroids_highScores3d'; // separate 3D board (plan 07 §4)
 const ACHIEVEMENTS_BASE_KEY = 'asteroids_achievements';
 const UPGRADES_BASE_KEY = 'asteroids_upgrades';
 const TUTORIAL_BASE_KEY = 'asteroids_tutorial';
+const TUTORIAL_3D_BASE_KEY = 'asteroids_tutorial3d'; // the 3D first-game tutorial (own controls)
 const CURRENT_USER_KEY = 'asteroids_currentUser';
 const USER_LIST_KEY = 'asteroids_userList'; // Key for storing known usernames
+
+export const MAX_HIGH_SCORES = 10;
+
+/**
+ * Insert a score into one user's board (best first, at most `max` entries). Pure.
+ * @returns {{ scores: object[], index: number }} the new board and the entry's place (-1: not on it)
+ */
+export function insertHighScore(scores, entry, max = MAX_HIGH_SCORES) {
+    const list = Array.isArray(scores) ? [...scores] : [];
+    let index = list.findIndex(e => entry.score > e.score);
+    if (index === -1 && list.length < max) index = list.length;
+    if (index === -1) return { scores: list, index: -1 };
+    list.splice(index, 0, entry);
+    if (list.length > max) list.pop();
+    return { scores: list, index };
+}
 
 export class PersistenceManager {
     constructor() {
@@ -121,8 +139,8 @@ export class PersistenceManager {
         return `${baseKey}_${username.toUpperCase()}`;
     }
 
-    saveHighScores(username, scores) {
-        const key = this._getUserSpecificKey(HIGH_SCORES_BASE_KEY, username);
+    saveHighScores(username, scores, baseKey = HIGH_SCORES_BASE_KEY) {
+        const key = this._getUserSpecificKey(baseKey, username);
         if (!key || !this.isLocalStorageAvailable()) return;
         try {
             localStorage.setItem(key, JSON.stringify(scores));
@@ -133,10 +151,11 @@ export class PersistenceManager {
     }
 
     // Load scores either for a specific user or all users
-    loadHighScores(username = null) {
+    // baseKey: the 2D board (default) or the 3D board (loadHighScores3d)
+    loadHighScores(username = null, baseKey = HIGH_SCORES_BASE_KEY) {
         if (username) {
             // Load for specific user (existing logic)
-            const key = this._getUserSpecificKey(HIGH_SCORES_BASE_KEY, username);
+            const key = this._getUserSpecificKey(baseKey, username);
             if (!key || !this.isLocalStorageAvailable()) return [];
             try {
                 const storedScores = localStorage.getItem(key);
@@ -162,7 +181,7 @@ export class PersistenceManager {
             const allUsernames = this.getAllUsernames();
             let combinedScores = [];
             allUsernames.forEach(user => {
-                const userScores = this.loadHighScores(user); // Recursive call for specific user
+                const userScores = this.loadHighScores(user, baseKey); // Recursive call for specific user
                 combinedScores = combinedScores.concat(userScores);
             });
             // Sort combined scores descending
@@ -172,6 +191,15 @@ export class PersistenceManager {
             console.log("Combined high scores loaded.");
             return combinedScores;
         }
+    }
+
+    // 3D board: same format and rules as the 2D board, its own key per user
+    saveHighScores3d(username, scores) {
+        this.saveHighScores(username, scores, HIGH_SCORES_3D_BASE_KEY);
+    }
+
+    loadHighScores3d(username = null) {
+        return this.loadHighScores(username, HIGH_SCORES_3D_BASE_KEY);
     }
 
     saveAchievements(username, unlockedAchievementIds) {
@@ -265,8 +293,8 @@ export class PersistenceManager {
 
     // --- Tutorial (first-game training) ---
     // { asked, done, skipped, version } per user; null when never offered (or corrupt).
-    saveTutorialState(username, { asked = true, done = false, skipped = false, version = 1 } = {}) {
-        const key = this._getUserSpecificKey(TUTORIAL_BASE_KEY, username);
+    saveTutorialState(username, { asked = true, done = false, skipped = false, version = 1 } = {}, baseKey = TUTORIAL_BASE_KEY) {
+        const key = this._getUserSpecificKey(baseKey, username);
         if (!key || !this.isLocalStorageAvailable()) return;
         try {
             localStorage.setItem(key, JSON.stringify({
@@ -278,8 +306,8 @@ export class PersistenceManager {
         }
     }
 
-    loadTutorialState(username) {
-        const key = this._getUserSpecificKey(TUTORIAL_BASE_KEY, username);
+    loadTutorialState(username, baseKey = TUTORIAL_BASE_KEY) {
+        const key = this._getUserSpecificKey(baseKey, username);
         if (!key || !this.isLocalStorageAvailable()) return null;
         try {
             const stored = localStorage.getItem(key);
@@ -297,6 +325,15 @@ export class PersistenceManager {
             console.error(`Error loading tutorial state for ${username}:`, error);
             return null;
         }
+    }
+
+    // The 3D tutorial's record: same format, its own key (2D training doesn't cover 3D controls)
+    saveTutorial3dState(username, state = {}) {
+        this.saveTutorialState(username, state, TUTORIAL_3D_BASE_KEY);
+    }
+
+    loadTutorial3dState(username) {
+        return this.loadTutorialState(username, TUTORIAL_3D_BASE_KEY);
     }
 
     // --- Generic JSON values (multiplayer records use spaceAdventure_mp_* keys) ---
@@ -363,11 +400,15 @@ export class PersistenceManager {
         console.warn(`Resetting all data for user: ${username}`);
         try {
             const hsKey = this._getUserSpecificKey(HIGH_SCORES_BASE_KEY, username);
+            const hs3dKey = this._getUserSpecificKey(HIGH_SCORES_3D_BASE_KEY, username);
             const acKey = this._getUserSpecificKey(ACHIEVEMENTS_BASE_KEY, username);
             const upKey = this._getUserSpecificKey(UPGRADES_BASE_KEY, username);
             const tuKey = this._getUserSpecificKey(TUTORIAL_BASE_KEY, username);
+            const tu3dKey = this._getUserSpecificKey(TUTORIAL_3D_BASE_KEY, username);
             if (hsKey) localStorage.removeItem(hsKey);
+            if (hs3dKey) localStorage.removeItem(hs3dKey);
             if (tuKey) localStorage.removeItem(tuKey); // the tutorial is offered again
+            if (tu3dKey) localStorage.removeItem(tu3dKey);
             if (acKey) localStorage.removeItem(acKey);
             if (upKey) localStorage.removeItem(upKey);
             this.resetMultiplayerRecords(username);

@@ -109,7 +109,6 @@ test('view distances: fog ends by 0.45 x side, culling happens before the seam, 
         assert.ok(w.cullDistance < w.size / 2, `${n}: cull ${w.cullDistance}`);
         assert.ok(w.cullDistance - 80 >= w.fogFar, `${n}: cull ${w.cullDistance}`);
         assert.equal(w.size % 200, 0, `${n}: space-dust box`);
-        assert.ok(w.refillClearance >= w.cullDistance, `${n}: refills appear out of sight`);
         assert.ok(w.bulletLife * 900 > w.fogFar && w.bulletLife * 900 < w.size / 2, `${n}: bullet range`);
     }
     // Larger setting, larger world
@@ -123,9 +122,8 @@ test('view distances: density per visible volume within 15 % of the original, co
         const ratio = densityPerVisible(w) / originalDensity;
         assert.ok(ratio > 0.85 && ratio < 1.15, `${n}: density ratio ${ratio.toFixed(3)}`);
         assert.ok(w.greens + w.reds <= MAX_FIELD_ROCKS, `${n}: ${w.greens + w.reds}`);
-        // Same mix as the original field (12 : 18) and the same refill share (6 : 8)
+        // Same mix as the original field (12 : 18)
         assert.ok(Math.abs(w.greens / (w.greens + w.reds) - 0.4) < 0.01, n);
-        assert.ok(Math.abs(w.minGreens / w.greens - 0.5) < 0.02 && Math.abs(w.minReds / w.reds - 8 / 18) < 0.02, n);
     }
     // The cap bites when asked for less
     const capped = worldFor('veryfar', { maxRocks: 100 });

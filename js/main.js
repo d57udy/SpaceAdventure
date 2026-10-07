@@ -5,7 +5,7 @@ import { InputHandler } from './input.js';
 import { randomRange, wrapDelta, isNearAny, FrameErrorGuard } from './utils.js';
 import { UFO } from './ufo.js';
 import { AudioManager } from './audio.js';
-import { PersistenceManager } from './persistence.js';
+import { PersistenceManager, insertHighScore } from './persistence.js';
 import { AchievementManager } from './achievementManager.js';
 import { Achievements } from './achievements.js';
 import { PowerUp, PowerUpType } from './powerup.js';
@@ -58,6 +58,8 @@ import {
 import { initPwa, isLocalhost } from './pwa.js';
 import { createPwaUi } from './pwaUi.js';
 import { createAsteroidField, AsteroidSize, AsteroidType } from './asteroid.js';
+import { Difficulty, createDynamicDifficulty } from './difficulty.js';
+import { can3d, webgl2Renderer, startupRoute, readLastMode, writeLastMode, URL_3D } from './mode3d.js';
 import { GhostRecorder, GhostPlayer, decodeGhost, ghostStorageKey } from './ghost.js';
 import {
     TIME_ATTACK, stepCourse, createSeededWorld, ghostKeysForCourse, isGhostRecord, makeGhostRecord, isBetterRun,
@@ -91,39 +93,7 @@ const GameState = {
     TA_SETUP: 'ta_setup',       // Time Attack: course and difficulty picker
 };
 
-// Difficulty Settings
-const Difficulty = {
-    EASY: {
-        id: 'easy',
-        name: 'Easy',
-        startingAsteroids: 3,
-        asteroidSpeedMultiplier: 0.8,
-        ufoSpawnMultiplier: 1.5,
-        ufoAccuracy: 0.6,
-        startingLives: 4,
-        scoreMultiplier: 0.75
-    },
-    MEDIUM: {
-        id: 'medium',
-        name: 'Medium',
-        startingAsteroids: 4,
-        asteroidSpeedMultiplier: 1.0,
-        ufoSpawnMultiplier: 1.0,
-        ufoAccuracy: 0.8,
-        startingLives: 3,
-        scoreMultiplier: 1.0
-    },
-    HARD: {
-        id: 'hard',
-        name: 'Hard',
-        startingAsteroids: 5,
-        asteroidSpeedMultiplier: 1.2,
-        ufoSpawnMultiplier: 0.7, // More frequent UFOs
-        ufoAccuracy: 0.95,
-        startingLives: 2,
-        scoreMultiplier: 1.5
-    }
-};
+// Difficulty settings (Easy / Medium / Hard): js/difficulty.js
 
 // Constants
 const MAX_HIGH_SCORES = 10; // Max number of scores to keep
@@ -168,227 +138,8 @@ const SPEED_BOOST_MULT = 1.6; // Thrust multiplier while the speed boost power-u
 const POWERUP_SPAWN_INTERVAL = 20; // Spawn random power-up every X seconds
 let powerUpSpawnTimer = POWERUP_SPAWN_INTERVAL;
 
-// Dynamic Difficulty Adjustment System
-const DynamicDifficulty = {
-    // Performance tracking. Times are game time (ms of play, advanced by tick): pause,
-    // menus and a backgrounded tab do not count as playing time.
-    gameTimeMs: 0,
-    sessionStartTime: 0,
-    deaths: 0,
-    shotsFired: 0,
-    shotsHit: 0,
-    greenAsteroidsCollected: 0,
-    greenAsteroidsSpawned: 0,
-    redAsteroidsDestroyed: 0,
-    scoreAtLastCheck: 0,
-    lastCheckTime: 0,
-    recentScoreRate: 0, // Points per second recently
-
-    // Performance score: -1 (struggling) to +1 (skilled), 0 = neutral
-    performanceScore: 0,
-
-    // Adjustment multipliers (applied on top of selected difficulty)
-    asteroidSpeedMod: 1.0,
-    ufoSpawnMod: 1.0,
-    ufoAccuracyMod: 1.0,
-    powerUpSpawnMod: 1.0,
-    greenRatioMod: 1.0,
-    extraLifeThresholdMod: 1.0,
-
-    // Settings
-    evaluationInterval: 15, // Seconds between performance evaluations (faster response)
-    adjustmentSpeed: 0.3, // How fast adjustments change (0-1) - more responsive
-
-    // Advance the game clock by one frame of play (seconds)
-    tick(deltaTime) {
-        if (Number.isFinite(deltaTime) && deltaTime > 0) this.gameTimeMs += deltaTime * 1000;
-    },
-
-    now() {
-        return this.gameTimeMs;
-    },
-
-    reset() {
-        this.gameTimeMs = 0;
-        this.sessionStartTime = this.now();
-        this.deaths = 0;
-        this.shotsFired = 0;
-        this.shotsHit = 0;
-        this.greenAsteroidsCollected = 0;
-        this.greenAsteroidsSpawned = 0;
-        this.redAsteroidsDestroyed = 0;
-        this.scoreAtLastCheck = 0;
-        this.lastCheckTime = this.now();
-        this.recentScoreRate = 0;
-        this.performanceScore = 0;
-        this.asteroidSpeedMod = 1.0;
-        this.ufoSpawnMod = 1.0;
-        this.ufoAccuracyMod = 1.0;
-        this.powerUpSpawnMod = 1.0;
-        this.greenRatioMod = 1.0;
-        this.extraLifeThresholdMod = 1.0;
-    },
-
-    trackDeath() {
-        this.deaths++;
-    },
-
-    trackShotFired() {
-        this.shotsFired++;
-    },
-
-    trackShotHit() {
-        this.shotsHit++;
-    },
-
-    trackGreenCollected(comboCount = 0) {
-        this.greenAsteroidsCollected++;
-        // If player maintains high combo, they're skilled - increase difficulty
-        if (comboCount >= 10) {
-            this.performanceScore = Math.min(1, this.performanceScore + 0.05);
-            this.applyAdjustments();
-        }
-    },
-
-    trackGreenSpawned(count = 1) {
-        this.greenAsteroidsSpawned += count;
-    },
-
-    trackRedDestroyed() {
-        this.redAsteroidsDestroyed++;
-    },
-
-    // Calculate current shooting accuracy (0-1)
-    getAccuracy() {
-        if (this.shotsFired === 0) return 0.5; // Default
-        return Math.min(1, this.shotsHit / this.shotsFired);
-    },
-
-    // Calculate collection efficiency (0-1)
-    getCollectionEfficiency() {
-        if (this.greenAsteroidsSpawned === 0) return 0.5; // Default
-        return Math.min(1, this.greenAsteroidsCollected / this.greenAsteroidsSpawned);
-    },
-
-    // Calculate deaths per minute
-    getDeathRate() {
-        const sessionMinutes = (this.now() - this.sessionStartTime) / 60000;
-        if (sessionMinutes < 0.5) return 0; // Not enough data
-        return this.deaths / sessionMinutes;
-    },
-
-    // Evaluate performance and update adjustments
-    evaluate(currentScore) {
-        const now = this.now();
-        const timeSinceLastCheck = (now - this.lastCheckTime) / 1000;
-
-        if (timeSinceLastCheck < this.evaluationInterval) return;
-
-        // Calculate score rate (points per second)
-        this.recentScoreRate = (currentScore - this.scoreAtLastCheck) / timeSinceLastCheck;
-        this.scoreAtLastCheck = currentScore;
-        this.lastCheckTime = now;
-
-        // Calculate performance metrics
-        const accuracy = this.getAccuracy();
-        const efficiency = this.getCollectionEfficiency();
-        const deathRate = this.getDeathRate();
-
-        // Calculate performance score components
-        // Positive = skilled, Negative = struggling
-        let scoreComponents = 0;
-        let componentCount = 0;
-
-        // Accuracy component: <30% struggling, >60% skilled
-        if (this.shotsFired > 10) {
-            scoreComponents += (accuracy - 0.45) * 2; // -0.9 to +1.1
-            componentCount++;
-        }
-
-        // Collection efficiency: <40% struggling, >70% skilled
-        if (this.greenAsteroidsSpawned > 5) {
-            scoreComponents += (efficiency - 0.55) * 2; // -1.1 to +0.9
-            componentCount++;
-        }
-
-        // Death rate: >2/min struggling, <0.5/min skilled
-        if ((now - this.sessionStartTime) > 60000) {
-            const deathComponent = (1.25 - deathRate) * 0.8; // High deaths = negative
-            scoreComponents += Math.max(-1, Math.min(1, deathComponent));
-            componentCount++;
-        }
-
-        // Score rate component (points per second)
-        // <5 pts/sec = struggling, >20 pts/sec = skilled
-        if (timeSinceLastCheck > 10) {
-            const rateComponent = (this.recentScoreRate - 12.5) / 12.5;
-            scoreComponents += Math.max(-1, Math.min(1, rateComponent));
-            componentCount++;
-        }
-
-        // Average all components
-        if (componentCount > 0) {
-            const targetScore = scoreComponents / componentCount;
-            // Smoothly adjust toward target
-            this.performanceScore += (targetScore - this.performanceScore) * this.adjustmentSpeed;
-            this.performanceScore = Math.max(-1, Math.min(1, this.performanceScore));
-        }
-
-        // Apply adjustments based on performance score
-        this.applyAdjustments();
-
-        console.log(`[DDA] Performance: ${this.performanceScore.toFixed(2)} | ` +
-            `Acc: ${(accuracy * 100).toFixed(0)}% | Eff: ${(efficiency * 100).toFixed(0)}% | ` +
-            `Deaths/min: ${deathRate.toFixed(1)} | Score/sec: ${this.recentScoreRate.toFixed(1)}`);
-    },
-
-    applyAdjustments() {
-        const p = this.performanceScore;
-
-        // Struggling (p < 0): Make game easier
-        // Skilled (p > 0): Make game harder
-
-        // Asteroid speed: 0.6x (struggling) to 1.5x (skilled) - MORE PRONOUNCED
-        this.asteroidSpeedMod = 1.0 + (p * 0.4);
-
-        // UFO spawn rate: 2x interval (struggling) to 0.5x interval (skilled) - MORE PRONOUNCED
-        this.ufoSpawnMod = 1.0 - (p * 0.5);
-
-        // UFO accuracy: 0.5x (struggling) to 1.3x (skilled) - MORE PRONOUNCED
-        this.ufoAccuracyMod = 1.0 + (p * 0.3);
-
-        // Power-up spawn: 2x rate (struggling) to 0.5x rate (skilled) - MORE PRONOUNCED
-        this.powerUpSpawnMod = 1.0 - (p * 0.5);
-
-        // Green asteroid ratio: +30% (struggling) to -15% (skilled) - MORE PRONOUNCED
-        this.greenRatioMod = 1.0 - (p * 0.225);
-
-        // Extra life threshold: 0.5x (struggling) to 1.5x (skilled) - MORE PRONOUNCED
-        this.extraLifeThresholdMod = 1.0 + (p * 0.5);
-    },
-
-    // Immediate difficulty reduction on death
-    onPlayerDeath() {
-        this.deaths++;
-        // Immediately reduce performance score on death for faster response
-        this.performanceScore = Math.max(-1, this.performanceScore - 0.2);
-        this.applyAdjustments();
-        console.log(`[DDA] Death penalty applied. Performance: ${this.performanceScore.toFixed(2)}`);
-    },
-
-    // Get display text for current adjustment level
-    getAdjustmentText() {
-        if (this.performanceScore < -0.3) return 'Assisting';
-        if (this.performanceScore > 0.3) return 'Challenging';
-        return 'Balanced';
-    },
-
-    getAdjustmentColor() {
-        if (this.performanceScore < -0.3) return '#00FF00'; // Green = helping
-        if (this.performanceScore > 0.3) return '#FF6600'; // Orange = challenging
-        return '#FFFFFF'; // White = neutral
-    }
-};
+// Dynamic Difficulty Adjustment System (js/difficulty.js); 2D has one instance
+const DynamicDifficulty = createDynamicDifficulty();
 
 // Combo: per player (p.combo, a Combo from js/players.js). It reports milestones and breaks;
 // these show the texts. Single-player keeps the centred texts; with more players they
@@ -764,6 +515,8 @@ function returnToMenu() {
 
 // Main menu rows, top to bottom. Adding a row is one line.
 const mainMenuItems = [
+    // The 3D game (docs/plans/07-3d-game.md): first and default where the device can run it
+    { id: 'start3d', label: () => 'Start 3D', select: () => start3d(), visible: () => is3dAvailable() },
     { id: 'start', label: () => (pausedGameExists ? 'Resume' : 'Start'), select: () => startOrResume() },
     { id: 'multiplayer', label: () => 'Multiplayer', select: () => openModeSelect() },
     { id: 'upgrades', label: () => 'Upgrades', select: () => { upgradeMenuIndex = 0; currentGameState = GameState.UPGRADES; } },
@@ -800,7 +553,44 @@ const settingsRows = [
     { id: 'back', label: () => 'Back', select: () => returnToMenu() },
 ];
 
+// --- 2D / 3D switch (js/mode3d.js). The 3D game is its own page (./?3d=1).
+let threeDAvailable = null; // probed once
+function pageParams() {
+    try { return new URLSearchParams(location.search); } catch { return new URLSearchParams(''); }
+}
+function safeStorage() {
+    try { return window.localStorage; } catch { return null; }
+}
+function is3dAvailable() {
+    if (threeDAvailable === null) {
+        const params = pageParams();
+        const webdriver = !!(navigator && navigator.webdriver);
+        // Automated 2D tests never probe WebGL (can3d hides 3D from them unless forced)
+        const skipProbe = params.get('no3d') === '1' || (webdriver && params.get('force3d') !== '1');
+        threeDAvailable = can3d({ renderer: skipProbe ? null : webgl2Renderer(document), params, webdriver });
+    }
+    return threeDAvailable;
+}
+function standaloneDisplay() {
+    try {
+        if (navigator.standalone === true) return true; // iOS home-screen app
+        return ['standalone', 'fullscreen'].some(m => window.matchMedia && window.matchMedia(`(display-mode: ${m})`).matches);
+    } catch {
+        return false;
+    }
+}
+function start3d() {
+    if (pausedGameExists) {
+        showToast('Finish or quit your paused game first');
+        return;
+    }
+    saveAllUpgrades();
+    writeLastMode(safeStorage(), '3d');
+    location.assign(URL_3D);
+}
+
 function startOrResume() {
+    if (!pausedGameExists) writeLastMode(safeStorage(), '2d');
     if (pausedGameExists) {
         console.log("Resuming paused game...");
         currentGameState = GameState.PLAYING;
@@ -1838,6 +1628,8 @@ function achievementManagers() {
 function openHighScores() {
     // Load combined data when entering the high score screen
     allHighScores = persistenceManager.loadHighScores();
+    allHighScores3d = persistenceManager.loadHighScores3d();
+    highScoresBoard = '2d';
     allAchievements = persistenceManager.loadAchievements();
     currentGameState = GameState.HIGH_SCORES;
 }
@@ -1938,6 +1730,13 @@ let ufoSpawnTimer = UFO_SPAWN_BASE_INTERVAL;
 let finalScore = 0;
 let highScores = []; // Holds scores for the *current* user usually
 let allHighScores = []; // Holds combined scores for display
+let allHighScores3d = []; // The 3D board, combined (plan 07 §4)
+let highScoresBoard = '2d'; // '2d' | '3d': which board the High Scores screen shows
+// The 2D / 3D switch shows where 3D runs, or once someone has a 3D score
+const highScoresHas3d = () => is3dAvailable() || allHighScores3d.length > 0;
+function toggleHighScoresBoard() {
+    if (highScoresHas3d()) highScoresBoard = highScoresBoard === '2d' ? '3d' : '2d';
+}
 let allAchievements = {}; // Holds map of username -> Set of achievement IDs
 let pauseMenuSelectionIndex = 0; // For pause menu navigation
 const pauseMenuOptions = ['Resume', 'Restart', 'Main Menu']; // Pause menu items
@@ -2443,6 +2242,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Hidden 3D prototype (docs/plans/06-3d-mode.md, Phase 0): ?3d=1 hands the page to
     // js/3d/proto3d.js. Dynamic import, so the 2D game never loads any 3D file.
     if (new URLSearchParams(location.search).get('3d') === '1') {
+        writeLastMode(safeStorage(), '3d'); // the installed app reopens 3D next time
         // Still register the service worker, so a first visit via ?3d=1 installs the offline
         // cache too. initPwa creates no DOM; no 2D UI (toast, app bar) is set up here. A
         // waiting update is applied by itself (one reload) while the 3D start or game-over
@@ -2465,6 +2265,21 @@ document.addEventListener('DOMContentLoaded', () => {
             location.replace(location.pathname);
         });
         return;
+    }
+    // The installed app reopens the 3D game when that was the last one played; the 3D menu's
+    // "Switch to 2D" arrives with ?2d=1, which forgets it (js/mode3d.js)
+    {
+        const lastMode = readLastMode(safeStorage());
+        const standalone = standaloneDisplay();
+        const route = startupRoute({
+            params: pageParams(), lastMode, standalone,
+            available: lastMode === '3d' && standalone && is3dAvailable(), // probe only when it matters
+        });
+        if (route.clearLastMode) writeLastMode(safeStorage(), null);
+        if (route.go3d) {
+            location.replace(URL_3D);
+            return;
+        }
     }
     console.log("DOM Loaded - Initializing Game");
     canvas = document.getElementById('gameCanvas');
@@ -2555,6 +2370,8 @@ document.addEventListener('DOMContentLoaded', () => {
         get level() { return level; },
         get menuIndex() { return menuSelectionIndex; },
         get menuOptions() { return currentMenuOptions.map(o => o.label()); },
+        get highScoresBoard() { return highScoresBoard; },
+        get threeDAvailable() { return is3dAvailable(); },
         get difficulty() { return selectedDifficulty.id; },
         get runDifficulty() { return runDifficulty ? runDifficulty.id : null; }, // the running game's (snapshot)
         get pausedGameExists() { return pausedGameExists; },
@@ -3536,10 +3353,13 @@ function handleInput(deltaTime) {
         }
 
         case GameState.HIGH_SCORES:
+            if (inputHandler.consumeAction('menuLeft') || inputHandler.consumeAction('menuRight')) toggleHighScoresBoard();
             if (inputHandler.consumeAction('menuSelect') || inputHandler.consumeAction('escape')) {
                 currentGameState = GameState.MENU;
                 menuSelectionIndex = 0;
                 allHighScores = []; // Clear combined data when leaving
+                allHighScores3d = [];
+                highScoresBoard = '2d';
                 allAchievements = {};
             }
             break;
@@ -4212,7 +4032,9 @@ function drawMainMenu() {
     const top = titleY + d2 + (compact ? 12 : 22) + (soundHint ? 20 : 0);
     const gridW = Math.min(viewWidth - 16, 560);
     const gridX = (viewWidth - gridW) / 2;
-    const grid = menuGrid({ count: currentMenuOptions.length, top, bottom: viewHeight - 72, width: gridW, maxPitch: 48 });
+    // Up to three columns: with Start 3D there are 11 rows, which need three short columns
+    // on a phone in landscape to stay 44 px tall (two still suffice for 10)
+    const grid = menuGrid({ count: currentMenuOptions.length, top, bottom: viewHeight - 72, width: gridW, maxPitch: 48, maxCols: 3 });
 
     // Adjust index bounds safely before rendering
     if (menuSelectionIndex >= currentMenuOptions.length) {
@@ -4489,7 +4311,11 @@ function renderGame() {
 
         case GameState.HIGH_SCORES:
             addFullScreenTap(() => inputHandler.triggerAction('menuSelect'));
-            withMenuColumn(() => drawHighScores(allHighScores, allAchievements));
+            withMenuColumn(() => {
+                drawHighScores(highScoresBoard === '3d' ? allHighScores3d : allHighScores, allAchievements);
+                // Registered after the full-screen region: taps are checked last-to-first
+                if (highScoresHas3d()) drawHighScoresTabs();
+            });
             break;
 
         case GameState.ACHIEVEMENTS:
@@ -5483,19 +5309,11 @@ function checkAndAddHighScore(currentScore, username = currentUser) {
     const newEntry = { name: playerName, score: currentScore }; // Note: name here is just for display if needed, user is implicit
 
     // Load current user's scores for comparison
-    let currentUserScores = persistenceManager.loadHighScores(username);
-
-    let insertIndex = currentUserScores.findIndex(entry => currentScore > entry.score);
-    if (insertIndex === -1 && currentUserScores.length < MAX_HIGH_SCORES) {
-        insertIndex = currentUserScores.length;
-    }
+    const { scores: currentUserScores, index: insertIndex } =
+        insertHighScore(persistenceManager.loadHighScores(username), newEntry, MAX_HIGH_SCORES);
 
     if (insertIndex !== -1) {
         console.log(`New high score for ${username}: ${playerName} - ${currentScore}`);
-        currentUserScores.splice(insertIndex, 0, newEntry);
-        if (currentUserScores.length > MAX_HIGH_SCORES) {
-            currentUserScores.pop();
-        }
         // Save the updated list for the current user
         persistenceManager.saveHighScores(username, currentUserScores);
         // Update the local copy used by the game state if needed immediately
@@ -5579,7 +5397,7 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
     const compact = isCompact(viewHeight);
     ctx.font = compact ? '24px Arial' : '36px Arial';
     const titleY = compact ? viewHeight * 0.1 : viewHeight / 6;
-    ctx.fillText("HIGH SCORES (ALL USERS)", viewWidth / 2, titleY, viewWidth - 16);
+    ctx.fillText(highScoresBoard === '3d' ? '3D HIGH SCORES (ALL USERS)' : 'HIGH SCORES (ALL USERS)', viewWidth / 2, titleY, viewWidth - 16);
 
     const listStartY = titleY + (compact ? 34 : 60);
     // The list fits above the "return" hint on a short screen
@@ -5620,8 +5438,21 @@ function drawHighScores(scoresToDisplay, achievementsMap) {
     ctx.textAlign = 'center';
     ctx.font = '18px Arial';
     ctx.fillStyle = 'white';
-    ctx.fillText(inputHint("Press Space/Enter/Esc to return", "Tap to return",
-        () => `Press ${padGlyph(GP.A)} or ${padGlyph(GP.B)} to return`), viewWidth / 2, viewHeight - 40);
+    const boards = highScoresHas3d();
+    ctx.fillText(inputHint(boards ? 'LEFT/RIGHT: 2D or 3D board. Space/Enter/Esc to return' : 'Press Space/Enter/Esc to return',
+        'Tap to return', () => (boards ? `\u25C2 \u25B8 2D / 3D   ${padGlyph(GP.A)} or ${padGlyph(GP.B)} to return`
+            : `Press ${padGlyph(GP.A)} or ${padGlyph(GP.B)} to return`)), viewWidth / 2, viewHeight - 40, viewWidth - 16);
+}
+
+// High Scores: the 2D / 3D board button at the top (like the Help page button)
+function drawHighScoresTabs() {
+    const w = 150;
+    const h = MIN_TAP;
+    const y = Math.max(2, viewHeight * 0.1 - 46);
+    const to3d = highScoresBoard === '2d';
+    const x = to3d ? viewWidth - w - 8 : 8;
+    drawButtonBox(x, y, w, h, to3d ? '3D board \u25B8' : '\u25C2 2D board', false, 'bold 16px Arial');
+    tapRegions.push({ x, y, w, h, onTap: toggleHighScoresBoard, id: 'highScores:board' });
 }
 
 function drawAchievements() {
@@ -7790,6 +7621,13 @@ function drawHelpScreen() {
         ctx.fillText(rule.text, textX, y + 15);
     });
     rulesY += 2 * 40 + 12;
+    // The 3D game (only where the menu offers it)
+    if (is3dAvailable()) {
+        rulesY += 22;
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#7FDBFF';
+        ctx.fillText('3D cockpit mode: Menu > Start 3D. Its own Help is in the 3D menu.', rulesX, rulesY, viewWidth - rulesX * 2);
+    }
 
     // Controls section
     ctx.fillStyle = 'white';

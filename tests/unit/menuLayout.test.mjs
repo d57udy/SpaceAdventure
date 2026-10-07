@@ -147,6 +147,26 @@ test('menuGrid: one column of >= 44 px rows when they fit, two on a short screen
     assert.deepEqual(menuGrid({ count: 0, top: 0, bottom: 100, width: 300 }).cells, []);
 });
 
+test('menuGrid: 11 main-menu rows (with Start 3D) stay 44 px tall with up to three columns', () => {
+    // Portrait phone: still one column
+    const tall = menuGrid({ count: 11, top: 229, bottom: 820, width: 396, maxPitch: 48, maxCols: 3 });
+    assert.equal(tall.cols, 1);
+    assert.ok(tall.fits);
+    // Landscape phone: two columns of six would be 40 px; three columns of four fit
+    assert.equal(menuGrid({ count: 11, top: 101, bottom: 340, width: 560, maxPitch: 48 }).fits, false);
+    const short = menuGrid({ count: 11, top: 101, bottom: 340, width: 560, maxPitch: 48, maxCols: 3 });
+    assert.equal(short.cols, 3);
+    assert.equal(short.perCol, 4);
+    assert.ok(short.fits && short.pitch >= MIN_TAP);
+    for (const c of short.cells) assert.ok(c.y + c.h <= 340 + 1e-9 && c.w >= 150);
+    // The 10-row menu (no 3D) keeps its two-column layout
+    assert.equal(menuGrid({ count: 10, top: 101, bottom: 340, width: 560, maxPitch: 48, maxCols: 3 }).cols, 2);
+    // Tablet 1024 x 768 (menu column 768 wide, grid 560): one column
+    const tablet = menuGrid({ count: 11, top: 210, bottom: 696, width: 560, maxPitch: 48, maxCols: 3 });
+    assert.equal(tablet.cols, 1);
+    assert.ok(tablet.fits);
+});
+
 test('rowGap keeps a tight row 44 px tall, shrinking the gap first', () => {
     assert.equal(rowGap(55), 5); // roomy: the usual 5 px gap
     assert.equal(rowGap(49), 5);

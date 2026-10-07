@@ -15,6 +15,7 @@ export const HAPTIC_PATTERNS = Object.freeze({
     lifeLost: { pattern: [120, 60, 200], priority: 4, gap: 0 },
     bossDefeated: { pattern: [60, 40, 60, 40, 220], priority: 4, gap: 0 },
     gameOver: { pattern: [200, 100, 350], priority: 5, gap: 0 },
+    threat: { pattern: [10, 50, 10], priority: 2, gap: 1000 }, // 3D: a rock or UFO on a collision course
     enabled: { pattern: 30, priority: 5, gap: 0 }, // confirmation tick when switched on
 });
 

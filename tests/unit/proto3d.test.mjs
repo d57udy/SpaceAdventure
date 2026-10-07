@@ -185,7 +185,7 @@ test('joystick mode: drag rotates, roll buttons roll, thrust moves, fire splits 
     env.frames(40);
     env.el('p3-fire').pointer('pointerup');
     assert.ok(g().counts.rocks > before, `split: ${before} -> ${g().counts.rocks}`);
-    assert.ok(g().score > 0);
+    assert.ok(g().stats.redsShot > 0, 'shot (red rocks give no points, as in 2D)');
     const z0 = g().shipPos[2];
     env.el('p3-thrust').pointer('pointerdown');
     env.frames(60);
@@ -280,7 +280,8 @@ test('view distance: Far by default; choosing one regenerates the world and show
     assert.equal(env.el('p3-view-far').getAttribute('aria-pressed'), 'false');
     assert.equal(env.el('p3-start').textContent, 'Tap to start');
     // layout3d=range keeps its two test rocks in every world
-    assert.deepEqual(g().counts, { green: 1, red: 1, rocks: 2, bullets: 0 });
+    assert.deepEqual(g().counts, { green: 1, red: 1, rocks: 2, bullets: 0, left: 2, incoming: 0, incomingLeft: 0 });
+    assert.equal(g().levels, false, 'test layouts have no levels: the field stays as placed');
     const f = hud3d.formatHud({ score: 0, lives: 3, mode: 'direct', view: 'Very far', fps: 60, renderScale: 1 });
     assert.match(f.right, /View Very far · 60 fps/);
 });
@@ -312,4 +313,43 @@ test('radar hook: layout3d=range puts the red rock at the front centre and the c
     env.frames(1);
     const r2 = [...g().radar.front, ...g().radar.rear].find((b) => b.type === 'rock');
     assert.ok(r2.x < -0.2, `turned right: the rock moves left (${r2.x})`);
+});
+
+test('a real game (no test layout): level 1 field, rocks-left and incoming in the hook, sounds through onSound', async () => {
+    globalThis.localStorage = undefined;
+    const env = fakeEnv({});
+    env.win.location.search = '?3d=1&seed3d=2';
+    env.win.location.href = 'http://x/?3d=1&seed3d=2';
+    const sounds = [];
+    await startPrototype({ win: env.win, createRenderer: env.fakeRenderer, onSound: (n) => sounds.push(n) });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().levels, true);
+    assert.equal(g().level, 1);
+    assert.equal(g().banner, 'LEVEL 1');
+    assert.ok(g().rocksLeft > 30 && g().incomingLeft > 0, JSON.stringify([g().rocksLeft, g().incomingLeft]));
+    assert.equal(g().rocksLeft, g().counts.rocks + g().incomingLeft);
+    assert.equal(g().lives, 3);
+    assert.equal(g().lastFew, false);
+    assert.deepEqual(g().markers, []);
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    env.frames(2);
+    assert.equal(g().screen, 'playing');
+    assert.ok(sounds.includes('level'), `sounds: ${sounds}`);
+    // HUD text carries the level and rocks left
+    const f = hud3d.formatHud({ score: 120, lives: 2, level: 3, rocksLeft: 17, mode: 'joystick' });
+    assert.match(f.left, /LEVEL 3 {3}ROCKS 17/);
+    assert.doesNotMatch(hud3d.formatHud({ score: 0, lives: 3, mode: 'joystick' }).left, /LEVEL|ROCKS/);
+});
+
+test('damage direction: screen angle of the cause in the ship frame', () => {
+    assert.ok(Math.abs(hud3d.damageAngle([1, 0, 0])) < 1e-9, 'right');
+    assert.ok(Math.abs(hud3d.damageAngle([0, 1, -1]) - Math.PI / 2) < 1e-9, 'up');
+    assert.ok(Math.abs(hud3d.damageAngle([0, 0, 5]) + Math.PI / 2) < 1e-9, 'straight behind: down');
+    // Drawing never throws, also with nothing to draw
+    hud3d.drawDamage(ctx2d, 800, 400, 1, 0.5);
+    hud3d.drawDamage(ctx2d, 800, 400, NaN, 1);
+    hud3d.drawBanner(ctx2d, 800, 400, { text: 'LEVEL 2', sub: 'x', t: 0.2 });
+    hud3d.drawBanner(ctx2d, 800, 400, null);
 });

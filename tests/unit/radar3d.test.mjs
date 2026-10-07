@@ -5,6 +5,7 @@ import {
     RADAR, radarPoint, toLocal, buildRadar, isThreat, edgeMarker, onScreen, radarLayout, verticalFov,
 } from '../../js/3d/radar3d.js';
 import { qIdentity, qFromAxisAngle, DEG } from '../../js/3d/math3d.js';
+import * as radar3d from '../../js/3d/radar3d.js';
 
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 const SIZE = 3200, RANGE = 1440;
@@ -151,4 +152,44 @@ test('layout: stacked on the right edge, front on top, clear of the top bar and 
     assert.ok(inset.front.cx < radarLayout(892, 412).front.cx, 'respects the right inset');
     assert.ok(near(verticalFov(16 / 9), 2 * Math.atan(9 / 16) * 180 / Math.PI, 1e-9));
     assert.equal(verticalFov(0.46), 80, "tall screens capped");
+});
+
+test('last few rocks: every one on the radar at any distance, and an edge arrow for each off screen', () => {
+    const { lastFew, remainingMarkers } = radar3d;
+    assert.equal(lastFew(0), false);
+    assert.equal(lastFew(RADAR.lastRocks), true);
+    assert.equal(lastFew(RADAR.lastRocks + 1), false);
+    const rocks = [
+        rock('red', at(0, 0, -300)),       // in view
+        rock('red', at(0, 0, 1500), [0, 0, 0], 13), // behind, beyond range
+        rock('green', at(1500, 0, -200), [0, 0, 0], 16), // right, beyond range
+    ];
+    const plain = buildRadar(ship(), rocks, { size: SIZE, range: RANGE });
+    assert.equal(plain.front.length + plain.rear.length, 2, 'normally: beyond-range reds are not shown');
+    const all = buildRadar(ship(), rocks, { size: SIZE, range: RANGE, all: true });
+    assert.equal(all.front.length + all.rear.length, 3);
+    const behind = all.rear.find((b) => b.type === 'rock');
+    assert.ok(behind && behind.last && !behind.beyond, 'shown at full strength');
+    const m = remainingMarkers(ship(), rocks, { size: SIZE, range: RANGE, aspect: 16 / 9 });
+    assert.deepEqual(m.map((x) => x.type).sort(), ['crystal', 'rock'], 'the one on screen needs no arrow');
+    const right = m.find((x) => x.type === 'crystal');
+    assert.ok(Math.abs(right.angle) < 0.2, 'turn right');
+    assert.ok(right.dist > RANGE);
+});
+
+test('clusters beyond the view distance: a rim marker at the centre of their remaining rocks', () => {
+    const { clusterCentres } = radar3d;
+    const a = rock('red', at(0, 0, -2000)); a.cluster = 1;
+    const b = rock('red', at(0, 100, -2000)); b.cluster = 1;
+    const c = rock('red', at(0, 0, -400)); c.cluster = 2;
+    const centres = clusterCentres(C, [a, b, c], 6000);
+    assert.equal(centres.length, 2);
+    const one = centres.find((x) => x.id === 1);
+    assert.deepEqual(one.delta.map((v) => Math.round(v)), [0, 50, -2000]);
+    assert.equal(one.count, 2);
+    const r = buildRadar(ship(), [a, b, c], { size: 6000, range: RANGE, clusters: true });
+    const marks = r.front.filter((x) => x.type === 'cluster');
+    assert.equal(marks.length, 1, 'only the cluster beyond range');
+    assert.equal(marks[0].id, 1);
+    assert.equal(marks[0].beyond, true);
 });

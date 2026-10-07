@@ -60,20 +60,31 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 - A pilot who dodges loses a life about **every 2 to 3 minutes**.
 - Easy halves the threat rate; Hard is about 1.5 times Medium. Each level raises it about 8 %.
 
+**Phase 1 result (rocks only, 8 October 2026).** `scripts/balance3d.mjs`, 16 seeds × 4 minutes, Far, level 1. The careless pilot flies at the nearest crystal and never reacts; the dodging pilot also shoots rocks in its way and reacts to threats after 0.6 s:
+
+| Difficulty | Threat every | Careless pilot loses a life every | Dodging pilot loses a life every | Level 1 cleared in |
+|---|---|---|---|---|
+| Easy | 15 s | 160 s | 770 s | about 200 s |
+| Medium | 12 s | 120 s | 295 s | about 205 s |
+| Hard | 10 s | 87 s | 240 s | about 220 s |
+
+Rocks alone deliver about half of the targets above. A fixed set of rocks per level (the 2D rule) caps how much rock danger a level can hold without making it very long to clear, so the rest comes from the UFOs (§2.4, Phase 2), which in 2D shoot every 2 s. `tests/unit/balance3d.test.mjs` checks the rocks' share now (Medium: a threat every 7.5 to 17 s, the careless pilot losing a life every 50 to 240 s, dodging helps, Easy < Hard, level 1 clearable in 2 to 5 minutes); Phase 2 tightens it to the full targets.
+
 ### 2.2 Incoming rocks (fix 1)
 
-- Each level's red rocks are a **fixed set** (§2.5). About a third of them don't start in the field: they arrive during the level as **incoming rocks**. This keeps the 2D rule that a level ends once every rock is gone.
-- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives, plus a random miss offset, so about a third would hit a ship that doesn't react.
-- Speed 70 to 120 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 4 % per level. Large or medium, so shooting one splits it into pieces that keep flying toward you.
-- Timing: Medium level 1 one every 8 s, Easy 12 s, Hard 5 s; 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
+- Each level's red rocks are a **fixed set** (§2.5). About half of them don't start in the field: they arrive during the level as **incoming rocks** (level 1: 22, +2 per level; `js/3d/rules3d.js`). This keeps the 2D rule that a level ends once every rock is gone.
+- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.75 × (rock radius + ship radius), so about a third would hit a ship that holds its course. While it's still in the fog it keeps re-aiming; from the fog start (fully visible) it flies straight (`js/3d/spawn3d.js`).
+- Speed 130 to 190 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 4 % per level. Mostly small (65 %) and medium (30 %), a few large (5 %): danger comes from the aim, and small ones are quick to clear. Shooting a larger one splits it into pieces that keep flying toward you.
+- Timing: Medium level 1 one every 5.5 s, Easy 8.5 s, Hard 4 s; 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
+- An incoming rock that has passed its closest approach is an ordinary rock of the field.
 - They fade in through the fog like every other object. The radar threat flash (already built) marks them once they're within 25 % of the view distance on a closing course.
 
 ### 2.3 Asteroid clusters (fix 2)
 
-- Most red rocks are gathered into **clusters**: spheres of radius 250 to 400 holding 18 to 30 rocks (mostly medium and small) that drift slowly together and tumble.
+- The field's red rocks are mostly in **clusters**: tight spheres (radius 70 + 35 × ∛members, about 140 to 160) holding 2 medium and 3 small rocks at level 1 (+1 medium every 2 levels, +1 large every 3), that drift slowly together (3 to 8 units per second) and tumble.
 - **Most of the level's crystals sit inside clusters**, so collecting means flying through danger. The space between clusters is calm and has a few scattered rocks and crystals. Crystals come in the three 2D sizes with the 2D scores (`greenScore`) and don't split.
-- At Far, level 1: 6 clusters of about 18 rocks, 15 scattered and about 50 incoming, about 170 red rocks over the level (fewer at any one time than today). Inside a cluster, the average flight between collisions drops to about 1,100 units, so crossing one without dodging is a real risk.
-- Clusters scale with the view distance (more clusters, not denser ones, in a bigger cube), with level (+1 cluster every 2 levels, rocks +2 per cluster per level) and with difficulty. The total stays under `MAX_FIELD_ROCKS` (600).
+- Level 1 (every view distance): 3 clusters of 5 rocks with 70 % of the 14 crystals inside them, 3 scattered rocks (medium, every fourth large) and 22 incoming, 54 rocks and crystals over the level. Inside a cluster the average flight between collisions is a few hundred units, so crossing one without care is a real risk. The first draft's 150-plus rocks would have taken far too long to clear under the 2D rule (about 9 minutes for the harness pilot), so the field is smaller and the danger comes from the aim instead.
+- Levels grow: +1 cluster every 2 levels, +1 scattered rock every 2 levels, +2 crystals and +2 incoming rocks per level; the adaptive `greenRatioMod` changes the crystal count. A bigger view distance spreads the same set over a bigger cube.
 - The radar shows each cluster's rocks as usual. Clusters beyond the view distance appear as a faint ring on the radar rim, so you can find the next one.
 
 ### 2.4 UFOs (as in 2D)
@@ -93,12 +104,12 @@ The radar shows UFOs as a purple saucer glyph. An edge arrow points to a UFO wit
 
 ### 2.5 Levels and hits (as in 2D)
 
-- **Each level has a fixed set of rocks** (2D: 10 plus 3 per level, scaled to the world). In 3D the count follows the view distance's world size, split into clusters, scattered rocks and incoming rocks (§2.2, §2.3). Rocks don't refill.
+- **Each level has a fixed set of rocks** (2D: 10 plus 3 per level, scaled to the world). In 3D it's split into clusters, scattered rocks and incoming rocks (§2.2, §2.3), the same for every view distance. Rocks don't refill. Boss levels (every 2nd) have 40 % of the rocks, as in 2D.
 - **Level complete:** no red and no green rocks left, no hostile UFO, and the boss destroyed on boss levels, exactly the 2D condition.
 - **Shooting a green** destroys it with no points ("wasted", a small green burst), as in 2D. It still counts as gone.
 - **Finding the last rocks:** a cube is much bigger than a screen, so once 5 or fewer rocks are left, every one of them shows on the radar at any distance and gets an edge arrow with its distance.
-- Between levels: a short "Level N" banner, 3 s of invulnerability, and a new field around the ship (nothing within 320).
-- **Hits, as in 2D:** touching a red rock, being rammed by a UFO or hit by a UFO bullet costs a life. The rock splits (or the UFO is destroyed). A **shield** power-up absorbs one hit, breaks, and gives 1 s of protection so the fragments don't hit straight away. After losing a life the ship respawns with 3 s of invulnerability. Lives, the extra-life score (with the adaptive `extraLifeThresholdMod`), combos and score values match 2D.
+- Between levels: a short "LEVEL N" banner, 3 s of invulnerability, and a new field around the ship (nothing within 320). The HUD shows the level and the rocks left (field plus incoming still to come).
+- **Hits, as in 2D:** touching a red rock, being rammed by a UFO or hit by a UFO bullet costs a life. The rock splits (or the UFO is destroyed). A **shield** power-up absorbs one hit, breaks, and gives 1 s of protection so the fragments don't hit straight away. After losing a life the ship is gone for 2 s (2D `RESPAWN_DELAY`), then respawns where it was with 3 s of invulnerability and rocks within 150 pushed out. A red arc at the screen edge shows where the hit came from. Lives, the extra-life score (10000, with the adaptive `extraLifeThresholdMod`), combos (the 2D `Combo` class: ×2 from 5, ×3 from 10, ×4 from 20, streak bonuses, 3 s window) and score values match 2D. As in 2D, red rocks give no points (only crystals, UFOs and the boss do), and while the ship is protected it neither collects nor collides.
 
 ### 2.6 Boss (every 2 levels)
 

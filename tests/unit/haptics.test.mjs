@@ -33,7 +33,7 @@ test('pattern table matches the plan', () => {
         collect: [12, 1, 70], powerUp: [[20, 40, 20], 2, 150], shieldHit: [40, 3, 150],
         bossWeakPoint: [25, 2, 100], hyperspace: [[15, 30, 40], 2, 0], levelUp: [[30, 60, 30, 60, 60], 3, 0],
         lifeLost: [[120, 60, 200], 4, 0], bossDefeated: [[60, 40, 60, 40, 220], 4, 0],
-        gameOver: [[200, 100, 350], 5, 0], enabled: [30, 5, 0],
+        gameOver: [[200, 100, 350], 5, 0], enabled: [30, 5, 0], threat: [[10, 50, 10], 2, 1000],
     };
     assert.deepEqual(Object.keys(HAPTIC_PATTERNS).sort(), Object.keys(expect).sort());
     for (const [name, [pattern, priority, gap]] of Object.entries(expect)) {

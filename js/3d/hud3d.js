@@ -1,5 +1,5 @@
-// 2D overlay for the 3D prototype: crosshair, HUD text, two-circle radar, edge marker,
-// joystick, hit flash. (The cockpit
+// 2D overlay for the 3D game: crosshair, HUD text (score, lives, level, rocks left), level
+// banner, two-circle radar, edge markers, damage-direction arc, joystick, hit flash. (The cockpit
 // frame was removed after the Pixel 7 Pro test, 2026-10-07: the text has a shadow instead.)
 // Drawn on a 2D canvas layered over the WebGL canvas. formatHud() is pure (unit-testable);
 // the draw functions only use the CanvasRenderingContext2D they are given.
@@ -9,7 +9,9 @@ const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
 /** HUD text lines from the game state (pure). */
 export function formatHud(info) {
     const lives = Math.max(0, info.lives | 0);
-    const left = `SCORE ${info.score | 0}   LIVES ${'♥'.repeat(Math.min(lives, 9)) || '0'}`;
+    const level = info.level ? `   LEVEL ${info.level | 0}` : '';
+    const rocks = Number.isFinite(info.rocksLeft) ? `   ROCKS ${info.rocksLeft | 0}` : '';
+    const left = `SCORE ${info.score | 0}   LIVES ${'♥'.repeat(Math.min(lives, 9)) || '0'}${level}${rocks}`;
     const mode = MODE_LABELS[info.mode] || info.mode;
     const chosen = info.chosenMode && info.chosenMode !== info.mode ? ` (${MODE_LABELS[info.chosenMode] || info.chosenMode} unavailable)` : '';
     const view = info.view ? `View ${info.view} · ` : '';
@@ -66,6 +68,61 @@ export function drawHudText(ctx, w, h, info, insets = { top: 0, left: 0, right: 
     ctx.restore();
 }
 
+/** Large centred banner ("LEVEL 2"), fading out over its last half second. t: seconds left. */
+export function drawBanner(ctx, w, h, banner) {
+    if (!banner || !banner.text) return;
+    const fs = Math.max(24, Math.min(56, Math.round(h * 0.09)));
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, banner.t / 0.5));
+    ctx.font = `bold ${fs}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#d8fff0';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(banner.text, w / 2, h * 0.36);
+    if (banner.sub) {
+        ctx.font = `${Math.round(fs * 0.4)}px Arial, sans-serif`;
+        ctx.fillStyle = '#9fc0d8';
+        ctx.fillText(banner.sub, w / 2, h * 0.36 + fs * 0.75);
+    }
+    ctx.restore();
+}
+
+/**
+ * Screen direction for a damage-direction arc from a ship-local vector to the cause
+ * (x right, y up, -z the nose): radians, 0 = right, π/2 = up; straight ahead or behind
+ * with no sideways part: down.
+ */
+export function damageAngle(local) {
+    const [x, y] = local;
+    return Math.hypot(x, y) < 1e-6 ? -Math.PI / 2 : Math.atan2(y, x);
+}
+
+/** Red arc at the screen edge toward where a hit came from. alpha: 0..1 (fades out). */
+export function drawDamage(ctx, w, h, angle, alpha) {
+    if (!(alpha > 0) || !Number.isFinite(angle)) return;
+    const cx = w / 2, cy = h / 2;
+    const rx = w / 2 - 18, ry = h / 2 - 18;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.9)';
+    ctx.lineWidth = 10;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(255, 0, 0, 0.8)';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    // Canvas y is down: screen angle a is at (cos a, -sin a)
+    const span = 0.35;
+    for (let i = 0; i <= 12; i++) {
+        const a = angle - span + (2 * span * i) / 12;
+        const x = cx + Math.cos(a) * rx, y = cy - Math.sin(a) * ry;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+}
+
 /** Floating joystick: base ring where the thumb landed, knob at the deflection. */
 export function drawJoystick(ctx, stick) {
     if (!stick || !stick.active) return;
@@ -106,6 +163,10 @@ function glyph(ctx, type, x, y, s) {
         ctx.stroke();
     } else if (type === 'boss') {
         ctx.arc(x, y, s, 0, Math.PI * 2);
+        ctx.stroke();
+    } else if (type === 'cluster') {
+        // A cluster beyond the view distance: a faint ring on the rim
+        ctx.arc(x, y, s * 1.8, 0, Math.PI * 2);
         ctx.stroke();
     } else if (type === 'powerup') {
         ctx.rect(x - s * 0.8, y - s * 0.8, s * 1.6, s * 1.6);
@@ -163,8 +224,10 @@ export function drawRadar(ctx, layout, radar, colors, time = 0) {
             const color = b.type === 'crystal' ? colors.collect : colors.hazard;
             const x = cx + b.x * r;
             const y = cy - b.y * r;
-            const s = (b.beyond ? 2 : 2 + 3.5 * b.near) * unit;
-            ctx.globalAlpha = b.beyond ? 0.3 : 0.4 + 0.6 * b.near;
+            // The last rocks of a level stay clearly visible however far they are
+            const near = b.last ? Math.max(b.near, 0.6) : b.near;
+            const s = (b.beyond ? 2 : 2 + 3.5 * near) * unit;
+            ctx.globalAlpha = b.beyond ? 0.3 : 0.4 + 0.6 * near;
             ctx.fillStyle = color;
             ctx.strokeStyle = color;
             ctx.lineWidth = Math.max(1.5, 2 * unit);

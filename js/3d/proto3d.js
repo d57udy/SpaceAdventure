@@ -5,7 +5,8 @@
 //
 // URL options: ?3d=1 (required), &seed3d=N (repeatable layout), &layout3d=range (one red
 // rock straight ahead and one crystal behind: used by the browser tests), &layout3d=far
-// (one red rock FAR_ROCK_DISTANCE straight ahead: past the original fog end), &lowres3d=1
+// (one red rock FAR_ROCK_DISTANCE straight ahead: past the original fog end), &layout3d=last
+// (level 1 down to a small crystal and a small red rock straight ahead), &lowres3d=1
 // (tests only: fixed half-resolution drawing buffer, no antialiasing, 1x HUD, so a software
 // renderer on CI keeps a usable frame rate; real devices never get it).
 //
@@ -16,17 +17,19 @@
 import { createSettings } from '../settings.js';
 import { createWakeLock } from '../wakeLock.js';
 import { radialDeadzone, GP, TRIGGER_THRESHOLD, BUTTON_THRESHOLD } from '../gamepad.js';
-import { createSim, stepSim, drainEvents, simCounts, nextId, SIM } from './sim3d.js';
+import { createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, SIM } from './sim3d.js';
 import { makeRock, worldFor, VIEW_DISTANCES, VIEW_DISTANCE_NAMES } from './world3d.js';
-import { vLen } from './math3d.js';
+import { vLen, qRotate, qConj } from './math3d.js';
 import {
     createLook, stepLook, recentre, setMode, calibrate, setLevelHorizon, lookAngles, CONTROL_MODES,
 } from './look.js';
 import {
     createOrientationSource, requestMotionPermission, motionPermissionNeeded, isPortrait, screenAngle,
 } from './sensors.js';
-import { drawCrosshair, drawHudText, drawJoystick, drawFlash, drawRadar, drawEdgeMarker } from './hud3d.js';
-import { buildRadar, edgeMarker, radarLayout } from './radar3d.js';
+import {
+    drawCrosshair, drawHudText, drawJoystick, drawFlash, drawRadar, drawEdgeMarker, drawBanner, drawDamage, damageAngle,
+} from './hud3d.js';
+import { buildRadar, edgeMarker, radarLayout, remainingMarkers, lastFew } from './radar3d.js';
 import { findPalette } from '../palette.js';
 
 const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
@@ -126,7 +129,7 @@ const HTML = `
 <div id="p3-menu">
   <div class="p3-panel">
     <h1>3D prototype</h1>
-    <p id="p3-status">Phase 0 feel test: fly into green crystals, shoot red rocks.</p>
+    <p id="p3-status">Clear each level: fly into every green crystal, shoot every red rock.</p>
     <div class="p3-row" role="group" aria-label="Control type">
       <button type="button" class="p3-choice" id="p3-mode-direct" data-mode="direct">Direct</button>
       <button type="button" class="p3-choice" id="p3-mode-rate" data-mode="rate">Rate</button>
@@ -164,7 +167,9 @@ const HTML = `
  * @param {Window} [o.win]
  * @param {Function} [o.createRenderer] - (canvas) => renderer; unit tests pass a fake (default: render3d.js)
  */
-export async function startPrototype({ win = window, createRenderer = null } = {}) {
+// onSound(name): optional hook for game sounds ('threat', 'hit', 'shieldHit', 'collect', 'wasted',
+// 'split', 'level', 'extraLife', 'respawn', 'gameover'); the audio is wired up in a later phase.
+export async function startPrototype({ win = window, createRenderer = null, onSound = null } = {}) {
     const doc = win.document;
     const params = new URLSearchParams(win.location.search);
     const seedParam = parseInt(params.get('seed3d'), 10);
@@ -217,6 +222,9 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     let cssW = 1, cssH = 1;
     let radar = { front: [], rear: [] }, edge = null, layoutR = radarLayout(1, 1);
     let threatIds = new Set(), threatBuzzAt = 0;
+    let markers = [], few = false;
+    let damage = { angle: 0, alpha: 0 };
+    const sound = (name) => { if (onSound) { try { onSound(name); } catch { /* sounds must not break the game */ } } };
 
     const chosenMode = () => settings.get('control3d');
     const motionOk = () => permission === 'granted' || permission === 'not-required';
@@ -290,6 +298,16 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             const [x, y, z] = sim.ship.pos;
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - 300], vel: [0, 0, 0], rand: sim.rand }));
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'green', pos: [x, y, z + 220], vel: [0, 0, 0], rand: sim.rand }));
+        } else if (layout === 'last') {
+            // A real level down to its last two: a small crystal 100 ahead, a small red rock 1000 ahead
+            // (far enough that the ship, coasting after the crystal, stops well before it)
+            sim = createSim({ seed, view });
+            const [x, y, z] = sim.ship.pos;
+            sim.incoming.left = 0;
+            sim.rocks = [
+                makeRock({ id: nextId(sim), kind: 'green', size: 'small', pos: [x, y, z - 100], vel: [0, 0, 0], rand: sim.rand }),
+                makeRock({ id: nextId(sim), kind: 'red', size: 'small', pos: [x, y, z - 1000], vel: [0, 0, 0], rand: sim.rand }),
+            ];
         } else {
             sim = createSim({ seed, view });
         }
@@ -351,7 +369,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             if (screen === 'over') newSim();
             motionSince = performance.now();
             noDataWarned = false;
-            $('p3-status').textContent = 'Phase 0 feel test: fly into green crystals, shoot red rocks.';
+            $('p3-status').textContent = 'Clear each level: fly into every green crystal, shoot every red rock.';
             look = createLook({ mode: look.mode, levelHorizon: settings.get('levelHorizon3d'), sensitivity: settings.get('sensitivity3d') });
         }
         screen = 'playing';
@@ -378,7 +396,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         screen = 'over';
         releaseAll();
         root.classList.add('p3-menu-open');
-        $('p3-status').textContent = `Game over. Score ${sim.score}.`;
+        $('p3-status').textContent = `Game over. Score ${sim.score}, level ${sim.level}.`;
         refreshUi();
     }
 
@@ -584,10 +602,15 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         mouseDX = mouseDY = 0;
         stepSim(sim, { q: look.q, thrust: held.thrust || keys.has('thrust') || pad.thrust, fire: held.fire || keys.has('fire') || pad.fire }, dt);
         for (const ev of drainEvents(sim)) {
-            if (ev.type === 'collect') { flashCollect = 1; if (renderer) renderer.burst(ev.pos, 'collect'); vibrate(15); }
-            else if (ev.type === 'split') { if (renderer) renderer.burst(ev.pos, ev.byShip ? 'hit' : 'split'); }
-            else if (ev.type === 'hit') { flashHit = 1; vibrate(120); }
-            else if (ev.type === 'gameover') gameOver();
+            if (ev.type === 'collect') { flashCollect = 1; if (renderer) renderer.burst(ev.pos, 'collect'); vibrate(15); sound('collect'); }
+            else if (ev.type === 'wasted') { if (renderer) renderer.burst(ev.pos, 'split'); sound('wasted'); }
+            else if (ev.type === 'split') { if (renderer) renderer.burst(ev.pos, ev.byShip ? 'hit' : 'split'); sound('split'); }
+            else if (ev.type === 'hit' || ev.type === 'shieldHit') {
+                if (ev.type === 'hit') { flashHit = 1; vibrate(120); } else vibrate(40);
+                if (ev.from) damage = { angle: damageAngle(qRotate(qConj(look.q), ev.from)), alpha: 1 };
+                sound(ev.type);
+            } else if (ev.type === 'level' || ev.type === 'extraLife' || ev.type === 'respawn') sound(ev.type);
+            else if (ev.type === 'gameover') { sound('gameover'); gameOver(); }
         }
     }
 
@@ -646,23 +669,30 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         if (message && now > messageUntil) { message = ''; $('p3-msg').textContent = ''; }
         flashHit = Math.max(0, flashHit - dtReal * 2);
         flashCollect = Math.max(0, flashCollect - dtReal * 3);
+        damage.alpha = Math.max(0, damage.alpha - dtReal * 1.2);
 
         updateRadar(now);
         if (renderer) renderer.render({ shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt: dtReal });
         drawOverlay();
     }
 
-    /** Radar circles and the crystal edge marker; a short buzz when a new red rock threatens. */
+    /**
+     * Radar circles and edge markers (the nearest crystal; every remaining rock once a level is
+     * down to its last few); a short buzz and the threat sound when a new red rock threatens.
+     */
     function updateRadar(now) {
         const o = { size: sim.size, range: sim.world.fogFar, aspect: cssW / cssH };
         const ship = { pos: sim.ship.pos, q: look.q, vel: sim.ship.vel };
-        radar = buildRadar(ship, sim.rocks, o);
-        edge = edgeMarker(ship, sim.rocks, o);
+        few = sim.levels && lastFew(rocksLeft(sim));
+        radar = buildRadar(ship, sim.rocks, { ...o, all: few, clusters: sim.levels });
+        edge = few ? null : edgeMarker(ship, sim.rocks, o);
+        markers = few ? remainingMarkers(ship, sim.rocks, o) : [];
         const ids = new Set();
         for (const b of [...radar.front, ...radar.rear]) if (b.threat) ids.add(b.id);
         if (screen === 'playing' && [...ids].some((id) => !threatIds.has(id)) && now - threatBuzzAt > 1000) {
             threatBuzzAt = now;
             vibrate(25);
+            sound('threat');
         }
         threatIds = ids;
     }
@@ -670,13 +700,20 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     function drawOverlay() {
         hctx.clearRect(0, 0, cssW, cssH);
         drawFlash(hctx, cssW, cssH, flashHit, flashCollect);
-        drawCrosshair(hctx, cssW, cssH, sim.ship.invulnerable > 0 ? 'rgba(255,140,140,0.9)' : undefined);
+        if (sim.ship.alive) drawCrosshair(hctx, cssW, cssH, sim.ship.invulnerable > 0 ? 'rgba(255,140,140,0.9)' : undefined);
+        drawDamage(hctx, cssW, cssH, damage.angle, damage.alpha);
         drawHudText(hctx, cssW, cssH, {
             score: sim.score, lives: sim.lives, mode: look.mode, chosenMode: chosenMode(), levelHorizon: look.level,
+            level: sim.levels ? sim.level : 0, rocksLeft: sim.levels ? rocksLeft(sim) : undefined,
             view: VIEW_DISTANCES[viewName()].label, fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
         }, { top: 0, left: 0, right: 0 });
         const pal = findPalette(settings.get('palette'));
-        if (screen === 'playing') drawEdgeMarker(hctx, cssW, cssH, edge, pal.collectRadar);
+        if (screen === 'playing') {
+            drawEdgeMarker(hctx, cssW, cssH, edge, pal.collectRadar);
+            for (const m of markers) drawEdgeMarker(hctx, cssW, cssH, m, m.type === 'crystal' ? pal.collectRadar : pal.hazardRadar);
+            if (!sim.ship.alive && !sim.over) drawBanner(hctx, cssW, cssH, { text: 'SHIP LOST', sub: `${sim.lives} ${sim.lives === 1 ? 'life' : 'lives'} left`, t: 1 });
+            else drawBanner(hctx, cssW, cssH, sim.banner);
+        }
         drawRadar(hctx, layoutR, radar, { collect: pal.collectRadar, hazard: pal.hazardRadar }, clock / 1000);
         drawJoystick(hctx, stick);
     }
@@ -717,6 +754,18 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             score: sim.score,
             lives: sim.lives,
             over: sim.over,
+            level: sim.level,
+            levels: sim.levels,
+            rocksLeft: rocksLeft(sim),
+            incoming: simCounts(sim).incoming,
+            incomingLeft: sim.incoming ? sim.incoming.left : 0,
+            banner: sim.banner ? sim.banner.text : null,
+            shipAlive: sim.ship.alive,
+            invulnerable: r4(sim.ship.invulnerable),
+            combo: { count: sim.combo.count, multiplier: sim.combo.multiplier },
+            damage: { angle: r4(damage.angle), alpha: r4(damage.alpha) },
+            lastFew: few,
+            markers: markers.map((m) => ({ id: m.id, type: m.type, angle: r4(m.angle), dist: Math.round(m.dist) })),
             counts: simCounts(sim),
             stats: { ...sim.stats },
             fps: Math.round(fps * 10) / 10,

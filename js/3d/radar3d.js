@@ -13,6 +13,7 @@ import { nearestDelta } from './world3d.js';
 
 export const RADAR = Object.freeze({
     maxBlips: 24,            // nearest objects drawn (both circles together); more gets unreadable at Very far
+    lastRocks: 5,            // rules3d.js RULES3D.lastRocks: at or below this, every rock shows and gets an arrow
     beyondCrystals: 3,       // crystals beyond the view distance still shown (dimmed)
     threatFraction: 0.25,    // a red rock within this share of the view distance ...
     threatTime: 6,           // ... reaching its closest approach within this many seconds ...
@@ -69,32 +70,68 @@ export function isThreat(delta, relVel, rockRadius, range) {
     return miss < rockRadius + RADAR.shipRadius + RADAR.threatMargin;
 }
 
+/** Is the level down to its last few rocks (plan 07 §2.5: all of them on the radar, with arrows)? */
+export const lastFew = (rocksLeft) => rocksLeft > 0 && rocksLeft <= RADAR.lastRocks;
+
+/**
+ * Where each cluster's remaining rocks are, as seen from the ship: the mean of their nearest
+ * images (so a cluster across the wrap seam stays together). Clusters with no rock left are
+ * dropped. @returns {Array<{ id, delta, dist, count }>}
+ */
+export function clusterCentres(shipPos, rocks, size) {
+    const acc = new Map();
+    for (const r of rocks) {
+        if (!r.cluster) continue;
+        const d = nearestDelta(shipPos, r.pos, size);
+        const a = acc.get(r.cluster) || { sum: [0, 0, 0], count: 0 };
+        a.sum = vAdd(a.sum, d);
+        a.count++;
+        acc.set(r.cluster, a);
+    }
+    return [...acc].map(([id, a]) => {
+        const delta = vScale(a.sum, 1 / a.count);
+        return { id, delta, dist: vLen(delta), count: a.count };
+    });
+}
+
 /**
  * Build both radar circles.
  * @param {object} ship - { pos, q, vel }
- * @param {object[]} rocks - sim rocks ({ id, kind, pos, vel, radius })
- * @param {object} o - { size: world cube side, range: view distance (fog far) }
+ * @param {object[]} rocks - sim rocks ({ id, kind, pos, vel, radius, cluster? })
+ * @param {object} o - { size: world cube side, range: view distance (fog far),
+ *   all: show every rock at any distance (the last few of a level), clusters: also mark
+ *   clusters beyond the view distance on the rim }
  * @returns {{ front: object[], rear: object[] }} blips { id, type, x, y, dist, near, threat, beyond }
  *   near: 1 = right at the ship, 0 = at the view distance (beyond-range crystals: 0)
+ *   type 'cluster' (beyond range only): id is the cluster id
  */
-export function buildRadar(ship, rocks, { size, range }) {
+export function buildRadar(ship, rocks, { size, range, all = false, clusters = false }) {
     const shipVel = ship.vel || [0, 0, 0];
     const inRange = [];
     const beyond = [];
+    const far = [];
     for (const r of rocks) {
         const type = TYPE_OF[r.kind] || r.kind;
         const delta = nearestDelta(ship.pos, r.pos, size);
         const dist = vLen(delta);
         const e = { r, type, delta, dist };
         if (dist <= range) inRange.push(e);
+        else if (all) far.push(e);
         else if (type === 'crystal') beyond.push(e);
     }
     inRange.sort((a, b) => a.dist - b.dist);
     beyond.sort((a, b) => a.dist - b.dist);
     const pick = [
-        ...inRange.slice(0, RADAR.maxBlips),
+        ...inRange.slice(0, all ? inRange.length : RADAR.maxBlips),
+        // The last few of a level: every one shows at full strength wherever it is
+        ...far.map((e) => ({ ...e, last: true })),
         ...beyond.slice(0, RADAR.beyondCrystals).map((e) => ({ ...e, beyond: true })),
     ];
+    if (clusters && !all) {
+        for (const c of clusterCentres(ship.pos, rocks, size)) {
+            if (c.dist > range) pick.push({ r: { id: c.id }, type: 'cluster', delta: c.delta, dist: c.dist, beyond: true });
+        }
+    }
     const inv = qConj(ship.q);
     const out = { front: [], rear: [] };
     for (const e of pick) {
@@ -110,6 +147,7 @@ export function buildRadar(ship, rocks, { size, range }) {
             near: e.beyond ? 0 : Math.max(0, Math.min(1, 1 - e.dist / range)),
             threat,
             beyond: !!e.beyond,
+            ...(e.last ? { last: true } : {}),
             ...(e.beyond ? rimOf(p) : {}),
         });
     }
@@ -153,6 +191,26 @@ export function edgeMarker(ship, rocks, { size, range, aspect }) {
     // Straight behind with no sideways component: point down (turn either way)
     const angle = Math.hypot(x, y) < 1e-6 ? -Math.PI / 2 : Math.atan2(y, x);
     return { id: best.r.id, angle, dist: best.dist };
+}
+
+/**
+ * Edge arrows for the last few rocks of a level: one for every rock that is off screen or
+ * beyond the view distance, pointing the shortest way to turn (as edgeMarker).
+ * @returns {Array<{ id, type, angle, dist }>}
+ */
+export function remainingMarkers(ship, rocks, { size, range, aspect }) {
+    const inv = qConj(ship.q);
+    const out = [];
+    for (const r of rocks) {
+        const delta = nearestDelta(ship.pos, r.pos, size);
+        const dist = vLen(delta);
+        const local = qRotate(inv, delta);
+        if (dist <= range && onScreen(local, aspect)) continue;
+        const [x, y] = local;
+        const angle = Math.hypot(x, y) < 1e-6 ? -Math.PI / 2 : Math.atan2(y, x);
+        out.push({ id: r.id, type: TYPE_OF[r.kind] || r.kind, angle, dist });
+    }
+    return out;
 }
 
 /**

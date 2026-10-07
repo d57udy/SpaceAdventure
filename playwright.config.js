@@ -28,7 +28,7 @@ const PORT = Number(process.env.PW_PORT) || 8082; // PW_PORT lets parallel workt
 // test-only /__admin/override endpoint used by the update-flow test.
 const SUBPATH_PORT = Number(process.env.PW_SUBPATH_PORT) || 8083;
 
-const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js', 'platform.spec.js', 'no3d.spec.js'];
+const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'players.spec.js', 'mp-modes.spec.js', 'mp-lobby.spec.js', 'mp-keyboard.spec.js', 'app-ui.spec.js', 'timeattack.spec.js', 'mp-versus.spec.js', 'mp-gamepad.spec.js', 'mp-saucer.spec.js', 'mp-access.spec.js', 'mp-camera.spec.js', 'layout.spec.js', 'platform.spec.js', 'no3d.spec.js', 'mode-switch.spec.js'];
 const PWA_SPECS = ['pwa.spec.js'];
 const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js', 'platform.spec.js'];
 // 3D prototype: WebGL needs SwiftShader in headless CI (docs/plans/06-3d-mode.md §5)

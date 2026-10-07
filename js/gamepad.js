@@ -63,6 +63,8 @@ export const RUMBLE_PATTERNS = Object.freeze({
     bossHit: { strong: 0, weak: 0.4, ms: 80 },
     bossDefeated: { strong: 0.6, weak: 0.4, ms: 500 },
     collect: { strong: 0, weak: 0.15, ms: 40 },
+    threat: { strong: 0, weak: 0.3, ms: 50 }, // 3D: a rock or UFO on a collision course
+    shieldHit: { strong: 0.3, weak: 0.3, ms: 120 },
 });
 
 // Radial deadzone on a raw stick: below `deadzone` it is inactive; above, the magnitude

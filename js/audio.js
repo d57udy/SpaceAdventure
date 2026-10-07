@@ -21,6 +21,14 @@ export function preferAmbientAudioSession(nav = (typeof navigator !== 'undefined
     }
 }
 
+// Short procedural sounds (no file to load): [frequency Hz, start s, length s] notes.
+// threatTone: the 3D threat warning; extraLife / levelUp: chimes (2D has no files for them).
+export const PROCEDURAL_SOUNDS = Object.freeze({
+    threatTone: Object.freeze({ type: 'square', level: 0.12, notes: Object.freeze([[880, 0, 0.07], [660, 0.1, 0.07]]) }),
+    extraLife: Object.freeze({ type: 'triangle', level: 0.25, notes: Object.freeze([[523, 0, 0.1], [659, 0.1, 0.1], [784, 0.2, 0.1], [1047, 0.3, 0.18]]) }),
+    levelUp: Object.freeze({ type: 'sine', level: 0.25, notes: Object.freeze([[392, 0, 0.12], [523, 0.12, 0.12], [659, 0.24, 0.2]]) }),
+});
+
 // Routing: sound effects -> sfxGain -> masterGain -> destination
 //          music         -> musicGain -> masterGain (the music engine applies its own
 //                           volume curve, so musicGain stays at unity)
@@ -198,7 +206,10 @@ export class AudioManager {
 
         // Handle procedural sounds
         if (soundName === 'collectGreen') {
-            return this.playCollectSound();
+            return this.playCollectSound(volume, pan);
+        }
+        if (PROCEDURAL_SOUNDS[soundName]) {
+            return this.playProcedural(soundName, volume, pan);
         }
 
         if (!this.sounds[soundName]) {
@@ -213,6 +224,7 @@ export class AudioManager {
         gainNode.gain.value = volume;
 
         source.connect(gainNode);
+        source.gainNode = gainNode; // loops can be faded (setLoopGain)
         const panner = this.createPanner(pan, loop);
         if (panner) {
             gainNode.connect(panner);
@@ -248,16 +260,28 @@ export class AudioManager {
         try { src.panner.pan.value = Number.isFinite(p) ? Math.max(-1, Math.min(1, p)) : 0; } catch (e) { /* ignore */ }
     }
 
+    // Connect a sound's last node to the effects bus, through a panner when pan is set
+    _toSfx(node, pan) {
+        const panner = this.createPanner(pan);
+        if (panner) {
+            node.connect(panner);
+            panner.connect(this.sfxGain);
+        } else {
+            node.connect(this.sfxGain);
+        }
+    }
+
     // Procedural collect sound - a pleasant rising chime
-    playCollectSound() {
+    playCollectSound(volume = 1.0, pan = 0) {
         if (!this.audioContext || this.isMuted || this.sfxVolume <= 0) return null;
 
         const now = this.audioContext.currentTime;
         const oscillator = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
+        const level = 0.3 * (Number.isFinite(Number(volume)) ? Math.max(0, Number(volume)) : 1);
 
         oscillator.connect(gainNode);
-        gainNode.connect(this.sfxGain);
+        this._toSfx(gainNode, pan);
 
         oscillator.type = 'sine';
         // Rising pitch for satisfying collection feeling
@@ -265,13 +289,39 @@ export class AudioManager {
         oscillator.frequency.exponentialRampToValueAtTime(800, now + 0.1);
         oscillator.frequency.exponentialRampToValueAtTime(1200, now + 0.15);
 
-        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.setValueAtTime(Math.max(0.0001, level), now);
         gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
 
         oscillator.start(now);
         oscillator.stop(now + 0.2);
 
         return oscillator;
+    }
+
+    // A PROCEDURAL_SOUNDS entry: one oscillator per note, short decay. Returns the last one.
+    playProcedural(name, volume = 1.0, pan = 0) {
+        const def = PROCEDURAL_SOUNDS[name];
+        if (!def || !this.audioContext || this.isMuted || this.sfxVolume <= 0) return null;
+        const now = this.audioContext.currentTime;
+        const v = Number.isFinite(Number(volume)) ? Math.max(0, Number(volume)) : 1;
+        const bus = this.audioContext.createGain();
+        bus.gain.value = 1;
+        this._toSfx(bus, pan);
+        let last = null;
+        for (const [freq, start, len] of def.notes) {
+            const osc = this.audioContext.createOscillator();
+            const g = this.audioContext.createGain();
+            osc.type = def.type;
+            osc.frequency.setValueAtTime(freq, now + start);
+            g.gain.setValueAtTime(Math.max(0.0001, def.level * v), now + start);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + start + len);
+            osc.connect(g);
+            g.connect(bus);
+            osc.start(now + start);
+            osc.stop(now + start + len + 0.02);
+            last = osc;
+        }
+        return last;
     }
 
     // Specific function for looping thrust sound
@@ -290,6 +340,21 @@ export class AudioManager {
             }
             this.thrustSoundSource = null;
         }
+    }
+
+    // Pan (-1..1) and level (0..1) of a playing loop (play(name, true) source)
+    setLoopGain(source, { pan, gain } = {}) {
+        if (!source) return;
+        try {
+            if (pan !== undefined && source.panner) {
+                const p = Number(pan);
+                source.panner.pan.value = Number.isFinite(p) ? Math.max(-1, Math.min(1, p)) : 0;
+            }
+            if (gain !== undefined && source.gainNode) {
+                const g = Number(gain);
+                source.gainNode.gain.value = Number.isFinite(g) ? Math.max(0, g) : 1;
+            }
+        } catch (e) { /* ignore */ }
     }
 
     // Specific function for looping UFO hum

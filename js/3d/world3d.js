@@ -4,6 +4,7 @@
 // never visible. Pure, DOM-free; random numbers are injected (js/rng.js mulberry32).
 
 import { vLen, vNorm, vAdd, vScale, vCross } from './math3d.js';
+import { CRYSTAL_SIZES } from './rules3d.js';
 
 export const WORLD = Object.freeze({
     size: 1600,          // cube side (world units)
@@ -31,14 +32,14 @@ export const VIEW_DISTANCE_NAMES = Object.freeze(Object.keys(VIEW_DISTANCES));
 export const DEFAULT_VIEW_DISTANCE = 'far';
 export const MAX_FIELD_ROCKS = 600;    // cap on the initial field (crystals + red rocks)
 export const FOG_SEAM_RATIO = 0.45;    // fogFar <= this x side
-const BASE_MIN_GREENS = 6;             // refill minimums at the original 1600 cube
-const BASE_MIN_REDS = 8;
 const BULLET_SPEED = 900;              // matches SIM.bulletSpeed (sim3d.js)
 
 /**
- * Everything that depends on the world size: cube side, fog, cull distance, field counts,
- * refill minimums and spawn distances, bullet life. name: a VIEW_DISTANCES key, or null for
- * the original 1600 cube (unit tests). maxRocks: cap on greens + reds.
+ * Everything that depends on the world size: cube side, fog, cull distance, spawn distance,
+ * bullet life, and the counts of a plain random field (greens, reds: the prototype's field,
+ * still used by createSim({ greens, reds }); the game's levels come from rules3d.js).
+ * name: a VIEW_DISTANCES key, or null for the original 1600 cube (unit tests). maxRocks: cap
+ * on greens + reds.
  */
 export function worldFor(name = DEFAULT_VIEW_DISTANCE, { maxRocks = MAX_FIELD_ROCKS } = {}) {
     const key = name ? (VIEW_DISTANCES[name] ? name : DEFAULT_VIEW_DISTANCE) : null;
@@ -59,12 +60,9 @@ export function worldFor(name = DEFAULT_VIEW_DISTANCE, { maxRocks = MAX_FIELD_RO
         // Beyond this an object is not drawn: even a large rock's spikes (~80) are then past the
         // fog end, and it is below side / 2, so a drawn object never switches to another image
         cullDistance: fogFar + 90,
-        spawnClearance: WORLD.spawnClearance,   // initial field: away from the ship
-        refillClearance: p ? fogFar + 90 : WORLD.fogFar * 0.8, // refills appear out of sight
+        spawnClearance: WORLD.spawnClearance,   // a level's field: away from the ship
         greens: Math.round(WORLD.greens * scale),
         reds: Math.round(WORLD.reds * scale),
-        minGreens: Math.max(1, Math.round(BASE_MIN_GREENS * scale)),
-        minReds: Math.max(1, Math.round(BASE_MIN_REDS * scale)),
         bulletLife: p ? +((fogFar + 60) / BULLET_SPEED).toFixed(3) : 0.85, // range just past the fog
     };
 }
@@ -131,12 +129,17 @@ export function spawnPoint(rand, size, avoid = [], clearance = WORLD.spawnCleara
 
 let fallbackId = 1;
 
+/**
+ * A rock or crystal. Crystals come in the 2D sizes (rules3d.js CRYSTAL_SIZES; a size that
+ * is not a crystal size gives a medium crystal, radius GREEN_RADIUS).
+ */
 export function makeRock({ id, kind, size = 'large', pos, vel = [0, 0, 0], rand = Math.random }) {
-    const radius = kind === 'green' ? GREEN_RADIUS : ROCK_SIZES[size].radius;
+    const crystal = kind === 'green' ? (CRYSTAL_SIZES[size] ? size : 'medium') : null;
+    const radius = crystal ? CRYSTAL_SIZES[crystal].radius : ROCK_SIZES[size].radius;
     return {
         id: id ?? fallbackId++,
         kind,                                  // 'green' (collect) | 'red' (shoot)
-        size: kind === 'green' ? 'crystal' : size,
+        size: crystal || size,
         radius,
         pos: pos.slice(),
         vel: vel.slice(),
@@ -148,7 +151,7 @@ export function makeRock({ id, kind, size = 'large', pos, vel = [0, 0, 0], rand 
 }
 
 /** Drift speed range per kind (world units per second); rocks drift slowly (depth is harder to judge). */
-function driftVel(rand, kind, size) {
+export function driftVel(rand, kind, size) {
     const max = kind === 'green' ? 10 : size === 'small' ? 32 : size === 'medium' ? 24 : 16;
     return vScale(randomUnit(rand), rr(rand, max * 0.3, max));
 }
