@@ -332,6 +332,29 @@ test('A red rock beyond the old fog end (720) is visible at Far, fogged out at N
   expect(errors).toEqual([]);
 });
 
+test('Radar: the red rock ahead is at the front centre, the crystal behind at the rear centre; 90° moves it to the rim', async ({ page }, testInfo) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=range', permission: 'granted' });
+  await start(page);
+  await orientRel(page, {});
+  await poll(page, 'lookMode').toBe('direct');
+  const radar = () => g3get(page, 'radar');
+  const rockOf = (r) => [...r.front, ...r.rear].find((b) => b.type === 'rock');
+  let r = await radar();
+  expect(r.front.map((b) => b.type)).toContain('rock');
+  expect(Math.hypot(rockOf(r).x, rockOf(r).y)).toBeLessThan(0.02);
+  const crystal = r.rear.find((b) => b.type === 'crystal');
+  expect(crystal).toBeTruthy();
+  expect(Math.hypot(crystal.x, crystal.y)).toBeLessThan(0.02);
+  await shot(page, testInfo, 'radar');
+  // Turn 90° left: the rock (still dead ahead in the world) is now on the right rim
+  await orientRel(page, { yaw: 90 });
+  await poll(page, 'yaw').toBeCloseTo(90, 0);
+  await expect.poll(async () => rockOf(await radar()).x, { timeout: T }).toBeGreaterThan(0.95);
+  r = await radar();
+  expect(Math.abs(rockOf(r).y)).toBeLessThan(0.05);
+  expect(errors).toEqual([]);
+});
+
 test('Back to 2D reloads the normal game without the parameter', async ({ page }) => {
   await open3d(page);
   await page.click('#p3-back2d');

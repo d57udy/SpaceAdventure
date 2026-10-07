@@ -63,11 +63,11 @@ Light **aim assist** (bullets bend slightly toward a target within 2–3° of th
 | Scoring, combos, levels, lives, difficulty, adjusting difficulty, upgrades, credits, achievements | Reused unchanged (upgrades map to the 3D equivalents) |
 
 ### Finding your way in 3D
-- **Elite-style radar** (bottom centre): a disc for the horizontal plane, with blips on stalks showing above/below; shape and colour per type (diamond green, star red, saucer UFO, ring boss, square power-up).
-- **Edge arrows** for things outside the view (boss, UFOs, nearest green on Easy and in the tutorial, close threats) with distance.
+- **Two-circle radar** (X-Wing / FreeSpace style; owner choice 7 October 2026, replacing the Elite-style disc first proposed here): two circles at the bottom centre between Thrust and Fire, FRONT on the left and REAR on the right. Each object is placed in the ship's own frame (so a roll rotates the dots): the distance from a circle's centre is the angle off the nose (front) or tail (rear), centre = dead ahead / dead behind, rim = 90° off-axis; the direction is the object's up/right direction, and the rear circle keeps right on the right so a dot on the right always means "turn right". Shape and colour per type from the palette (colour-safe aware): diamond green crystal, × red rock (later saucer UFO, ring boss, square power-up); nearer objects are bigger and brighter; range = the current view distance (fog end), and beyond it only the nearest 3 crystals are shown, dimmed, with a tick on the rim.
+- **Edge arrows** for things outside the view (boss, UFOs, nearest green on Easy and in the tutorial, close threats) with distance. The prototype shows one for the nearest green crystal whenever no crystal within the view distance is on screen.
 - **Crosshair plus lead marker** for moving targets, brackets around the target, hit flash; a marker showing which way you're drifting.
-- **Warning for threats from behind:** radar flash, edge arrow, short tone and a light vibration when a red rock or UFO closes in out of view.
-- **Cockpit frame:** a thin canopy outline and a lower dashboard holding the radar and HUD. A fixed frame like this reduces motion sickness.
+- **Warning for threats:** radar flash, edge arrow, short tone and a light vibration when a red rock or UFO closes in. The prototype flashes the radar dot of a red rock within 25 % of the view distance on a closing course (closest approach within 6 s and closer than the radii plus 30) and gives a short vibration (haptics setting, at most once a second).
+- **Cockpit frame:** dropped after the Pixel 7 Pro test (owner, 7 October 2026: "remove the cockpit frame"); the radar circles and the crosshair give the fixed reference instead.
 - **Motion feel:** "space dust" particles around the ship and speed streaks at high speed.
 
 ### Comfort
@@ -76,7 +76,7 @@ Light **aim assist** (bullets bend slightly toward a target within 2–3° of th
 
 ## 3. Architecture
 
-- **Separate 3D package** in `js/3d/`, loaded with `await import('./3d/game3d.js')` only when you start 3D. Pure modules (testable without a browser): 3D maths, look/sensor mapping, world wrap and spawning, collisions and lead calculation, radar projection, and the whole game simulation. Only `render3d.js` touches three.js, so the renderer could be swapped later. The 3D HUD is drawn on the existing 2D canvas layered over a new 3D canvas, so menus, toasts, the pause menu and dialogs keep working.
+- **Separate 3D package** in `js/3d/`, loaded with `await import('./3d/game3d.js')` only when you start 3D. Pure modules (testable without a browser): 3D maths, look/sensor mapping, world wrap and spawning, collisions and lead calculation, radar projection (`js/3d/radar3d.js` in the prototype: two-circle projection, range filter, threats, edge marker, layout), and the whole game simulation. Only `render3d.js` touches three.js, so the renderer could be swapped later. The 3D HUD is drawn on the existing 2D canvas layered over a new 3D canvas, so menus, toasts, the pause menu and dialogs keep working.
 - **New game state `PLAYING_3D`** and mode `solo3d`, so none of the hundreds of 2D-only code paths can run by accident. Pause, back button, wake lock, music and input context learn about it through one helper. One existing check must change first (`isMultiplayer()` currently treats any mode other than `solo` as multiplayer).
 - **Small extractions** from `main.js` first, each with the full 2D test suite: dynamic difficulty into its own module, and the level/difficulty tables into the rules module. No 2D behaviour changes.
 - **Menu:** a "Start 3D" row next to "Start" when the device can run 3D; Settings gets a "3D" sub-page (default view, control model, sensitivity, field of view, invert, aim assist, vignette, auto-recentre); Help gets a 3D page.
@@ -186,6 +186,15 @@ Feedback: "works well; keep all 3 control options; Level horizon doesn't really 
 - **Cockpit frame removed:** no canopy struts or dashboard strip. The crosshair, score/lives/speed and footer text get a soft dark shadow and the buttons a text shadow so they stay readable over rocks and stars.
 - **Performance:** the Pixel 7 Pro reported at least 60 fps before this change. Very far draws up to about 4.5 times as many rocks as Far; if it drops below 45 fps the adaptive render scale reacts as before. To check on the phones: the frame rate at Far and Very far, and whether Far is the right default.
 - **Tests:** unit tests for the presets (fog far ≤ 0.45 × side, cull before the seam, density within 15 %, counts capped, refills out of sight, bullet range) and the view-distance choice on the fake DOM; Playwright (CI): the choice persists across a reload and changes the world size, a red rock 1000 ahead (`&layout3d=far`, beyond the old fog end of 720) is visible at Far and fogged out at Normal, read through the hook `window.__spaceAdventure.rocks3d()` (distance, drawn, fog factor) rather than pixels; screenshot `3d-*-far.png`.
+
+### 10.2 Two-circle radar (8 October 2026)
+
+- **Owner request:** an X-Wing / FreeSpace style two-circle radar (§2 "Finding your way in 3D").
+- **Built:** `js/3d/radar3d.js` (pure: `radarPoint`, `buildRadar`, `isThreat`, `edgeMarker`, `radarLayout`, `verticalFov`), drawn by `hud3d.js` `drawRadar` and `drawEdgeMarker`. Circles of radius 11 % of the shorter screen side (30–70 px), centred between Thrust and Fire just above the footer line; on narrow (portrait) screens they move up above the buttons and roll buttons. Up to 150 nearest objects within the view distance, plus the nearest 3 crystals beyond it. The palette's radar colours (`collectRadar`, `hazardRadar`) follow the Colour-safe setting. Threatening rocks flash at 3 Hz with a ring and give one short vibration (25 ms) when a new threat appears.
+- **Edge marker:** an arrow at the screen edge towards the nearest crystal (the shortest turn) with its distance, shown only while no crystal within the view distance is on screen.
+- **Test hook:** `game3d.radar = { front: [...], rear: [...], edge, layout }`, each blip `{ id, type, x, y, dist, near, threat, beyond }`.
+- **Tests:** unit (dead ahead at the front centre, 90° right at the front rim on the right, directly behind at the rear centre, behind-right on the right of the rear circle, roll rotates the dots, the wrap seam, range filter and nearest 3 beyond it, blip cap, threats, edge marker, layout clear of buttons and footer at four screen sizes, the hook on the fake DOM); Playwright (CI): with `layout3d=range` the rock is at the front centre and the crystal at the rear centre, a 90° turn moves the rock to the rim; screenshot `3d-*-radar.png`.
+- **To try on the phones:** whether the circles are large enough, whether the rear mirroring reads naturally, and whether the threat flash and vibration help or distract.
 
 ## Sources
 

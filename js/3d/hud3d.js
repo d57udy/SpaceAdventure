@@ -1,4 +1,5 @@
-// 2D overlay for the 3D prototype: crosshair, HUD text, joystick, hit flash. (The cockpit
+// 2D overlay for the 3D prototype: crosshair, HUD text, two-circle radar, edge marker,
+// joystick, hit flash. (The cockpit
 // frame was removed after the Pixel 7 Pro test, 2026-10-07: the text has a shadow instead.)
 // Drawn on a 2D canvas layered over the WebGL canvas. formatHud() is pure (unit-testable);
 // the draw functions only use the CanvasRenderingContext2D they are given.
@@ -91,4 +92,127 @@ export function drawFlash(ctx, w, h, hit, collect) {
         ctx.fillStyle = `rgba(60, 255, 150, ${Math.min(0.18, collect * 0.18)})`;
         ctx.fillRect(0, 0, w, h);
     }
+}
+
+/** Radar glyph per type: diamond = crystal, × = red rock (later: saucer, ring = boss, square = power-up). */
+function glyph(ctx, type, x, y, s) {
+    ctx.beginPath();
+    if (type === 'crystal') {
+        ctx.moveTo(x, y - s); ctx.lineTo(x + s * 0.75, y); ctx.lineTo(x, y + s); ctx.lineTo(x - s * 0.75, y); ctx.closePath();
+        ctx.fill();
+    } else if (type === 'rock') {
+        ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s);
+        ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s);
+        ctx.stroke();
+    } else if (type === 'boss') {
+        ctx.arc(x, y, s, 0, Math.PI * 2);
+        ctx.stroke();
+    } else if (type === 'powerup') {
+        ctx.rect(x - s * 0.8, y - s * 0.8, s * 1.6, s * 1.6);
+        ctx.fill();
+    } else { // saucer and anything else: a flat ellipse
+        ctx.ellipse(x, y, s * 1.2, s * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+/**
+ * Two radar circles (radar3d.js buildRadar + radarLayout). colors: { collect, hazard } (the
+ * palette's radar colours, colour-safe aware). time: seconds, for the threat flash.
+ */
+export function drawRadar(ctx, layout, radar, colors, time = 0) {
+    if (!layout || !radar) return;
+    const { r } = layout;
+    const unit = r / 45;
+    const flashOn = Math.floor(time * 6) % 2 === 0;
+    ctx.save();
+    for (const hemi of ['front', 'rear']) {
+        const { cx, cy } = layout[hemi];
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(8, 16, 30, 0.45)';
+        ctx.strokeStyle = 'rgba(150, 200, 240, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // 45° ring and a small centre cross
+        ctx.strokeStyle = 'rgba(150, 200, 240, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r / 2, 0, Math.PI * 2);
+        ctx.moveTo(cx - 4, cy); ctx.lineTo(cx + 4, cy);
+        ctx.moveTo(cx, cy - 4); ctx.lineTo(cx, cy + 4);
+        ctx.stroke();
+        // Label above the circle
+        ctx.font = `${Math.max(9, Math.round(10 * unit))}px Arial, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(170, 210, 240, 0.7)';
+        ctx.fillText(hemi === 'front' ? '▲ FRONT' : '▼ REAR', cx, cy - r - 2);
+        // Far first, so near blips are drawn on top
+        const blips = [...radar[hemi]].sort((a, b) => a.near - b.near);
+        for (const b of blips) {
+            const color = b.type === 'crystal' ? colors.collect : colors.hazard;
+            const x = cx + b.x * r;
+            const y = cy - b.y * r;
+            const s = (b.beyond ? 2 : 2 + 3.5 * b.near) * unit;
+            ctx.globalAlpha = b.beyond ? 0.3 : 0.4 + 0.6 * b.near;
+            ctx.fillStyle = color;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = Math.max(1.5, 2 * unit);
+            if (b.threat) {
+                ctx.globalAlpha = flashOn ? 1 : 0.35;
+                glyph(ctx, b.type, x, y, s * 1.3);
+                ctx.beginPath();
+                ctx.arc(x, y, s * 2.2, 0, Math.PI * 2);
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            } else {
+                glyph(ctx, b.type, x, y, s);
+            }
+            if (b.beyond) {
+                // Tick on the rim in the crystal's direction
+                ctx.globalAlpha = 0.45;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(cx + b.rimX * (r - 5), cy - b.rimY * (r - 5));
+                ctx.lineTo(cx + b.rimX * (r + 3), cy - b.rimY * (r + 3));
+                ctx.stroke();
+            }
+        }
+        ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+}
+
+/** Arrow at the screen edge towards the nearest crystal (radar3d.js edgeMarker), with its distance. */
+export function drawEdgeMarker(ctx, w, h, marker, color) {
+    if (!marker) return;
+    const margin = 46;
+    const cx = w / 2, cy = h / 2;
+    const dx = Math.cos(marker.angle), dy = -Math.sin(marker.angle); // canvas y is down
+    const hw = w / 2 - margin, hh = h / 2 - margin;
+    const k = Math.min(Math.abs(dx) > 1e-6 ? hw / Math.abs(dx) : Infinity, Math.abs(dy) > 1e-6 ? hh / Math.abs(dy) : Infinity);
+    const x = cx + dx * k, y = cy + dy * k;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+    ctx.shadowBlur = 4;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.85;
+    ctx.rotate(Math.atan2(dy, dx));
+    ctx.beginPath();
+    ctx.moveTo(16, 0); ctx.lineTo(-6, -10); ctx.lineTo(-2, 0); ctx.lineTo(-6, 10); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.font = 'bold 12px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+    ctx.shadowBlur = 4;
+    ctx.fillText(String(Math.round(marker.dist)), x - dx * 30, y - dy * 30);
+    ctx.restore();
 }

@@ -288,3 +288,28 @@ test('view distance: Far by default; choosing one regenerates the world and show
 test('the cockpit frame is gone from the HUD', () => {
     assert.equal(hud3d.drawCockpit, undefined);
 });
+
+test('radar hook: layout3d=range puts the red rock at the front centre and the crystal at the rear centre', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    env.frames(2);
+    const { front, rear, edge } = g().radar;
+    const rock = front.find((b) => b.type === 'rock');
+    assert.ok(rock && Math.abs(rock.x) < 1e-3 && Math.abs(rock.y) < 1e-3, JSON.stringify(front));
+    const crystal = rear.find((b) => b.type === 'crystal');
+    assert.ok(crystal && Math.abs(crystal.x) < 1e-3 && Math.abs(crystal.y) < 1e-3, JSON.stringify(rear));
+    assert.ok(rock.near > 0.7 && rock.near < 1);
+    assert.ok(edge && Math.abs(edge.angle + Math.PI / 2) < 1e-3, 'crystal straight behind: the edge arrow points down');
+    // Turn right with the stick until the rock is far off to the left
+    const zone = env.el('p3-stick-zone');
+    zone.pointer('pointerdown', { clientX: 100, clientY: 300 });
+    zone.pointer('pointermove', { clientX: 164, clientY: 300 });
+    env.frames(30);
+    zone.pointer('pointerup');
+    env.frames(1);
+    const r2 = [...g().radar.front, ...g().radar.rear].find((b) => b.type === 'rock');
+    assert.ok(r2.x < -0.2, `turned right: the rock moves left (${r2.x})`);
+});

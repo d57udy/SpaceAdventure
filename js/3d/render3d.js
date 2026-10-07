@@ -17,6 +17,7 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { nearestDelta, worldFor } from './world3d.js';
+import { verticalFov } from './radar3d.js';
 
 const BG = 0x02030a;
 const DUST_COUNT = 520;
@@ -342,8 +343,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
             const aspect = width / Math.max(1, height);
             camera.aspect = aspect;
             // About 90° horizontally on wide screens, at most 80° vertically when tall
-            const vfov = 2 * Math.atan(Math.tan(45 * Math.PI / 180) / aspect) * 180 / Math.PI;
-            camera.fov = Math.min(80, Math.max(50, vfov));
+            camera.fov = verticalFov(aspect);
             camera.updateProjectionMatrix();
         },
         /** Add a burst of sparkles at a world position. kind: 'collect' | 'split' | 'hit'. */

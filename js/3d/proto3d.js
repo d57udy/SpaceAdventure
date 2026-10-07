@@ -25,7 +25,9 @@ import {
 import {
     createOrientationSource, requestMotionPermission, motionPermissionNeeded, isPortrait, screenAngle,
 } from './sensors.js';
-import { drawCrosshair, drawHudText, drawJoystick, drawFlash } from './hud3d.js';
+import { drawCrosshair, drawHudText, drawJoystick, drawFlash, drawRadar, drawEdgeMarker } from './hud3d.js';
+import { buildRadar, edgeMarker, radarLayout } from './radar3d.js';
+import { findPalette } from '../palette.js';
 
 const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
 const MODE_HELP = {
@@ -210,6 +212,8 @@ export async function startPrototype({ win = window, createRenderer = null } = {
     const stick = { active: false, id: null, cx: 0, cy: 0, x: 0, y: 0, radius: STICK_RADIUS };
     let pad = { x: 0, y: 0, roll: 0, thrust: false, fire: false, pause: false };
     let cssW = 1, cssH = 1;
+    let radar = { front: [], rear: [] }, edge = null, layoutR = radarLayout(1, 1);
+    let threatIds = new Set(), threatBuzzAt = 0;
 
     const chosenMode = () => settings.get('control3d');
     const motionOk = () => permission === 'granted' || permission === 'not-required';
@@ -250,6 +254,7 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         hud.width = Math.round(cssW * hdpr);
         hud.height = Math.round(cssH * hdpr);
         hctx.setTransform(hdpr, 0, 0, hdpr, 0, 0);
+        layoutR = radarLayout(cssW, cssH);
         const portrait = isPortrait(win);
         $('p3-portrait-note').classList.toggle('p3-hidden', !portrait);
         $('p3-portrait-banner').classList.toggle('p3-hidden', !portrait);
@@ -627,8 +632,24 @@ export async function startPrototype({ win = window, createRenderer = null } = {
         flashHit = Math.max(0, flashHit - dtReal * 2);
         flashCollect = Math.max(0, flashCollect - dtReal * 3);
 
+        updateRadar(now);
         if (renderer) renderer.render({ shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt: dtReal });
         drawOverlay();
+    }
+
+    /** Radar circles and the crystal edge marker; a short buzz when a new red rock threatens. */
+    function updateRadar(now) {
+        const o = { size: sim.size, range: sim.world.fogFar, aspect: cssW / cssH };
+        const ship = { pos: sim.ship.pos, q: look.q, vel: sim.ship.vel };
+        radar = buildRadar(ship, sim.rocks, o);
+        edge = edgeMarker(ship, sim.rocks, o);
+        const ids = new Set();
+        for (const b of [...radar.front, ...radar.rear]) if (b.threat) ids.add(b.id);
+        if (screen === 'playing' && [...ids].some((id) => !threatIds.has(id)) && now - threatBuzzAt > 1000) {
+            threatBuzzAt = now;
+            vibrate(25);
+        }
+        threatIds = ids;
     }
 
     function drawOverlay() {
@@ -639,11 +660,17 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             score: sim.score, lives: sim.lives, mode: look.mode, chosenMode: chosenMode(), levelHorizon: look.level,
             view: VIEW_DISTANCES[viewName()].label, fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
         }, { top: 0, left: 0, right: 0 });
+        const pal = findPalette(settings.get('palette'));
+        if (screen === 'playing') drawEdgeMarker(hctx, cssW, cssH, edge, pal.collectRadar);
+        drawRadar(hctx, layoutR, radar, { collect: pal.collectRadar, hazard: pal.hazardRadar }, clock / 1000);
         drawJoystick(hctx, stick);
     }
 
     // --- read-only test hook
     const r4 = (v) => Math.round(v * 1e4) / 1e4;
+    const blipOut = (b) => ({
+        id: b.id, type: b.type, x: r4(b.x), y: r4(b.y), dist: Math.round(b.dist), near: r4(b.near), threat: b.threat, beyond: b.beyond,
+    });
     function snapshot() {
         const a = lookAngles(look);
         return {
@@ -684,6 +711,12 @@ export async function startPrototype({ win = window, createRenderer = null } = {
             three: renderer ? renderer.three : null,
             seed,
             message,
+            radar: {
+                front: radar.front.map(blipOut),
+                rear: radar.rear.map(blipOut),
+                edge: edge ? { id: edge.id, angle: r4(edge.angle), dist: Math.round(edge.dist) } : null,
+                layout: layoutR,
+            },
             stick: { active: stick.active, x: r4(stick.x), y: r4(stick.y) },
         };
     }
