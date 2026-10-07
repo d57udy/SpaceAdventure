@@ -8,7 +8,7 @@
  *
  * IMPORTANT: CACHE_VERSION and PRECACHE below are GENERATED. After adding,
  * removing or changing ANY precached file (index.html, style.css, the
- * manifest, js/*.js, assets/audio/*.mp3, icons/*.png) run:
+ * manifest, js/*.js, every .js under js/3d/, assets/audio/*.mp3, icons/*.png) run:
  *
  *     node scripts/update-sw-version.mjs      (npm run sw:version)
  *
@@ -18,7 +18,7 @@
 const CACHE_PREFIX = 'space-adventure-';
 
 // @generated-begin (scripts/update-sw-version.mjs; do not edit by hand)
-const CACHE_VERSION = 'sa-012f4c49f790';
+const CACHE_VERSION = 'sa-354b6ce1e106';
 const PRECACHE = [
     './',
     'index.html',
@@ -73,6 +73,17 @@ const PRECACHE = [
     'js/viewport.js',
     'js/wakeLock.js',
     'js/worldSize.js',
+    'js/3d/collide3d.js',
+    'js/3d/hud3d.js',
+    'js/3d/look.js',
+    'js/3d/math3d.js',
+    'js/3d/proto3d.js',
+    'js/3d/render3d.js',
+    'js/3d/sensors.js',
+    'js/3d/sim3d.js',
+    'js/3d/vendor/three.core.min.js',
+    'js/3d/vendor/three.module.min.js',
+    'js/3d/world3d.js',
     'assets/audio/asteroid_explode_large.mp3',
     'assets/audio/asteroid_explode_medium.mp3',
     'assets/audio/asteroid_explode_small.mp3',

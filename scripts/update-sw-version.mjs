@@ -6,8 +6,8 @@
 //   node scripts/update-sw-version.mjs --check  exit 1 if sw.js is stale
 //
 // Run it before every commit that adds, removes or changes a precached file
-// (index.html, style.css, manifest.webmanifest, js/*.js, assets/audio/*.mp3,
-// icons/*.png). tests/unit/sw-version.test.mjs fails while sw.js is stale.
+// (index.html, style.css, manifest.webmanifest, js/*.js, js/3d/**/*.js including
+// the vendored three.js, assets/audio/*.mp3, icons/*.png). tests/unit/sw-version.test.mjs fails while sw.js is stale.
 //
 // The version is a content hash of every precached file (path + bytes), so
 // any change ships as a new cache and old caches are cleaned up on activate.
@@ -31,12 +31,28 @@ function listDir(root, dir, ext) {
         .sort();
 }
 
+/** Every file with extension `ext` under `dir`, recursively (sorted, '/' separators). */
+function listTree(root, dir, ext) {
+    const full = join(root, dir);
+    if (!existsSync(full)) return [];
+    const out = [];
+    for (const d of readdirSync(full, { withFileTypes: true })) {
+        if (d.name.startsWith('.')) continue;
+        if (d.isDirectory()) out.push(...listTree(root, `${dir}/${d.name}`, ext));
+        else if (d.isFile() && d.name.endsWith(ext)) out.push(`${dir}/${d.name}`);
+    }
+    return out.sort();
+}
+
 /** Files to precache, relative to the app root (without the leading './'). */
 export function collectFiles(root = DEFAULT_ROOT) {
     const top = ['index.html', 'style.css', 'manifest.webmanifest'].filter((f) => existsSync(join(root, f)));
     return [
         ...top,
         ...listDir(root, 'js', '.js'),
+        // The 3D prototype is cached for everyone (docs/plans/06-3d-mode.md §8.3), even
+        // though 2D never imports it; the vendored three.js lives in js/3d/vendor/.
+        ...listTree(root, 'js/3d', '.js'),
         ...listDir(root, 'assets/audio', '.mp3'),
         ...listDir(root, 'icons', '.png'),
     ];

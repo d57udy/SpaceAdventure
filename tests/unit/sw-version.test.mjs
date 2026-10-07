@@ -10,7 +10,7 @@ import {
 // If this file fails with "sw.js is stale", run:
 //     node scripts/update-sw-version.mjs      (npm run sw:version)
 // Any added, removed or changed precached file (index.html, style.css,
-// manifest.webmanifest, js/*.js, assets/audio/*.mp3, icons/*.png) needs it.
+// manifest.webmanifest, js/*.js, js/3d/**/*.js, assets/audio/*.mp3, icons/*.png) needs it.
 const HOW_TO_FIX = 'sw.js is stale. Run: node scripts/update-sw-version.mjs (npm run sw:version)';
 
 test('sw.js PRECACHE matches the files on disk', () => {
@@ -21,6 +21,14 @@ test('sw.js PRECACHE matches the files on disk', () => {
 test('sw.js CACHE_VERSION matches the content hash of the precached files', () => {
     const { actual, expected } = checkSw(DEFAULT_ROOT);
     assert.equal(actual.version, expected.version, HOW_TO_FIX);
+});
+
+test('the 3D prototype (js/3d/**, vendored three.js included) is precached for everyone', () => {
+    const { actual } = checkSw(DEFAULT_ROOT);
+    for (const f of ['js/3d/proto3d.js', 'js/3d/render3d.js', 'js/3d/vendor/three.module.min.js', 'js/3d/vendor/three.core.min.js']) {
+        assert.ok(actual.precache.includes(f), `${f} missing. ${HOW_TO_FIX}`);
+    }
+    assert.ok(!actual.precache.includes('js/3d/vendor/LICENSE'), 'only .js files');
 });
 
 test('every js/*.js module is precached', () => {
@@ -43,6 +51,10 @@ function fixture() {
     writeFileSync(join(dir, 'js/b.js'), 'export const b = 1;');
     writeFileSync(join(dir, 'js/a.js'), 'export const a = 1;');
     writeFileSync(join(dir, 'js/notes.txt'), 'not precached');
+    mkdirSync(join(dir, 'js/3d/vendor'), { recursive: true });
+    writeFileSync(join(dir, 'js/3d/z.js'), 'export const z = 1;');
+    writeFileSync(join(dir, 'js/3d/vendor/lib.min.js'), 'export const l = 1;');
+    writeFileSync(join(dir, 'js/3d/vendor/LICENSE'), 'MIT');
     writeFileSync(join(dir, 'assets/audio/boom.mp3'), 'mp3');
     writeFileSync(join(dir, 'icons/icon-192.png'), 'png');
     writeFileSync(join(dir, 'icons/icon.svg'), '<svg/>');
@@ -50,12 +62,12 @@ function fixture() {
     return dir;
 }
 
-test('collectFiles lists shell, sorted js, mp3 and png only', () => {
+test('collectFiles lists shell, sorted js (js/3d recursively), mp3 and png only', () => {
     const dir = fixture();
     try {
         assert.deepEqual(collectFiles(dir), [
             'index.html', 'style.css', 'manifest.webmanifest',
-            'js/a.js', 'js/b.js', 'assets/audio/boom.mp3', 'icons/icon-192.png',
+            'js/a.js', 'js/b.js', 'js/3d/vendor/lib.min.js', 'js/3d/z.js', 'assets/audio/boom.mp3', 'icons/icon-192.png',
         ]);
         assert.equal(computePrecache(dir)[0], './');
     } finally { rmSync(dir, { recursive: true, force: true }); }
