@@ -12,12 +12,14 @@
 // fades at the same distance as one straight ahead, so culling at world.cullDistance and
 // the nearest-image switch at side / 2 both happen where everything is fully fogged.
 // Rocks, crystal glows and bullets are drawn with InstancedMesh (a handful of draw calls
-// for hundreds of objects). The sky (stars, planet) never writes depth and is drawn first,
+// for hundreds of objects); explosion debris (debris3d.js) is one more InstancedMesh with a
+// colour per piece. The sky (stars, planet) never writes depth and is drawn first,
 // scaled inside the camera's far plane, so it always stays behind the field.
 
 import * as THREE from './vendor/three.module.min.js';
 import { nearestDelta, worldFor } from './world3d.js';
 import { verticalFov } from './radar3d.js';
+import { createDebrisPool, DEBRIS3D } from './debris3d.js';
 
 const BG = 0x02030a;
 const DUST_COUNT = 520;
@@ -227,6 +229,21 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
     scene.add(sparkPoints);
     const sparkRand = makeRng(99);
 
+    // --- explosion debris: tumbling fragments in the rock's colour, fixed pool, one draw call
+    const debris = createDebrisPool({ max: DEBRIS3D.max, rand: makeRng(123) });
+    const debrisMesh = new THREE.InstancedMesh(
+        new THREE.TetrahedronGeometry(1, 0),
+        new THREE.MeshBasicMaterial({ color: 0xffffff }),
+        DEBRIS3D.max,
+    );
+    debrisMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    debrisMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(DEBRIS3D.max * 3), 3);
+    debrisMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    debrisMesh.frustumCulled = false;
+    debrisMesh.count = 0;
+    scene.add(debrisMesh);
+    const _c = new THREE.Color();
+
     let drawCalls = 0;
     let shipPos = [0, 0, 0];
     let drawnRocks = 0;
@@ -333,6 +350,26 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         sparkGeo.attributes.color.needsUpdate = true;
     }
 
+    function syncDebris(dt) {
+        debris.step(dt);
+        let n = 0;
+        debris.forEach((p, fade) => {
+            const d = nearestDelta(shipPos, p.pos, worldSize);
+            _p.set(d[0], d[1], d[2]);
+            _q.setFromAxisAngle(_axis.set(p.axis[0], p.axis[1], p.axis[2]), p.angle);
+            _s.setScalar(p.scale * (0.35 + 0.65 * fade));
+            _m.compose(_p, _q, _s);
+            debrisMesh.setMatrixAt(n, _m);
+            // Fades toward the background as it dies
+            _c.setRGB(p.color[0] * (0.3 + 0.7 * fade), p.color[1] * (0.3 + 0.7 * fade), p.color[2] * (0.3 + 0.7 * fade));
+            debrisMesh.setColorAt(n, _c);
+            n++;
+        });
+        debrisMesh.count = n;
+        debrisMesh.instanceMatrix.needsUpdate = true;
+        debrisMesh.instanceColor.needsUpdate = true;
+    }
+
     return {
         three: THREE.REVISION,
         get contextLost() { return contextLost; },
@@ -358,6 +395,15 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
             }
         },
         /**
+         * Explosion debris when a rock splits or is destroyed. o: { size: 'large' | 'medium' |
+         * 'small' | 'crystal', color: '#RRGGBB' (the palette's colour for the rock type), vel }
+         */
+        debris(pos, o = {}) {
+            return debris.spawn(pos, o);
+        },
+        /** Live sparkles and debris pieces (test hook). */
+        get particles() { return sparks.length + debris.count; },
+        /**
          * Draw one frame.
          * @param {object} view - { shipPos, q: [x,y,z,w], rocks, bullets, dt }
          */
@@ -369,6 +415,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
             syncBullets(view.bullets);
             syncDust();
             syncSparks(view.dt || 0);
+            syncDebris(view.dt || 0);
             renderer.render(scene, camera);
             drawCalls = renderer.info.render.calls;
         },
@@ -390,6 +437,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
             fogFar = w.fogFar;
             cullDistance = w.cullDistance;
             sparks.length = 0;
+            debris.clear();
             applyWorld();
         },
         /** World settings in effect (test hook). */

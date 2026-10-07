@@ -52,9 +52,12 @@ export function createHaptics3d({ haptics = null, gamepad = null, settings = nul
     };
 }
 
-/** The real one for the 3D page: a Haptics on navigator.vibrate following the setting. */
-export async function createBrowserHaptics3d({ settings, gamepad = null, usingController } = {}) {
+/**
+ * The real one for the 3D page: a Haptics on navigator.vibrate following the setting.
+ * nav: the page's navigator (default: the global one).
+ */
+export async function createBrowserHaptics3d({ settings, gamepad = null, usingController, nav } = {}) {
     const { Haptics } = await import('../haptics.js');
-    const haptics = new Haptics({ enabled: () => !!(settings && settings.get('haptics')) });
+    const haptics = new Haptics({ nav, enabled: () => !!(settings && settings.get('haptics')) });
     return createHaptics3d({ haptics, gamepad, settings, usingController });
 }

@@ -404,3 +404,57 @@ test('A real level 1: HUD hook has level, rocks left and incoming rocks arrive d
   await poll(page, 'incomingLeft').toBeLessThan(s0.incomingLeft);
   expect(errors).toEqual([]);
 });
+
+test('Phase 2 hook: adaptive difficulty Balanced, its aids, the rock ahead bracketed, debris when it splits', async ({ page }) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=range', storage: { spaceAdventure_control3d: 'joystick' } });
+  const s0 = await g3(page);
+  expect(s0.difficulty).toBe('medium');
+  expect(s0.adjustment).toMatchObject({ level: 'balanced', text: 'Balanced' });
+  expect(s0.assist).toMatchObject({ aimDeg: 2, lead: true, crystalArrow: 'offscreen', pickupBonus: 0 });
+  await start(page);
+  await poll(page, 'target').toMatchObject({ dist: 300, onScreen: true, lead: false });
+  // &lowres3d=1: the frame-rate check never runs (a software renderer is always slow)
+  expect((await g3get(page, 'perf')).decision).toBe('measuring');
+  expect((await g3get(page, 'contextLoss')).lost).toBe(false);
+  await page.keyboard.down('Space');
+  await expect.poll(() => g3get(page, 'stats').then((s) => s.splits), { timeout: T }).toBeGreaterThan(0);
+  await page.keyboard.up('Space');
+  await poll(page, 'particles').toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test('Difficulty row: Medium by default; Hard persists and starts with 2 lives', async ({ page }) => {
+  const errors = await open3d(page);
+  await expect(page.locator('#p3-diff-medium')).toHaveAttribute('aria-pressed', 'true');
+  await page.click('#p3-diff-hard');
+  await poll(page, 'difficulty').toBe('hard');
+  expect(await g3get(page, 'lives')).toBe(2);
+  expect(await page.evaluate(() => localStorage.getItem('spaceAdventure_difficulty'))).toBe('hard');
+  await page.reload();
+  await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
+    && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+  expect(await g3get(page, 'difficulty')).toBe('hard');
+  await expect(page.locator('#p3-diff-hard')).toHaveAttribute('aria-pressed', 'true');
+  expect(errors).toEqual([]);
+});
+
+test('Graphics context loss pauses the game; a restored context is rebuilt and play resumes', async ({ page }) => {
+  const errors = await open3d(page, { storage: { spaceAdventure_control3d: 'joystick' } });
+  await start(page);
+  const lose = () => page.evaluate(() => {
+    const gl = document.getElementById('p3-canvas').getContext('webgl2');
+    window.__loseExt = gl && gl.getExtension('WEBGL_lose_context');
+    if (window.__loseExt) window.__loseExt.loseContext();
+    return !!window.__loseExt;
+  });
+  test.skip(!(await lose()), 'WEBGL_lose_context not available');
+  await poll(page, 'screen').toBe('paused');
+  await expect.poll(() => g3get(page, 'contextLoss').then((c) => c.lost), { timeout: T }).toBe(true);
+  await page.evaluate(() => window.__loseExt.restoreContext());
+  await expect.poll(() => g3get(page, 'contextLoss').then((c) => c.lost), { timeout: T }).toBe(false);
+  await page.click('#p3-start');
+  await poll(page, 'screen').toBe('playing');
+  await waitSteps(page, 2);
+  await poll(page, 'drawCalls').toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});

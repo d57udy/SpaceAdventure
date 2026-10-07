@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSim, stepSim, drainEvents, simCounts, SIM, nextId, rocksLeft, levelBlocked } from '../../js/3d/sim3d.js';
+import {
+    createSim, stepSim, drainEvents, simCounts, SIM, nextId, rocksLeft, levelBlocked, pickupRadius, adaptiveInfo, aimTargets,
+} from '../../js/3d/sim3d.js';
 import { makeRock, WORLD, worldFor, wrappedDistance, nearestDelta } from '../../js/3d/world3d.js';
-import { RULES3D, levelPlan, planRockCount, DIFFICULTY_3D, CRYSTAL_SIZES } from '../../js/3d/rules3d.js';
+import { RULES3D, levelPlan, planRockCount, DIFFICULTY_3D, CRYSTAL_SIZES, createAdaptive3d } from '../../js/3d/rules3d.js';
 import { qIdentity, qFromAxisAngle, vLen, vDot, vSub, vScale } from '../../js/3d/math3d.js';
 
 const run = (s, input, seconds) => { for (let i = 0; i < Math.round(seconds * 60); i++) stepSim(s, input); };
@@ -298,4 +300,87 @@ test('a plain random field (no levels) still works for the prototype counts', ()
     const s = createSim({ seed: 1, greens: WORLD.greens, reds: WORLD.reds });
     assert.equal(s.levels, false);
     assert.deepEqual([simCounts(s).green, simCounts(s).red], [WORLD.greens, WORLD.reds]);
+});
+
+test('adaptive difficulty: the sim feeds the tracker as 2D does', () => {
+    const adaptive = createAdaptive3d();
+    const s = createSim({ seed: 4, adaptive });
+    assert.equal(adaptive.greenAsteroidsSpawned, s.plan.greens, 'crystals of the level counted as spawned');
+    s.rocks = [];
+    s.incoming.left = 0;
+    const g = place(s, 'red', -300, 'large');
+    run(s, { q: qIdentity(), fire: true }, 0.5);
+    assert.ok(adaptive.shotsFired >= 3 && adaptive.shotsFired === s.stats.shots);
+    assert.ok(adaptive.shotsHit >= 1 && adaptive.shotsHit === s.stats.shotsHit);
+    assert.equal(adaptive.redAsteroidsDestroyed, s.stats.redsShot);
+    assert.ok(!s.rocks.includes(g));
+    s.rocks = [];
+    place(s, 'red', 1000); // keeps the level going
+    place(s, 'green', -10);
+    stepSim(s, { q: qIdentity() });
+    assert.equal(adaptive.greenAsteroidsCollected, 1);
+    // A lost life: the 2D immediate death penalty
+    place(s, 'red', -5, 'large');
+    stepSim(s, { q: qIdentity() });
+    assert.equal(adaptive.deaths, 1);
+    assert.ok(adaptive.performanceScore < 0);
+    // Game time and evaluation run with the sim (15 s interval)
+    assert.ok(adaptive.now() > 0);
+});
+
+test('adaptive difficulty: level and modifiers follow the tracker; Assisting widens the pickup radius', () => {
+    const adaptive = createAdaptive3d();
+    const s = empty({ adaptive });
+    assert.equal(adaptiveInfo(s).text, 'Balanced');
+    assert.equal(s.assist.level, 'balanced');
+    const r0 = pickupRadius(s);
+    adaptive.performanceScore = -0.6;
+    adaptive.applyAdjustments();
+    stepSim(s, { q: qIdentity() });
+    assert.equal(s.assist.level, 'assisting');
+    assert.equal(adaptiveInfo(s).text, 'Assisting');
+    assert.equal(adaptiveInfo(s).color, '#00FF00');
+    assert.ok(Math.abs(pickupRadius(s) - r0 * 1.5) < 1e-9, '+50 % collection radius');
+    assert.ok(s.dda.asteroidSpeedMod < 1 && s.dda.greenRatioMod > 1 && s.dda.powerUpSpawnMod > 1 && s.dda.extraLifeThresholdMod < 1);
+    assert.ok(s.dda.ufoSpawnMod > 1 && s.dda.ufoAccuracyMod < 1, 'UFO modifiers kept for the UFO system');
+    adaptive.performanceScore = 0.6;
+    adaptive.applyAdjustments();
+    stepSim(s, { q: qIdentity() });
+    assert.equal(s.assist.level, 'challenging');
+    assert.equal(s.assist.aimDeg, 0);
+    assert.equal(pickupRadius(s), r0);
+});
+
+test('adaptive difficulty: a new rock speed modifier applies to the incoming rocks still to come', () => {
+    const adaptive = createAdaptive3d();
+    const s = createSim({ seed: 2, adaptive });
+    const before = s.incoming.speed.slice();
+    adaptive.performanceScore = 0.5;
+    adaptive.applyAdjustments();
+    stepSim(s, { q: qIdentity() });
+    assert.ok(Math.abs(s.incoming.speed[1] / before[1] - adaptive.asteroidSpeedMod) < 1e-9);
+});
+
+test('aim assist: a rock 3° off the nose is hit when Assisting (4°), missed when Challenging (off)', () => {
+    const shoot = (assist) => {
+        const s = empty({ assist });
+        const [x, y, z] = s.ship.pos;
+        const d = 500;
+        s.rocks.push(makeRock({ id: nextId(s), kind: 'red', size: 'small', pos: [x + Math.sin(3 * Math.PI / 180) * d, y, z - Math.cos(3 * Math.PI / 180) * d], rand: s.rand }));
+        stepSim(s, { q: qIdentity(), fire: true });
+        run(s, { q: qIdentity() }, 1);
+        return s;
+    };
+    const a = shoot('assisting');
+    assert.equal(a.stats.redsShot, 1);
+    assert.equal(a.stats.assisted, 1);
+    const c = shoot('challenging');
+    assert.equal(c.stats.redsShot, 0);
+    assert.equal(c.stats.assisted, 0);
+    assert.equal(shoot('balanced').stats.redsShot, 0, '3° is beyond Balanced (2°)');
+    // Crystals are never aim-assist targets
+    const s = empty();
+    place(s, 'green', -300);
+    place(s, 'red', -300, 'small');
+    assert.deepEqual(aimTargets(s).map((r) => r.kind), ['red']);
 });

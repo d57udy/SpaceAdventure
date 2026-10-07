@@ -1,5 +1,6 @@
-// 2D overlay for the 3D game: crosshair, HUD text (score, lives, level, rocks left), level
-// banner, two-circle radar, edge markers, damage-direction arc, joystick, hit flash. (The cockpit
+// 2D overlay for the 3D game: crosshair, HUD text (score, lives, level, rocks left, adaptive
+// difficulty), level banner, two-circle radar, edge markers, damage-direction arc, joystick,
+// hit flash, target brackets, lead marker and hit marker (assist3d.js). (The cockpit
 // frame was removed after the Pixel 7 Pro test, 2026-10-07: the text has a shadow instead.)
 // Drawn on a 2D canvas layered over the WebGL canvas. formatHud() is pure (unit-testable);
 // the draw functions only use the CanvasRenderingContext2D they are given.
@@ -17,7 +18,9 @@ export function formatHud(info) {
     const view = info.view ? `View ${info.view} · ` : '';
     const right = `${mode}${chosen} · Level ${info.levelHorizon ? 'on' : 'off'} · ${view}${Math.round(info.fps || 0)} fps · ${(info.renderScale || 1).toFixed(2)}×`;
     const speed = `SPD ${Math.round(info.speed || 0)}`;
-    return { left, right, speed };
+    // The adaptive difficulty level, as the 2D HUD shows it (DynamicDifficulty.getAdjustmentText)
+    const difficulty = info.adjustment ? `Difficulty: ${info.adjustment}` : '';
+    return { left, right, speed, difficulty };
 }
 
 export function drawCrosshair(ctx, w, h, color = 'rgba(180, 255, 220, 0.85)') {
@@ -58,6 +61,10 @@ export function drawHudText(ctx, w, h, info, insets = { top: 0, left: 0, right: 
     ctx.font = `${Math.round(fs * 0.8)}px Arial, sans-serif`;
     ctx.fillStyle = '#9fc0d8';
     ctx.fillText(t.speed, 12 + insets.left, 14 + fs + insets.top);
+    if (t.difficulty) {
+        ctx.fillStyle = info.adjustmentColor || '#FFFFFF';
+        ctx.fillText(t.difficulty, 12 + insets.left, 18 + fs + Math.round(fs * 0.8) + insets.top);
+    }
     ctx.textAlign = 'center';
     ctx.fillText(t.right, w / 2, h - Math.max(18, h * 0.06) + 4);
     if (info.message) {
@@ -284,5 +291,65 @@ export function drawEdgeMarker(ctx, w, h, marker, color) {
     ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
     ctx.shadowBlur = 4;
     ctx.fillText(String(Math.round(marker.dist)), x - dx * 30, y - dy * 30);
+    ctx.restore();
+}
+
+/**
+ * Brackets around the target nearest the crosshair (always on). p: assist3d.js projectLocal()
+ * of its centre; radius: world radius (the brackets grow with its size on screen).
+ */
+export function drawTargetBrackets(ctx, p, radius, color = 'rgba(255, 120, 120, 0.9)') {
+    if (!p) return;
+    const r = Math.max(12, Math.min(160, radius * p.scale * 1.3));
+    const k = Math.max(5, r * 0.35);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+    ctx.shadowBlur = 3;
+    ctx.beginPath();
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const x = p.x + sx * r, y = p.y + sy * r;
+        ctx.moveTo(x - sx * k, y); ctx.lineTo(x, y); ctx.lineTo(x, y - sy * k);
+    }
+    ctx.stroke();
+    ctx.restore();
+}
+
+/** Lead marker: where to aim so a shot meets the moving target (a small ring and a dot). */
+export function drawLeadMarker(ctx, p, color = 'rgba(255, 220, 120, 0.95)') {
+    if (!p) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+    ctx.shadowBlur = 3;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+}
+
+/** Hit marker: a short X around the crosshair when a shot hits (alpha 0..1, always on). */
+export function drawHitMarker(ctx, w, h, alpha) {
+    if (!(alpha > 0)) return;
+    const cx = w / 2, cy = h / 2;
+    const r = Math.max(10, Math.min(w, h) * 0.025);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+    ctx.shadowBlur = 3;
+    ctx.beginPath();
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        ctx.moveTo(cx + sx * r * 0.7, cy + sy * r * 0.7);
+        ctx.lineTo(cx + sx * r * 1.3, cy + sy * r * 1.3);
+    }
+    ctx.stroke();
     ctx.restore();
 }

@@ -23,8 +23,9 @@ test('defaults', () => {
         controlMode: 'joystick', palette: 'standard', haptics: true, musicTune: 'synthwave',
         musicVolume: 5, sfxVolume: 10, rumble: true, offerTutorial: true, muted: false,
         mpLayout: 'auto', mpAutoFire: false, mpFireSideA: 'outer', mpFireSideB: 'outer', mpStereo: true,
-        renderQuality: 'auto',
+        renderQuality: 'auto', difficulty: 'medium',
         control3d: 'direct', levelHorizon3d: false, sensitivity3d: 5, sensor3d: 'auto', viewDistance3d: 'far',
+        invert3d: false, fov3d: 70, vignette3d: true, leftHanded3d: false,
     });
     assert.deepEqual(defaultSettings(), s.all());
     assert.deepEqual([...SETTING_NAMES].sort(), Object.keys(s.all()).sort());

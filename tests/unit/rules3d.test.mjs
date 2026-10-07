@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     DIFFICULTY_3D, NEUTRAL_DDA, ddaOf, difficultyOf, RULES3D, CRYSTAL_SIZES, levelPlan, planRockCount, crystalScore,
-    nextExtraLife, isBossLevel,
+    nextExtraLife, isBossLevel, DIFFICULTY_IDS_3D, createAdaptive3d,
 } from '../../js/3d/rules3d.js';
+import { Difficulty } from '../../js/difficulty.js';
 import { AsteroidSize } from '../../js/asteroid.js';
 
 test('difficulty table: the 2D values', () => {
@@ -16,6 +17,25 @@ test('difficulty table: the 2D values', () => {
     // Faster incoming rocks on harder settings
     assert.ok(DIFFICULTY_3D.easy.incomingInterval > DIFFICULTY_3D.medium.incomingInterval);
     assert.ok(DIFFICULTY_3D.medium.incomingInterval > DIFFICULTY_3D.hard.incomingInterval);
+});
+
+test('difficulty table: taken from js/difficulty.js, not a copy', () => {
+    assert.deepEqual(DIFFICULTY_IDS_3D, ['easy', 'medium', 'hard']);
+    for (const d of Object.values(Difficulty)) {
+        const { incomingInterval, ...rest } = DIFFICULTY_3D[d.id];
+        assert.deepEqual(rest, { ...d }, d.id);
+        assert.ok(incomingInterval > 0);
+    }
+});
+
+test('adaptive tracker: the 2D DynamicDifficulty, fresh and Balanced', () => {
+    const a = createAdaptive3d();
+    assert.equal(a.getAdjustmentLevel(), 'balanced');
+    assert.equal(a.getAdjustmentText(), 'Balanced');
+    assert.deepEqual(ddaOf(a), { ...NEUTRAL_DDA }, 'its modifier fields read as a dda');
+    a.onPlayerDeath(); a.onPlayerDeath();
+    assert.equal(a.getAdjustmentLevel(), 'assisting');
+    assert.ok(ddaOf(a).asteroidSpeedMod < 1);
 });
 
 test('crystal scores are the 2D green scores; sizes get smaller', () => {

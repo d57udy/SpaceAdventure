@@ -13,12 +13,26 @@
 // Start never waits for motion: the game starts at once with the chosen control type. If no
 // motion reading arrives within NO_DATA_MS of wall time (no sensor, permission denied or
 // still being asked), it switches to Joystick and switches back when readings arrive.
+//
+// Phase 2 (docs/plans/07-3d-game.md): one adaptive difficulty tracker (rules3d.js
+// createAdaptive3d, fed by sim3d.js) with its HUD label; the aids it switches (assist3d.js:
+// target brackets, lead marker, crystal arrow, threat warnings); sound (audio3d.js) and
+// vibration / rumble (haptics3d.js) for the game events; explosion debris; the frame-rate
+// check with its offer to switch to 2D and graphics-context loss handling (perf3d.js).
 
 import { createSettings } from '../settings.js';
 import { createWakeLock } from '../wakeLock.js';
-import { radialDeadzone, GP, TRIGGER_THRESHOLD, BUTTON_THRESHOLD } from '../gamepad.js';
-import { createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, SIM } from './sim3d.js';
-import { makeRock, worldFor, VIEW_DISTANCES, VIEW_DISTANCE_NAMES } from './world3d.js';
+import { radialDeadzone, GP, TRIGGER_THRESHOLD, BUTTON_THRESHOLD, RUMBLE_PATTERNS } from '../gamepad.js';
+import { URL_2D } from '../mode3d.js';
+import {
+    createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, adaptiveInfo, aimTargets, SIM,
+} from './sim3d.js';
+import { createAdaptive3d, DIFFICULTY_3D, DIFFICULTY_IDS_3D } from './rules3d.js';
+import { crosshairTarget, leadPoint, projectLocal, crystalArrowOptions } from './assist3d.js';
+import { createPerfMonitor, createContextLossTracker } from './perf3d.js';
+import { createBrowserAudio3d } from './audio3d.js';
+import { createBrowserHaptics3d } from './haptics3d.js';
+import { makeRock, worldFor, nearestDelta, VIEW_DISTANCES, VIEW_DISTANCE_NAMES } from './world3d.js';
 import { vLen, qRotate, qConj } from './math3d.js';
 import {
     createLook, stepLook, recentre, setMode, calibrate, setLevelHorizon, lookAngles, CONTROL_MODES,
@@ -28,6 +42,7 @@ import {
 } from './sensors.js';
 import {
     drawCrosshair, drawHudText, drawJoystick, drawFlash, drawRadar, drawEdgeMarker, drawBanner, drawDamage, damageAngle,
+    drawTargetBrackets, drawLeadMarker, drawHitMarker,
 } from './hud3d.js';
 import { buildRadar, edgeMarker, radarLayout, remainingMarkers, lastFew } from './radar3d.js';
 import { findPalette } from '../palette.js';
@@ -39,6 +54,8 @@ const MODE_HELP = {
     joystick: 'Joystick: drag on the left half to turn, ⟲ ⟳ to roll. Desktop: click to capture the mouse, W/↑ thrust, Space/F fire, A/D or Q/E roll, Esc release.',
 };
 const NO_DATA_MS = 1500;
+const MIN_RENDER_SCALE = 0.5; // nextRenderScale's floor (perf3d.js offers 2D below 30 fps there)
+const FALLBACK_MS = 2500;     // the context-loss message shows this long before 2D opens
 const STICK_RADIUS = 64;
 const MAX_STEPS = 6;
 export const FAR_ROCK_DISTANCE = 1000; // &layout3d=far: beyond the original fog end (720)
@@ -106,6 +123,9 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 #p3-msg { color: #ffd27a; min-height: 1.2em; }
 #p3-portrait-note { color: #ffd27a; }
 .p3-hidden { display: none !important; }
+#p3-perf { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5; max-width: calc(100% - 32px);
+  background: rgba(10,16,30,0.94); border: 1px solid rgba(255,210,122,0.7); border-radius: 12px; padding: 12px 16px; text-align: center; }
+#p3-perf p { margin: 4px 0 10px; color: #ffd27a; font-size: 16px; }
 #proto3d.p3-menu-open .p3-game { display: none !important; }
 #proto3d:not(.p3-menu-open) #p3-menu { display: none !important; }
 `;
@@ -143,6 +163,12 @@ const HTML = `
       <span id="p3-sens">5</span>
       <button type="button" class="p3-choice" id="p3-sens-up" aria-label="More sensitive">+</button>
     </div>
+    <div class="p3-row" role="group" aria-label="Difficulty">
+      <span>Difficulty</span>
+      <button type="button" class="p3-choice" id="p3-diff-easy" data-difficulty="easy">Easy</button>
+      <button type="button" class="p3-choice" id="p3-diff-medium" data-difficulty="medium">Medium</button>
+      <button type="button" class="p3-choice" id="p3-diff-hard" data-difficulty="hard">Hard</button>
+    </div>
     <div class="p3-row" role="group" aria-label="View distance">
       <span>View distance</span>
       <button type="button" class="p3-choice" id="p3-view-normal" data-view="normal">Normal</button>
@@ -159,6 +185,13 @@ const HTML = `
     </div>
   </div>
 </div>
+<div id="p3-perf" class="p3-hidden" role="dialog" aria-label="Running slowly">
+  <p>Running slowly. Switch to 2D?</p>
+  <div class="p3-row">
+    <button type="button" class="p3-choice" id="p3-perf-switch">Switch</button>
+    <button type="button" class="p3-choice" id="p3-perf-stay">Stay</button>
+  </div>
+</div>
 `;
 
 /**
@@ -166,10 +199,16 @@ const HTML = `
  * @param {object} [o]
  * @param {Window} [o.win]
  * @param {Function} [o.createRenderer] - (canvas) => renderer; unit tests pass a fake (default: render3d.js)
+ * @param {Function} [o.onSound] - (name) => void: every game sound event ('threat', 'hit', 'shieldHit',
+ *   'collect', 'wasted', 'split', 'level', 'extraLife', 'respawn', 'gameover'), besides the real audio
+ * @param {Function} [o.createAudio] - async ({ settings, range }) => audio3d.js object; default: the
+ *   browser audio when the page has Web Audio (never in unit tests: their fake window has none)
+ * @param {Function} [o.createHaptics] - async ({ settings, gamepad, usingController, nav }) =>
+ *   haptics3d.js object; default: the browser one on the page's navigator
  */
-// onSound(name): optional hook for game sounds ('threat', 'hit', 'shieldHit', 'collect', 'wasted',
-// 'split', 'level', 'extraLife', 'respawn', 'gameover'); the audio is wired up in a later phase.
-export async function startPrototype({ win = window, createRenderer = null, onSound = null } = {}) {
+export async function startPrototype({
+    win = window, createRenderer = null, onSound = null, createAudio = undefined, createHaptics = undefined,
+} = {}) {
     const doc = win.document;
     const params = new URLSearchParams(win.location.search);
     const seedParam = parseInt(params.get('seed3d'), 10);
@@ -189,6 +228,7 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     const $ = (id) => root.querySelector('#' + id);
 
     const settings = createSettings();
+    const difficultyName = () => settings.get('difficulty'); // shared Easy / Medium / Hard (default Medium)
     const wakeLock = createWakeLock({ navigator: win.navigator, document: doc });
     const source = createOrientationSource({ win, preferSensor: settings.get('sensor3d') === 'auto' });
 
@@ -224,7 +264,28 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     let threatIds = new Set(), threatBuzzAt = 0;
     let markers = [], few = false;
     let damage = { angle: 0, alpha: 0 };
-    const sound = (name) => { if (onSound) { try { onSound(name); } catch { /* sounds must not break the game */ } } };
+    let hitMarker = 0;
+    let target = null, targetScreen = null, leadScreen = null;
+    let padActive = null, usingPad = false;
+    let perfPrompt = false;
+    let fallbackAt = 0;
+    const adaptive = createAdaptive3d(); // the 3D game's one adaptive difficulty tracker (reset per game)
+    const perf = createPerfMonitor();
+    const ctxLoss = createContextLossTracker();
+    let audio = null, haptics = null;
+    const guard = (fn) => { try { return fn(); } catch { return null; /* sound and vibration must not break the game */ } };
+
+    // Controller rumble on the pad in use (haptics3d.js asks only while it is the last input)
+    const padRumble = {
+        rumbleEvent(name) {
+            const r = RUMBLE_PATTERNS[name];
+            const act = padActive && padActive.vibrationActuator;
+            if (!r || !act || typeof act.playEffect !== 'function') return false;
+            const p = act.playEffect('dual-rumble', { startDelay: 0, duration: r.ms, strongMagnitude: r.strong, weakMagnitude: r.weak });
+            if (p && p.catch) p.catch(() => {});
+            return true;
+        },
+    };
 
     const chosenMode = () => settings.get('control3d');
     const motionOk = () => permission === 'granted' || permission === 'not-required';
@@ -247,14 +308,47 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     const canvas = $('p3-canvas');
     const hud = $('p3-hud');
     const hctx = hud.getContext('2d');
+    let factory = null;
     try {
-        const factory = createRenderer || (await import('./render3d.js')).createRenderer3d;
+        factory = createRenderer || (await import('./render3d.js')).createRenderer3d;
         renderer = factory(canvas, { antialias: !lowres, world: worldFor(settings.get('viewDistance3d')) });
     } catch (e) {
         error = String(e && e.message || e);
         say('3D could not start on this device (WebGL 2 not available). Use Back to 2D.', 1e9);
         $('p3-start').disabled = true;
     }
+
+    // Sound and vibration: built once, never awaited by the game (it runs silently until then)
+    try {
+        const makeAudio = createAudio !== undefined ? createAudio
+            : (win.AudioContext || win.webkitAudioContext ? createBrowserAudio3d : null);
+        if (makeAudio) audio = await makeAudio({ settings, range: worldFor(settings.get('viewDistance3d')).fogFar });
+    } catch { audio = null; }
+    try {
+        const makeHaptics = createHaptics !== undefined ? createHaptics : createBrowserHaptics3d;
+        if (makeHaptics) haptics = await makeHaptics({ settings, gamepad: padRumble, usingController: () => usingPad, nav: win.navigator });
+    } catch { haptics = null; }
+
+    // Graphics context loss (perf3d.js): pause, rebuild on restore, 2D when it doesn't come back
+    const nowS = () => (clock || performance.now()) / 1000; // the frame clock, as tick() in the loop
+    canvas.addEventListener('webglcontextlost', (e) => {
+        if (e && e.preventDefault) e.preventDefault(); // otherwise the browser never restores it
+        const r = ctxLoss.lost(nowS());
+        pause();
+        say(r.message, 1e9);
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+        if (!ctxLoss.restored(nowS()).rebuild || !factory) return;
+        try {
+            if (renderer && renderer.dispose) renderer.dispose();
+            renderer = factory(canvas, { antialias: !lowres, world: worldFor(viewName()) });
+            if (renderer.setWorld) renderer.setWorld(worldFor(viewName()));
+            resize();
+            say('Graphics restored.', 2000);
+        } catch (e) {
+            error = String(e && e.message || e);
+        }
+    });
 
     function resize() {
         cssW = Math.max(1, win.innerWidth);
@@ -289,19 +383,22 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     function newSim() {
         const view = viewName();
         if (renderer && renderer.setWorld) renderer.setWorld(worldFor(view));
+        if (audio) guard(() => audio.setRange(worldFor(view).fogFar));
+        adaptive.reset(); // as 2D: a new game starts Balanced
+        const opts = { seed, view, difficulty: difficultyName(), adaptive };
         if (layout === 'far') {
-            sim = createSim({ seed, view, field: false });
+            sim = createSim({ ...opts, field: false });
             const [x, y, z] = sim.ship.pos;
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - FAR_ROCK_DISTANCE], vel: [0, 0, 0], rand: sim.rand }));
         } else if (layout === 'range') {
-            sim = createSim({ seed, view, field: false });
+            sim = createSim({ ...opts, field: false });
             const [x, y, z] = sim.ship.pos;
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - 300], vel: [0, 0, 0], rand: sim.rand }));
             sim.rocks.push(makeRock({ id: nextId(sim), kind: 'green', pos: [x, y, z + 220], vel: [0, 0, 0], rand: sim.rand }));
         } else if (layout === 'last') {
             // A real level down to its last two: a small crystal 100 ahead, a small red rock 1000 ahead
             // (far enough that the ship, coasting after the crystal, stops well before it)
-            sim = createSim({ seed, view });
+            sim = createSim(opts);
             const [x, y, z] = sim.ship.pos;
             sim.incoming.left = 0;
             sim.rocks = [
@@ -309,7 +406,7 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
                 makeRock({ id: nextId(sim), kind: 'red', size: 'small', pos: [x, y, z - 1000], vel: [0, 0, 0], rand: sim.rand }),
             ];
         } else {
-            sim = createSim({ seed, view });
+            sim = createSim(opts);
         }
     }
     newSim();
@@ -325,6 +422,7 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         $('p3-level').textContent = `Level: ${lv ? 'on' : 'off'}`;
         $('p3-sens').textContent = String(settings.get('sensitivity3d'));
         for (const v of VIEW_DISTANCE_NAMES) $('p3-view-' + v).setAttribute('aria-pressed', String(v === viewName()));
+        for (const d of DIFFICULTY_IDS_3D) $('p3-diff-' + d).setAttribute('aria-pressed', String(d === difficultyName()));
         const eff = effectiveMode();
         $('p3-mode').textContent = MODE_LABELS[eff] + (eff !== c ? '*' : '');
         root.classList.toggle('p3-joystick', eff === 'joystick');
@@ -387,6 +485,7 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         if (screen !== 'playing') return;
         screen = 'paused';
         releaseAll();
+        stopEffects();
         root.classList.add('p3-menu-open');
         try { if (doc.pointerLockElement) doc.exitPointerLock(); } catch { /* ignore */ }
         refreshUi();
@@ -395,9 +494,16 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     function gameOver() {
         screen = 'over';
         releaseAll();
+        stopEffects();
         root.classList.add('p3-menu-open');
         $('p3-status').textContent = `Game over. Score ${sim.score}, level ${sim.level}.`;
         refreshUi();
+    }
+
+    /** Pause, game over: no thrust or UFO loop left running, no vibration. */
+    function stopEffects() {
+        if (audio) guard(() => audio.stopAll());
+        if (haptics) guard(() => haptics.stop());
     }
 
     function releaseAll() {
@@ -437,6 +543,20 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         refreshUi();
     }
 
+    /** Easy / Medium / Hard (shared setting): a new game with the new lives and speeds. */
+    function chooseDifficulty(d) {
+        if (!DIFFICULTY_3D[d]) return;
+        const was = difficultyName();
+        settings.set('difficulty', d);
+        if (d === was) { refreshUi(); return; }
+        newSim();
+        if (screen !== 'menu') {
+            screen = 'menu';
+            $('p3-status').textContent = `Difficulty: ${DIFFICULTY_3D[d].name}. New game, tap to start.`;
+        }
+        refreshUi();
+    }
+
     function toggleLevel() {
         const on = !settings.get('levelHorizon3d');
         settings.set('levelHorizon3d', on);
@@ -460,6 +580,14 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     for (const m of CONTROL_MODES) $('p3-mode-' + m).addEventListener('click', () => chooseMode(m));
     $('p3-menu-level').addEventListener('click', toggleLevel);
     for (const v of VIEW_DISTANCE_NAMES) $('p3-view-' + v).addEventListener('click', () => chooseView(v));
+    for (const d of DIFFICULTY_IDS_3D) $('p3-diff-' + d).addEventListener('click', () => chooseDifficulty(d));
+    // Slow device (perf3d.js 'offer-2d'): Switch opens the 2D game, Stay keeps 3D (no more offers)
+    $('p3-perf-switch').addEventListener('click', () => win.location.replace(URL_2D));
+    $('p3-perf-stay').addEventListener('click', () => {
+        perf.decline();
+        perfPrompt = false;
+        $('p3-perf').classList.add('p3-hidden');
+    });
     $('p3-sens-down').addEventListener('click', () => { look.sensitivity = settings.set('sensitivity3d', settings.get('sensitivity3d') - 1); refreshUi(); });
     $('p3-sens-up').addEventListener('click', () => { look.sensitivity = settings.set('sensitivity3d', settings.get('sensitivity3d') + 1); refreshUi(); });
 
@@ -563,6 +691,15 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
     });
     win.addEventListener('keyup', (e) => { if (KEYMAP[e.code]) keys.delete(KEYMAP[e.code]); });
 
+    // Browsers only start audio from a user gesture; a touch, click or key also means the
+    // controller is no longer the input in use (no rumble then)
+    const gesture = () => {
+        usingPad = false;
+        if (audio) guard(() => audio.unlock());
+    };
+    root.addEventListener('pointerdown', gesture);
+    win.addEventListener('keydown', gesture);
+
     // --- lifecycle
     doc.addEventListener('visibilitychange', () => { if (doc.hidden) pause(); });
     win.addEventListener('blur', () => releaseAll());
@@ -574,6 +711,7 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         let pads = [];
         try { pads = win.navigator.getGamepads ? [...win.navigator.getGamepads()] : []; } catch { pads = []; }
         const gp = pads.find((p) => p && p.connected);
+        padActive = gp || null;
         if (!gp) return;
         const b = (i) => { const x = gp.buttons[i]; return !!x && (x.pressed || x.value > BUTTON_THRESHOLD); };
         const l = radialDeadzone(gp.axes[0], gp.axes[1]);
@@ -582,6 +720,7 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         pad.thrust = (gp.buttons[GP.RT] && gp.buttons[GP.RT].value > TRIGGER_THRESHOLD) || b(GP.LT);
         pad.fire = b(GP.A) || b(GP.RB);
         const p = b(GP.MENU);
+        if (pad.x || pad.y || pad.roll || pad.thrust || pad.fire || p) usingPad = true;
         if (p && !padPauseWas) { if (screen === 'playing') pause(); else if (screen === 'paused') begin(); }
         padPauseWas = p;
     }
@@ -601,22 +740,51 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         }, dt);
         mouseDX = mouseDY = 0;
         stepSim(sim, { q: look.q, thrust: held.thrust || keys.has('thrust') || pad.thrust, fire: held.fire || keys.has('fire') || pad.fire }, dt);
-        for (const ev of drainEvents(sim)) {
-            if (ev.type === 'collect') { flashCollect = 1; if (renderer) renderer.burst(ev.pos, 'collect'); vibrate(15); sound('collect'); }
-            else if (ev.type === 'wasted') { if (renderer) renderer.burst(ev.pos, 'split'); sound('wasted'); }
-            else if (ev.type === 'split') { if (renderer) renderer.burst(ev.pos, ev.byShip ? 'hit' : 'split'); sound('split'); }
-            else if (ev.type === 'hit' || ev.type === 'shieldHit') {
-                if (ev.type === 'hit') { flashHit = 1; vibrate(120); } else vibrate(40);
-                if (ev.from) damage = { angle: damageAngle(qRotate(qConj(look.q), ev.from)), alpha: 1 };
-                sound(ev.type);
-            } else if (ev.type === 'level' || ev.type === 'extraLife' || ev.type === 'respawn') sound(ev.type);
-            else if (ev.type === 'gameover') { sound('gameover'); gameOver(); }
-        }
+        for (const ev of drainEvents(sim)) handleEvent(ev);
     }
 
-    function vibrate(ms) {
-        if (!settings.get('haptics')) return;
-        try { if (win.navigator.vibrate) win.navigator.vibrate(ms); } catch { /* ignore */ }
+    /** Ship-frame vector to a world position (sound panning and distance). */
+    const localOf = (pos) => qRotate(qConj(look.q), nearestDelta(sim.ship.pos, pos, sim.size));
+
+    /** Sound (audio3d.js and the onSound hook) and vibration / rumble (haptics3d.js) for one event. */
+    function effect(name, { sound = null, local = null, size = null, haptic = null } = {}) {
+        if (onSound && name) guard(() => onSound(name));
+        if (audio && sound) guard(() => (sound === 'explosion' ? audio.explosion(size, local) : audio.play(sound, { local })));
+        if (haptics && haptic) guard(() => haptics.event(haptic));
+    }
+
+    function handleEvent(ev) {
+        const pal = findPalette(settings.get('palette'));
+        if (ev.type === 'fire') effect(null, { sound: 'shoot' });
+        else if (ev.type === 'collect') {
+            flashCollect = 1;
+            if (renderer) renderer.burst(ev.pos, 'collect');
+            effect('collect', { sound: 'collectGreen', local: localOf(ev.pos), haptic: 'collect' });
+        } else if (ev.type === 'wasted') {
+            hitMarker = 1;
+            if (renderer) {
+                renderer.burst(ev.pos, 'split');
+                if (renderer.debris) renderer.debris(ev.pos, { size: 'crystal', color: pal.collectRadar });
+            }
+            effect('wasted', { sound: 'explosion', size: 'small', local: localOf(ev.pos) });
+        } else if (ev.type === 'split') {
+            if (!ev.byShip) hitMarker = 1;
+            if (renderer) {
+                renderer.burst(ev.pos, ev.byShip ? 'hit' : 'split');
+                if (renderer.debris) renderer.debris(ev.pos, { size: ev.size, color: pal.hazardRadar });
+            }
+            effect('split', { sound: 'explosion', size: ev.size, local: localOf(ev.pos), haptic: ev.byShip ? null : 'rockDestroyed' });
+        } else if (ev.type === 'hit' || ev.type === 'shieldHit') {
+            if (ev.type === 'hit') flashHit = 1;
+            if (ev.from) damage = { angle: damageAngle(qRotate(qConj(look.q), ev.from)), alpha: 1 };
+            effect(ev.type, { sound: ev.type === 'hit' ? 'hit' : null, haptic: ev.type });
+        } else if (ev.type === 'level') {
+            // Level 1 is the start of the game, not a level-up
+            const up = ev.level > 1;
+            effect('level', { sound: up ? 'levelUp' : null, haptic: up ? 'levelUp' : null });
+        } else if (ev.type === 'extraLife') effect('extraLife', { sound: 'extraLife' });
+        else if (ev.type === 'respawn') effect('respawn');
+        else if (ev.type === 'gameover') { effect('gameover', { haptic: 'gameOver' }); gameOver(); }
     }
 
     function frame(t) {
@@ -630,11 +798,32 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         frameCount++;
         frames++;
         if (now - fpsT >= 500) { fps = (frameCount * 1000) / (now - fpsT || 1); frameCount = 0; fpsT = now; }
+        // The frame-rate check (perf3d.js) watches the first seconds of play and supplies the
+        // 2 s average the render scale steps on; still too slow at the lowest scale: offer 2D.
+        // Never with &lowres3d=1 (software rendering on CI is always slow).
+        if (screen === 'playing' && !lowres) {
+            const d = perf.frame(dtReal, { renderScale, minScale: MIN_RENDER_SCALE });
+            if (d === 'offer-2d' && !perfPrompt && perf.final) {
+                perfPrompt = true;
+                pause();
+                $('p3-perf').classList.remove('p3-hidden');
+            }
+        }
         if (screen === 'playing' && !lowres && now - scaleT >= 1000) {
             scaleT = now;
-            const n = nextRenderScale(renderScale, fps, goodSeconds);
+            const n = nextRenderScale(renderScale, perf.fps || fps, goodSeconds);
             goodSeconds = n.goodSeconds;
             if (n.scale !== renderScale) { renderScale = n.scale; resize(); }
+        }
+        // Graphics context that never came back (or keeps getting lost): back to 2D
+        const fb = ctxLoss.tick(now / 1000);
+        if (fb && fb.fallback) {
+            say(fb.message, 1e9);
+            fallbackAt = now + FALLBACK_MS;
+        }
+        if (fallbackAt && now >= fallbackAt) {
+            fallbackAt = 0;
+            win.location.replace(URL_2D);
         }
 
         pollPad();
@@ -661,7 +850,9 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         if (screen === 'playing') {
             acc += dtReal;
             let n = 0;
-            while (acc >= SIM.dt && n < MAX_STEPS) { stepOnce(SIM.dt, device); acc -= SIM.dt; n++; }
+            // A tiny tolerance: a 60 Hz frame (16.67 ms) always runs exactly one step, whatever
+            // the rounding of the frame clock
+            while (acc >= SIM.dt - 1e-9 && n < MAX_STEPS) { stepOnce(SIM.dt, device); acc -= SIM.dt; n++; }
             if (n === MAX_STEPS) acc = 0;
             steps += n;
         }
@@ -670,6 +861,11 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         flashHit = Math.max(0, flashHit - dtReal * 2);
         flashCollect = Math.max(0, flashCollect - dtReal * 3);
         damage.alpha = Math.max(0, damage.alpha - dtReal * 1.2);
+        hitMarker = Math.max(0, hitMarker - dtReal * 4);
+        if (audio) {
+            guard(() => audio.thrust(screen === 'playing' && sim.ship.alive && (held.thrust || keys.has('thrust') || pad.thrust)));
+            guard(() => audio.update({ screen, lives: sim.lives }));
+        }
 
         updateRadar(now);
         if (renderer) renderer.render({ shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt: dtReal });
@@ -678,21 +874,29 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
 
     /**
      * Radar circles and edge markers (the nearest crystal; every remaining rock once a level is
-     * down to its last few); a short buzz and the threat sound when a new red rock threatens.
+     * down to its last few), the crosshair target; a short buzz and the threat sound when a new
+     * red rock threatens.
      */
     function updateRadar(now) {
         const o = { size: sim.size, range: sim.world.fogFar, aspect: cssW / cssH };
         const ship = { pos: sim.ship.pos, q: look.q, vel: sim.ship.vel };
         few = sim.levels && lastFew(rocksLeft(sim));
         radar = buildRadar(ship, sim.rocks, { ...o, all: few, clusters: sim.levels });
-        edge = few ? null : edgeMarker(ship, sim.rocks, o);
+        // Crystal arrow by the adaptive level (assist3d.js): always / none on screen / last few only
+        const arrow = crystalArrowOptions(sim.assist, few);
+        edge = arrow ? edgeMarker(ship, sim.rocks, { ...o, always: arrow.always }) : null;
         markers = few ? remainingMarkers(ship, sim.rocks, o) : [];
+        // Target brackets (always) and the lead marker (Assisting and Balanced)
+        target = sim.ship.alive ? crosshairTarget(ship, aimTargets(sim), { size: sim.size, range: sim.world.fogFar }) : null;
+        targetScreen = target ? projectLocal(target.local, cssW, cssH) : null;
+        const lead = target && sim.assist.lead ? leadPoint(target, SIM.bulletSpeed) : null;
+        leadScreen = lead ? projectLocal(lead, cssW, cssH) : null;
         const ids = new Set();
         for (const b of [...radar.front, ...radar.rear]) if (b.threat) ids.add(b.id);
         if (screen === 'playing' && [...ids].some((id) => !threatIds.has(id)) && now - threatBuzzAt > 1000) {
             threatBuzzAt = now;
-            vibrate(25);
-            sound('threat');
+            // The radar flash is always on; the tone and vibration follow the adaptive level
+            effect('threat', { sound: sim.assist.threatTone ? 'threat' : null, haptic: sim.assist.threatVibrate ? 'threat' : null });
         }
         threatIds = ids;
     }
@@ -702,10 +906,17 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
         drawFlash(hctx, cssW, cssH, flashHit, flashCollect);
         if (sim.ship.alive) drawCrosshair(hctx, cssW, cssH, sim.ship.invulnerable > 0 ? 'rgba(255,140,140,0.9)' : undefined);
         drawDamage(hctx, cssW, cssH, damage.angle, damage.alpha);
+        if (screen === 'playing') {
+            drawTargetBrackets(hctx, targetScreen, target ? target.radius : 0);
+            drawLeadMarker(hctx, leadScreen);
+            drawHitMarker(hctx, cssW, cssH, hitMarker);
+        }
+        const adj = adaptiveInfo(sim);
         drawHudText(hctx, cssW, cssH, {
             score: sim.score, lives: sim.lives, mode: look.mode, chosenMode: chosenMode(), levelHorizon: look.level,
             level: sim.levels ? sim.level : 0, rocksLeft: sim.levels ? rocksLeft(sim) : undefined,
             view: VIEW_DISTANCES[viewName()].label, fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
+            adjustment: adj.text, adjustmentColor: adj.color,
         }, { top: 0, left: 0, right: 0 });
         const pal = findPalette(settings.get('palette'));
         if (screen === 'playing') {
@@ -764,6 +975,18 @@ export async function startPrototype({ win = window, createRenderer = null, onSo
             invulnerable: r4(sim.ship.invulnerable),
             combo: { count: sim.combo.count, multiplier: sim.combo.multiplier },
             damage: { angle: r4(damage.angle), alpha: r4(damage.alpha) },
+            difficulty: sim.difficulty,
+            adjustment: (() => { const a = adaptiveInfo(sim); return { ...a, performance: r4(a.performance) }; })(),
+            assist: { ...sim.assist },
+            target: target ? {
+                id: target.id, dist: Math.round(target.dist), angle: r4(target.angle), onScreen: !!targetScreen, lead: !!leadScreen,
+            } : null,
+            hitMarker: r4(hitMarker),
+            particles: renderer && renderer.particles !== undefined ? renderer.particles : null,
+            perf: { ...perf.snapshot(), prompt: perfPrompt },
+            contextLoss: ctxLoss.snapshot(),
+            audio: audio && audio.snapshot ? audio.snapshot() : null,
+            haptics: haptics && haptics.stats ? { ...haptics.stats } : null,
             lastFew: few,
             markers: markers.map((m) => ({ id: m.id, type: m.type, angle: r4(m.angle), dist: Math.round(m.dist) })),
             counts: simCounts(sim),

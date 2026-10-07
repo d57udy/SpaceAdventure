@@ -7,30 +7,37 @@
 // red rocks sit in clusters with the crystals, and some arrive during the level as incoming
 // rocks aimed at the ship. Each level is a fixed set of rocks; it ends when none is left.
 //
-// The adaptive difficulty (2D DynamicDifficulty, js/difficulty.js) is passed in as a plain
-// `dda` object with its modifier fields; anything missing counts as 1 (no adjustment).
+// The adaptive difficulty (2D DynamicDifficulty, js/difficulty.js createDynamicDifficulty) is
+// passed in as a `dda` object with its modifier fields (the tracker itself works too: only
+// the fields are read); anything missing counts as 1 (no adjustment).
 
-/** Easy / Medium / Hard: the 2D table (js/main.js Difficulty) plus the 3D incoming-rock timing. */
-export const DIFFICULTY_3D = Object.freeze({
-    easy: Object.freeze({
-        id: 'easy', name: 'Easy', asteroidSpeedMultiplier: 0.8, ufoSpawnMultiplier: 1.5, ufoAccuracy: 0.6,
-        startingLives: 4, scoreMultiplier: 0.75, incomingInterval: 8.5,
-    }),
-    medium: Object.freeze({
-        id: 'medium', name: 'Medium', asteroidSpeedMultiplier: 1.0, ufoSpawnMultiplier: 1.0, ufoAccuracy: 0.8,
-        startingLives: 3, scoreMultiplier: 1.0, incomingInterval: 5.5,
-    }),
-    hard: Object.freeze({
-        id: 'hard', name: 'Hard', asteroidSpeedMultiplier: 1.2, ufoSpawnMultiplier: 0.7, ufoAccuracy: 0.95,
-        startingLives: 2, scoreMultiplier: 1.5, incomingInterval: 4,
-    }),
-});
+import { Difficulty, createDynamicDifficulty } from '../difficulty.js';
+
+// Seconds between incoming rocks at level 1 (3D only; plan 07 §2.2)
+const INCOMING_INTERVAL = Object.freeze({ easy: 8.5, medium: 5.5, hard: 4 });
+
+/** Easy / Medium / Hard: the 2D table (js/difficulty.js Difficulty) plus the 3D incoming-rock timing. */
+export const DIFFICULTY_3D = Object.freeze(Object.fromEntries(Object.values(Difficulty).map((d) => [
+    d.id, Object.freeze({ ...d, incomingInterval: INCOMING_INTERVAL[d.id] }),
+])));
+export const DIFFICULTY_IDS_3D = Object.freeze(Object.keys(DIFFICULTY_3D));
 export const DEFAULT_DIFFICULTY_3D = 'medium';
 
 /** The 2D DynamicDifficulty modifier fields, all neutral. */
 export const NEUTRAL_DDA = Object.freeze({
     asteroidSpeedMod: 1, ufoSpawnMod: 1, ufoAccuracyMod: 1, powerUpSpawnMod: 1, greenRatioMod: 1, extraLifeThresholdMod: 1,
 });
+
+/**
+ * The 3D game's adaptive difficulty tracker: the 2D DynamicDifficulty, fresh. sim3d.js feeds
+ * it (shots, hits, crystals, deaths, score) and applies its modifiers; proto3d.js shows its
+ * level on the HUD and assist3d.js switches the aids on it.
+ */
+export function createAdaptive3d() {
+    const d = createDynamicDifficulty();
+    d.reset();
+    return d;
+}
 
 /** A full modifier set from a partial (or missing) one. */
 export function ddaOf(dda) {

@@ -11,18 +11,24 @@
 // - touching a red rock costs a life (the rock splits); a shield absorbs one hit and gives
 //   1 s of protection; after a lost life the ship is gone for 2 s, then respawns where it
 //   was with 3 s of protection and nearby rocks pushed out; extra life every 10000 points.
+// - the adaptive difficulty (the 2D DynamicDifficulty, `adaptive`) is fed as 2D feeds it:
+//   shots fired and hit, crystals spawned and collected, red rocks shot, deaths, score; its
+//   modifiers apply (incoming rock speed, crystal share and rock speed of the next level,
+//   the extra-life score; power-up and UFO modifiers are kept in s.dda for those systems)
+//   and its level switches the aids (assist3d.js: aim assist, collection radius).
 //
 // The ship's orientation comes from the look model (look.js); the simulation only reads it.
 
 import { mulberry32 } from '../rng.js';
 import { Combo } from '../players.js';
-import { vAdd, vScale, vLen, vSub, forwardOf, qIdentity } from './math3d.js';
+import { vAdd, vScale, vLen, vSub, forwardOf, qIdentity, DEG } from './math3d.js';
 import { worldFor, wrapPos, spawnField, splitRock, driftRocks, countRocks, nearestDelta } from './world3d.js';
 import { spheresOverlap, sweptHit } from './collide3d.js';
 import {
     RULES3D, levelPlan, planRockCount, difficultyOf, ddaOf, crystalScore, nextExtraLife, isBossLevel, DEFAULT_DIFFICULTY_3D,
 } from './rules3d.js';
 import { spawnLevel, createIncoming, spawnIncoming, steerIncoming, incomingInFlight, pushRocksAway } from './spawn3d.js';
+import { assistFor, aimAssist, isTarget } from './assist3d.js';
 
 export const SIM = Object.freeze({
     dt: 1 / 60,
@@ -44,11 +50,15 @@ export const SIM = Object.freeze({
  * @param {boolean} [o.field] - false: start with an empty world and no levels (tests place rocks themselves)
  * @param {string} [o.difficulty] - 'easy' | 'medium' | 'hard'
  * @param {number} [o.level] - starting level
- * @param {object} [o.dda] - adaptive difficulty modifiers (rules3d.js NEUTRAL_DDA fields)
+ * @param {object} [o.dda] - fixed adaptive difficulty modifiers (rules3d.js NEUTRAL_DDA fields)
+ * @param {object} [o.adaptive] - a live adaptive difficulty tracker (rules3d.js createAdaptive3d):
+ *   the sim feeds it and follows its modifiers and level (overrides `dda`)
+ * @param {string} [o.assist] - fixed aid level without a tracker ('assisting' | 'balanced' | 'challenging')
  * @param {number} [o.greens] / [o.reds] - field: a plain random field of these counts (no levels)
  */
 export function createSim({
     seed = 1, view = null, size, field = true, difficulty = DEFAULT_DIFFICULTY_3D, level = 1, dda = null, greens, reds, lives,
+    adaptive = null, assist = 'balanced',
 } = {}) {
     const world = worldFor(view);
     if (size === undefined) size = world.size;
@@ -60,7 +70,9 @@ export function createSim({
         size,
         time: 0,
         difficulty: diff.id,
-        dda: ddaOf(dda),
+        dda: ddaOf(adaptive || dda),
+        adaptive,
+        assist: assistFor(adaptive ? adaptive.getAdjustmentLevel() : assist),
         ship: {
             pos: [size / 2, size / 2, size / 2], vel: [0, 0, 0], q: qIdentity(),
             invulnerable: 0, shield: 0, respawn: 0, alive: true,
@@ -82,7 +94,7 @@ export function createSim({
         fireCooldown: 0,
         nextIdValue: 1,
         events: [],
-        stats: { collected: 0, wasted: 0, splits: 0, redsShot: 0, hits: 0, shieldHits: 0, shots: 0, levels: 0, bestCombo: 0 },
+        stats: { collected: 0, wasted: 0, splits: 0, redsShot: 0, hits: 0, shieldHits: 0, shots: 0, shotsHit: 0, assisted: 0, levels: 0, bestCombo: 0 },
     };
     if (s.levels) {
         startLevel(s, level);
@@ -124,6 +136,7 @@ function startLevel(s, level) {
     s.incoming = createIncoming(plan);
     s.plan = plan;
     s.banner = { text: `LEVEL ${level}`, t: RULES3D.bannerSeconds };
+    if (s.adaptive) s.adaptive.trackGreenSpawned(plan.greens);
     if (level > 1) s.ship.invulnerable = Math.max(s.ship.invulnerable, RULES3D.levelInvulnerable);
     emit(s, 'level', { level, rocks: planRockCount(plan) });
 }
@@ -138,16 +151,28 @@ export function levelBlocked(s) {
     return (s.ufos || []).some((u) => u.alive !== false && !u.friendly) || !!(s.boss && s.boss.alive !== false);
 }
 
+/** Hostile things a shot can be aimed at: red rocks and UFOs (assist3d.js isTarget). */
+export function aimTargets(s) {
+    return [...s.rocks.filter(isTarget), ...(s.ufos || []).filter(isTarget)];
+}
+
 function fire(s) {
     const f = forwardOf(s.ship.q);
+    // Aim assist (assist3d.js): a small correction toward a target near the nose, at fire time
+    const a = aimAssist({
+        from: s.ship.pos, dir: f, shipVel: s.ship.vel, targets: s.assist.aimDeg > 0 ? aimTargets(s) : null, size: s.size,
+        maxAngle: s.assist.aimDeg * DEG, range: s.world.bulletLife * SIM.bulletSpeed, bulletSpeed: SIM.bulletSpeed,
+    });
     s.bullets.push({
         id: nextId(s),
         pos: wrapPos(vAdd(s.ship.pos, vScale(f, SIM.shipRadius + 4)), s.size),
-        vel: vAdd(s.ship.vel, vScale(f, SIM.bulletSpeed)),
+        vel: vAdd(s.ship.vel, vScale(a.dir, SIM.bulletSpeed)),
         life: s.world.bulletLife,
     });
     s.stats.shots++;
-    emit(s, 'fire');
+    if (a.id !== null) s.stats.assisted++;
+    if (s.adaptive) s.adaptive.trackShotFired();
+    emit(s, 'fire', { assisted: a.id });
 }
 
 function removeRock(s, rock) {
@@ -162,7 +187,10 @@ function hitRed(s, rock, hitDir, byShip) {
     for (const p of pieces) if (rock.cluster) p.cluster = rock.cluster;
     s.rocks.push(...pieces);
     s.stats.splits++;
-    if (!byShip) s.stats.redsShot++;
+    if (!byShip) {
+        s.stats.redsShot++;
+        if (s.adaptive) s.adaptive.trackRedDestroyed();
+    }
     emit(s, 'split', { pos: rock.pos.slice(), size: rock.size, pieces: pieces.length, byShip: !!byShip, id: rock.id });
 }
 
@@ -183,6 +211,7 @@ function collect(s, rock) {
     });
     s.stats.collected++;
     s.stats.bestCombo = Math.max(s.stats.bestCombo, s.combo.count);
+    if (s.adaptive) s.adaptive.trackGreenCollected(s.combo.count);
     emit(s, 'collect', { pos: rock.pos.slice(), points: pts, size: rock.size, combo: s.combo.count, multiplier: s.combo.multiplier });
     if (r.milestone) emit(s, 'combo', { milestone: r.milestone, bonus: r.streakBonus });
     addScore(s, pts);
@@ -200,6 +229,7 @@ function shipHit(s, from) {
     }
     s.lives = Math.max(0, s.lives - 1);
     s.stats.hits++;
+    if (s.adaptive) s.adaptive.onPlayerDeath(); // 2D: immediate adjustment on a lost life
     const lost = s.combo.break();
     if (lost.lost) emit(s, 'comboLost', { count: lost.count });
     emit(s, 'hit', { pos: ship.pos.slice(), lives: s.lives, from });
@@ -286,7 +316,13 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
             }
         }
         if (s.levels) stepIncoming(s, dt);
+        // The adaptive difficulty's clock and periodic evaluation (2D: every frame of play)
+        if (s.adaptive) {
+            s.adaptive.tick(dt);
+            s.adaptive.evaluate(s.score);
+        }
     }
+    syncAdaptive(s);
 
     // Bullets: swept against every rock (earliest hit wins); crystals are destroyed, reds split
     for (let i = s.bullets.length - 1; i >= 0; i--) {
@@ -300,6 +336,8 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
         }
         if (best) {
             s.bullets.splice(i, 1);
+            s.stats.shotsHit++;
+            if (s.adaptive) s.adaptive.trackShotHit();
             if (best.kind === 'green') {
                 // As in 2D: a shot crystal is lost (no points)
                 removeRock(s, best);
@@ -322,7 +360,7 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
             const r = s.rocks[i];
             if (!r) continue;
             if (r.kind === 'green') {
-                if (spheresOverlap(ship.pos, SIM.shipRadius + SIM.pickupBonus, r.pos, r.radius, s.size)) collect(s, r);
+                if (spheresOverlap(ship.pos, pickupRadius(s), r.pos, r.radius, s.size)) collect(s, r);
             } else if (spheresOverlap(ship.pos, SIM.shipRadius, r.pos, r.radius, s.size)) {
                 const from = nearestDelta(ship.pos, r.pos, s.size);
                 hitRed(s, r, vSub([0, 0, 0], from), true);
@@ -338,6 +376,39 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
         startLevel(s, s.level + 1);
     }
     return s;
+}
+
+/** Ship radius for collecting crystals: generous, plus the Assisting bonus (assist3d.js). */
+export function pickupRadius(s) {
+    return (SIM.shipRadius + SIM.pickupBonus) * (1 + (s.assist ? s.assist.pickupBonus : 0));
+}
+
+/**
+ * Follow the adaptive tracker: its modifiers (s.dda) and aid level (s.assist). A new rock
+ * speed modifier applies to the incoming rocks still to come at once (the field's own drift
+ * and the crystal share change with the next level, as in 2D).
+ */
+function syncAdaptive(s) {
+    const a = s.adaptive;
+    if (!a) return;
+    const speedWas = s.dda.asteroidSpeedMod;
+    s.dda = ddaOf(a);
+    s.assist = assistFor(a.getAdjustmentLevel());
+    if (s.dda.asteroidSpeedMod !== speedWas && s.incoming && s.levels) {
+        s.incoming.speed = levelPlan(s.level, { difficulty: s.difficulty, dda: s.dda, boss: isBossLevel(s.level) }).incoming.speed;
+    }
+}
+
+/** The adaptive difficulty for the HUD and the test hook (Balanced, neutral without a tracker). */
+export function adaptiveInfo(s) {
+    const a = s.adaptive;
+    return {
+        level: s.assist.level,
+        text: a ? a.getAdjustmentText() : 'Balanced',
+        color: a ? a.getAdjustmentColor() : '#FFFFFF',
+        performance: a ? a.performanceScore : 0,
+        dda: { ...s.dda },
+    };
 }
 
 /** Counts for the HUD / test hook. */

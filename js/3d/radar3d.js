@@ -171,11 +171,13 @@ export function onScreen(local, aspect, margin = 0.92) {
 
 /**
  * Edge-of-screen marker for the nearest crystal, only when no crystal within the view
- * distance is on screen. angle: screen direction of the shortest turn (radians, 0 = right,
- * π/2 = up); dist: world distance.
+ * distance is on screen. always: whenever the nearest crystal itself is off screen (or
+ * beyond the view distance), even with another one in view (the Assisting aid, assist3d.js).
+ * angle: screen direction of the shortest turn (radians, 0 = right, π/2 = up); dist: world
+ * distance.
  * @returns {{ id, angle: number, dist: number } | null}
  */
-export function edgeMarker(ship, rocks, { size, range, aspect }) {
+export function edgeMarker(ship, rocks, { size, range, aspect, always = false }) {
     const inv = qConj(ship.q);
     let best = null;
     for (const r of rocks) {
@@ -183,10 +185,11 @@ export function edgeMarker(ship, rocks, { size, range, aspect }) {
         const delta = nearestDelta(ship.pos, r.pos, size);
         const dist = vLen(delta);
         const local = qRotate(inv, delta);
-        if (dist <= range && onScreen(local, aspect)) return null; // a crystal is in view
-        if (!best || dist < best.dist) best = { r, dist, local };
+        const visible = dist <= range && onScreen(local, aspect);
+        if (visible && !always) return null; // a crystal is in view
+        if (!best || dist < best.dist) best = { r, dist, local, visible };
     }
-    if (!best) return null;
+    if (!best || best.visible) return null;
     const [x, y] = best.local;
     // Straight behind with no sideways component: point down (turn either way)
     const angle = Math.hypot(x, y) < 1e-6 ? -Math.PI / 2 : Math.atan2(y, x);

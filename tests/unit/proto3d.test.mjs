@@ -78,8 +78,17 @@ function fakeEnv({ permission = null, screenAngle = 90, dpr = 3.5 } = {}) {
     };
     const orient = (alpha, beta, gamma) => winL.fire('deviceorientation', { alpha, beta, gamma });
     const worlds = [];
-    const fakeRenderer = () => ({ three: 'fake', drawCalls: 7, setSize() {}, render() {}, burst() {}, probeLitPixels: () => ({ lit: 1 }), setWorld(w) { worlds.push(w); } });
-    return { win, doc, byId, frames, orient, fakeRenderer, worlds, el: (id) => byId.get(id) };
+    const debris = [];
+    const renderers = [];
+    const fakeRenderer = () => {
+        const r = {
+            three: 'fake', drawCalls: 7, setSize() {}, render() {}, burst() {}, probeLitPixels: () => ({ lit: 1 }), setWorld(w) { worlds.push(w); },
+            debris(pos, o) { debris.push(o); }, get particles() { return debris.length; }, disposed: false, dispose() { this.disposed = true; },
+        };
+        renderers.push(r);
+        return r;
+    };
+    return { win, doc, byId, frames, orient, fakeRenderer, worlds, debris, renderers, el: (id) => byId.get(id) };
 }
 
 // Device angles for neutral ⊗ rel at a screen angle (inverse of deviceQuat)
@@ -91,11 +100,36 @@ function anglesFor(q, screen) {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-async function boot(opts) {
+async function boot(opts = {}) {
     globalThis.localStorage = undefined;
     const env = fakeEnv(opts);
-    await startPrototype({ win: env.win, createRenderer: env.fakeRenderer });
+    if (opts.search) {
+        env.win.location.search = opts.search;
+        env.win.location.href = 'http://x/' + opts.search;
+    }
+    await startPrototype({ win: env.win, createRenderer: env.fakeRenderer, ...(opts.start || {}) });
     return env;
+}
+
+/** Fake audio3d.js / haptics3d.js objects recording every call (no real audio in unit tests). */
+function fakeEffects() {
+    const calls = [];
+    const rec = (name) => (...args) => { calls.push([name, ...args]); };
+    const audio = {
+        play: rec('play'), explosion: rec('explosion'), thrust: rec('thrust'), update: rec('update'), unlock: rec('unlock'),
+        setRange: rec('setRange'), stopAll: rec('stopAll'), snapshot: () => ({ fake: true }),
+    };
+    const haptics = { event: rec('haptic'), stop: rec('hapticStop'), stats: { vibrations: 0 } };
+    const made = {};
+    return {
+        calls,
+        start: {
+            createAudio: async (o) => { made.audio = o; return audio; },
+            createHaptics: async (o) => { made.haptics = o; return haptics; },
+        },
+        made,
+        names: (kind) => calls.filter((c) => c[0] === kind).map((c) => c[1]),
+    };
 }
 
 test('pixel ratio cap and adaptive render scale', () => {
@@ -334,8 +368,11 @@ test('a real game (no test layout): level 1 field, rocks-left and incoming in th
     env.el('p3-mode-joystick').click();
     env.el('p3-start').click();
     await tick();
+    // Two frames: the second is 1/60 s and always runs one step (the loop's rounding tolerance),
+    // which drains the level-1 event (it used to depend on the frame clock's rounding)
     env.frames(2);
     assert.equal(g().screen, 'playing');
+    assert.equal(g().steps, 1);
     assert.ok(sounds.includes('level'), `sounds: ${sounds}`);
     // HUD text carries the level and rocks left
     const f = hud3d.formatHud({ score: 120, lives: 2, level: 3, rocksLeft: 17, mode: 'joystick' });
@@ -352,4 +389,156 @@ test('damage direction: screen angle of the cause in the ship frame', () => {
     hud3d.drawDamage(ctx2d, 800, 400, NaN, 1);
     hud3d.drawBanner(ctx2d, 800, 400, { text: 'LEVEL 2', sub: 'x', t: 0.2 });
     hud3d.drawBanner(ctx2d, 800, 400, null);
+});
+
+test('the frame loop: every 1/60 s frame runs exactly one step, wherever the clock starts', async () => {
+    for (const ms of [1000 / 60, 16.666666666666664, 16.66666666666667]) {
+        const env = await boot({});
+        const g = () => env.win.__spaceAdventure.game3d;
+        env.el('p3-mode-joystick').click();
+        env.el('p3-start').click();
+        await tick();
+        env.frames(1, ms);
+        env.frames(30, ms);
+        assert.equal(g().steps, 30, `${ms} ms frames`);
+    }
+});
+
+test('difficulty row: Medium by default, the shared setting, a new game with the difficulty\'s lives', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().difficulty, 'medium');
+    assert.equal(env.el('p3-diff-medium').getAttribute('aria-pressed'), 'true');
+    env.el('p3-diff-hard').click();
+    assert.equal(g().difficulty, 'hard');
+    assert.equal(g().lives, 2);
+    assert.equal(env.el('p3-diff-hard').getAttribute('aria-pressed'), 'true');
+    assert.equal(env.el('p3-diff-medium').getAttribute('aria-pressed'), 'false');
+    // During a game: back to the menu with a new game
+    env.el('p3-start').click();
+    await tick();
+    env.frames(5);
+    env.el('p3-pause').click();
+    env.el('p3-diff-easy').click();
+    assert.equal(g().screen, 'menu');
+    assert.equal(g().lives, 4);
+    assert.match(env.el('p3-status').textContent, /Difficulty: Easy/);
+});
+
+test('adaptive difficulty and aids in the hook: Balanced at the start, the rock ahead bracketed', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().adjustment.text, 'Balanced');
+    assert.equal(g().adjustment.level, 'balanced');
+    assert.deepEqual(g().adjustment.dda, {
+        asteroidSpeedMod: 1, ufoSpawnMod: 1, ufoAccuracyMod: 1, powerUpSpawnMod: 1, greenRatioMod: 1, extraLifeThresholdMod: 1,
+    });
+    assert.equal(g().assist.aimDeg, 2);
+    assert.equal(g().assist.crystalArrow, 'offscreen');
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    env.frames(2);
+    // layout3d=range: the red rock 300 straight ahead is the crosshair target; it doesn't move
+    const t = g().target;
+    assert.ok(t && t.onScreen && t.dist === 300, JSON.stringify(t));
+    assert.equal(t.lead, false);
+    assert.equal(g().perf.decision, 'measuring');
+    assert.equal(g().contextLoss.lost, false);
+    // HUD label as in 2D
+    const f = hud3d.formatHud({ score: 0, lives: 3, mode: 'joystick', adjustment: 'Assisting' });
+    assert.equal(f.difficulty, 'Difficulty: Assisting');
+    assert.equal(hud3d.formatHud({ score: 0, lives: 3, mode: 'joystick' }).difficulty, '');
+    hud3d.drawTargetBrackets(ctx2d, { x: 10, y: 10, scale: 1 }, 20);
+    hud3d.drawTargetBrackets(ctx2d, null, 20);
+    hud3d.drawLeadMarker(ctx2d, { x: 10, y: 10 });
+    hud3d.drawHitMarker(ctx2d, 800, 400, 0.5);
+});
+
+test('sound and vibration: game events reach audio3d / haptics3d; gestures unlock audio; pause stops loops', async () => {
+    const fx = fakeEffects();
+    const env = await boot({ start: fx.start });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.ok(fx.made.audio.settings && fx.made.audio.range > 0, 'built with the settings and the view distance');
+    assert.equal(typeof fx.made.haptics.usingController, 'function');
+    assert.equal(fx.made.haptics.nav, env.win.navigator);
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    env.win.fire('keydown', { code: 'KeyX', repeat: false, preventDefault() {} }); // a gesture (the fake DOM has no bubbling to the root)
+    assert.ok(fx.calls.some((c) => c[0] === 'unlock'));
+    env.el('p3-fire').pointer('pointerdown');
+    for (let i = 0; i < 60 && !fx.names('explosion').length; i++) env.frames(1);
+    assert.ok(g().hitMarker > 0, 'hit marker on a hit');
+    env.frames(20);
+    env.el('p3-fire').pointer('pointerup');
+    assert.ok(fx.names('play').includes('shoot'));
+    assert.ok(fx.names('explosion').includes('large'), 'the large rock split');
+    assert.ok(fx.names('haptic').includes('rockDestroyed'));
+    assert.ok(env.debris.length > 0 && env.debris[0].color, 'debris in the palette colour');
+    assert.equal(env.debris[0].size, 'large');
+    assert.ok(g().particles > 0);
+    assert.ok(fx.names('update').length > 0, 'music mood every frame');
+    env.el('p3-thrust').pointer('pointerdown');
+    env.frames(2);
+    assert.ok(fx.calls.some((c) => c[0] === 'thrust' && c[1] === true));
+    env.el('p3-pause').click();
+    assert.ok(fx.calls.some((c) => c[0] === 'stopAll'));
+    assert.ok(fx.calls.some((c) => c[0] === 'hapticStop'));
+    env.el('p3-view-normal').click();
+    assert.ok(fx.calls.some((c) => c[0] === 'setRange'));
+});
+
+test('no Web Audio (unit tests, old browsers): the game runs silently', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().audio, null);
+    env.el('p3-start').click();
+    await tick();
+    env.frames(10);
+    assert.ok(g().steps > 0);
+});
+
+test('graphics context loss: pause, rebuild on restore; no restore in time: back to 2D with a message', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    env.frames(5);
+    let prevented = false;
+    env.el('p3-canvas').fire('webglcontextlost', { preventDefault() { prevented = true; } });
+    assert.ok(prevented, 'preventDefault: the browser may restore it');
+    assert.equal(g().screen, 'paused');
+    assert.match(g().message, /Graphics reset/);
+    assert.equal(g().contextLoss.lost, true);
+    env.el('p3-canvas').fire('webglcontextrestored');
+    assert.equal(env.renderers.length, 2, 'renderer rebuilt');
+    assert.equal(env.renderers[0].disposed, true);
+    assert.equal(g().contextLoss.lost, false);
+    // Lost again and never restored: after 3 s, the message, then the 2D game
+    env.el('p3-canvas').fire('webglcontextlost', { preventDefault() {} });
+    env.frames(400, 20);
+    assert.equal(g().contextLoss.gaveUp, true);
+    assert.match(g().message, /Switched to the 2D game/);
+    assert.equal(env.win.location.replaced, './?2d=1');
+});
+
+test('slow device: still slow at the lowest render scale offers 2D; Stay keeps 3D, Switch opens 2D', async () => {
+    const env = await boot({});
+    const g = () => env.win.__spaceAdventure.game3d;
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+    env.frames(400, 60); // about 16 fps for 24 s
+    assert.equal(g().renderScale, 0.5);
+    assert.equal(g().perf.decision, 'offer-2d');
+    assert.equal(g().perf.prompt, true);
+    assert.equal(g().screen, 'paused');
+    assert.equal(env.el('p3-perf').classList.contains('p3-hidden'), false);
+    env.el('p3-perf-stay').click();
+    assert.equal(env.el('p3-perf').classList.contains('p3-hidden'), true);
+    assert.equal(g().perf.decision, 'ok');
+    env.el('p3-perf-switch').click();
+    assert.equal(env.win.location.replaced, './?2d=1');
 });

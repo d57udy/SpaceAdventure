@@ -25,12 +25,18 @@ export const SETTING_DEFS = Object.freeze({
     mpFireSideB: enumDef(['outer', 'inner'], 'outer'), // touch player in zone b (right / top)
     mpStereo: boolDef(true), // pan each player's sounds to their side (side by side)
     renderQuality: enumDef(['auto', 'sharp', 'fast'], 'auto'),
+    difficulty: enumDef(['easy', 'medium', 'hard'], 'medium'), // Easy / Medium / Hard (js/difficulty.js ids); the 3D start screen sets it
     // 3D cockpit prototype (?3d=1, docs/plans/06-3d-mode.md §8)
     control3d: enumDef(['direct', 'rate', 'joystick'], 'direct'),
     levelHorizon3d: boolDef(false),
     sensitivity3d: intDef(1, 10, 5),
     sensor3d: enumDef(['auto', 'event'], 'auto'), // auto: RelativeOrientationSensor when available
     viewDistance3d: enumDef(['normal', 'far', 'veryfar'], 'far'), // world size and fog (js/3d/world3d.js)
+    // 3D menus (js/3d/ui3d.js, docs/plans/07-3d-game.md §4)
+    invert3d: boolDef(false), // invert up/down (sticks, mouse, controller)
+    fov3d: intDef(60, 95, 70), // vertical field of view, degrees (the Settings row steps by 5)
+    vignette3d: boolDef(true), // darken the screen edges during fast turns
+    leftHanded3d: boolDef(false), // mirrored game buttons: Fire on the left, Thrust on the right
 });
 
 export const SETTING_NAMES = Object.freeze(Object.keys(SETTING_DEFS));
