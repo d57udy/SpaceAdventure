@@ -2,7 +2,7 @@
 
 An optional first-person 3D mode next to the existing 2D game. On phones, the way you hold the device sets where the ship looks; on-screen Thrust and Fire buttons fly and shoot. 2D stays the default (and the choice for slower devices). 3D is single-player only at first. It must keep working on free GitHub Pages and in the installed app.
 
-Status: **Phase 0 prototype built (7 October 2026)**, waiting for the owner's test on real phones. Two research passes (technology; game design and architecture) are merged below; the owner's decisions are in §8, and what Phase 0 contains is in §10.
+Status: **Phase 0 prototype built (7 October 2026)**; the full build is planned in [07-3d-game.md](07-3d-game.md), which replaces the roadmap in §6. Two research passes (technology; game design and architecture) are merged below; the owner's decisions are in §8, and what Phase 0 contains is in §10.
 
 ## Summary
 
