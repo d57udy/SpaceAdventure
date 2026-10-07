@@ -2443,6 +2443,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // Hidden 3D prototype (docs/plans/06-3d-mode.md, Phase 0): ?3d=1 hands the page to
     // js/3d/proto3d.js. Dynamic import, so the 2D game never loads any 3D file.
     if (new URLSearchParams(location.search).get('3d') === '1') {
+        // Still register the service worker, so a first visit via ?3d=1 installs the offline
+        // cache too. initPwa creates no DOM; no 2D UI (toast, app bar) is set up here. The
+        // state is never 'safe', so an update is never applied while the prototype runs.
+        try {
+            pwa = initPwa({ getState: () => 'playing' });
+        } catch (err) {
+            console.error('[3d] PWA setup failed:', err);
+        }
+        const hook3d = window.__spaceAdventure || (window.__spaceAdventure = {});
+        Object.defineProperty(hook3d, 'pwa', { get: () => (pwa ? pwa.getPwaState() : null), configurable: true, enumerable: true });
         import('./3d/proto3d.js').then((m) => m.startPrototype()).catch((err) => {
             console.error('[3d] prototype failed to load, back to 2D:', err);
             location.replace(location.pathname);
