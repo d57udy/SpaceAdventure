@@ -488,12 +488,12 @@ function hostileHits(s) {
     if (s.boss && s.boss.touches(ship.pos, SIM.shipRadius)) shipHit(s, nearestDelta(ship.pos, s.boss.state.pos, s.size), 'boss');
 }
 
-/** Incoming rocks: send the next when due (at once when everything else is cleared), steer the hidden ones. */
+/** Incoming rocks: send the next when due (at once when everything else is cleared), steer the ones on their way. */
 function stepIncoming(s, dt) {
     const inc = s.incoming;
     if (!inc) return;
-    const lock = s.world.fogNear; // fully visible from here: flies straight
-    for (const r of s.rocks) if (r.incoming) steerIncoming(r, s.ship.pos, s.ship.vel, s.size, lock);
+    const lock = s.world.fogNear; // fully visible from here: homes in at the level's turn rate
+    for (const r of s.rocks) if (r.incoming) steerIncoming(r, s.ship.pos, s.ship.vel, s.size, lock, dt);
     if (inc.left <= 0 || !s.ship.alive) return;
     inc.timer -= dt;
     const others = s.rocks.length - incomingInFlight(s.rocks);

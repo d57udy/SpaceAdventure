@@ -2,8 +2,10 @@
 // Balance harness for the 3D game (docs/plans/07-3d-game.md §2.1, §6.2). Runs the pure
 // simulation (js/3d/sim3d.js) headless for seeded minutes with two scripted pilots and
 // reports how often danger shows up:
-//   - 'nododge': flies straight at the nearest crystal and never reacts to danger; once the
-//     crystals are gone it hunts the remaining red rocks and UFOs (a UFO blocks the level end);
+//   - 'nododge': keeps thrusting toward the nearest crystal (never slower than
+//     PILOT.keepMoving, so it is always moving and changing direction, as players do) and never
+//     reacts to danger; once the crystals are gone it hunts the remaining red rocks and UFOs (a
+//     UFO blocks the level end);
 //   - 'dodge': the same, but it shoots red rocks and UFOs in its way, and after a human
 //     reaction time turns to shoot a threat in front of it, or flies across the threat's path
 //     when it is not. UFO shots can only be dodged; they glow, so it sees them from the view
@@ -12,6 +14,8 @@
 // boss shots heading for the ship. Lives are unlimited here so the rates stay measurable.
 //
 // Usage: node scripts/balance3d.mjs [--seconds 180] [--seeds 4] [--difficulty medium] [--view far] [--level 1]
+//        node scripts/balance3d.mjs --levels 1-6 [--seconds 180] [--seeds 16] [--difficulty medium]
+// (--levels: one row per difficulty and pilot, a life lost every N s at each starting level)
 // tests/unit/balance3d.test.mjs checks the plan's targets with a short run.
 
 import { pathToFileURL } from 'node:url';
@@ -32,6 +36,7 @@ export const PILOT = Object.freeze({
     standOff: 450,                  // approach a red rock to this distance, then shoot it
     cruise: 220,                    // cruising speed toward a target
     approachGain: 0.8,              // wanted closing speed per unit of distance (slows down near the target)
+    keepMoving: 180,                // careless pilot: never slower than this toward a crystal
     fixDeadband: 25,                // velocity error below which the nose points at the target instead
     threatSample: 6,                // steps between threat samples (0.1 s)
     reaction: 0.6,                  // s: the dodge pilot reacts to a threat this long after it appears
@@ -147,8 +152,10 @@ export function pilotInput(s, kind, q, dt, threatList) {
     const shoots = kind === 'dodge' || !crystal;
     // Steer by velocity, as a player does: the ship can only brake by turning and thrusting,
     // so aim the nose at the velocity correction while it is large, else at the target
+    // The careless pilot keeps its speed up through the crystals, as players do
     const gap = crystal ? target.dist : target.dist - PILOT.standOff;
-    const want = vScale(vNorm(target.d), clamp(gap * PILOT.approachGain, 0, PILOT.cruise));
+    const slowest = kind === 'dodge' || !crystal ? 0 : PILOT.keepMoving;
+    const want = vScale(vNorm(target.d), clamp(gap * PILOT.approachGain, slowest, PILOT.cruise));
     const fix = vSub(want, s.ship.vel);
     if (vLen(fix) > PILOT.fixDeadband) {
         const nq = turnToward(q, fix, PILOT.turnRate * dt);
@@ -308,6 +315,21 @@ function main(argv) {
     const view = arg('view', 'far');
     const level = Number(arg('level', 1));
     const diffs = arg('difficulty', 'easy,medium,hard').split(',');
+    const levels = arg('levels', null);
+    if (levels) {
+        const [lo, hi] = levels.split('-').map(Number);
+        for (const difficulty of diffs) {
+            for (const pilot of ['nododge', 'dodge']) {
+                const row = [];
+                for (let L = lo; L <= (hi || lo); L++) {
+                    const a = averagePilot({ seconds, pilot, difficulty, view, level: L }, seeds);
+                    row.push(`L${L} ${(60 / Math.max(a.hitsPerMin, 1e-9)).toFixed(0)} s`);
+                }
+                console.log(`${difficulty.padEnd(6)} ${pilot.padEnd(7)} life lost every: ${row.join(', ')}`);
+            }
+        }
+        return;
+    }
     for (const difficulty of diffs) {
         let u = { shots: 0, hits: 0, expected: 0, outOfReach: 0 };
         for (let i = 1; i <= seeds; i++) {

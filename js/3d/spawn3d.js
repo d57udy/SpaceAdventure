@@ -7,7 +7,9 @@
 // - Incoming: part of the level's fixed set that arrives during the level, from just beyond
 //   the fog, aimed at where the ship will be (plus a miss offset). While an incoming rock is
 //   still in the fog (faint or hidden) it keeps re-aiming; once it is fully visible (the fog
-//   start) it flies straight, like every rock in 2D.
+//   start) it homes in with a turn rate that grows with the level, so a ship that keeps
+//   moving is still chased. In the final approach (RULES3D.incomingFinal units or
+//   incomingFinalTime seconds before the closest approach) it flies straight, so a late dodge works.
 //
 // Nothing refills: the level ends when every rock (and crystal) is gone, as in 2D.
 
@@ -110,6 +112,7 @@ export function createIncoming(plan) {
         interval: plan.incoming.interval,
         speed: plan.incoming.speed.slice(),
         missFactor: plan.incoming.miss ?? RULES3D.incomingMiss,
+        turnRate: (plan.incoming.turnRate ?? 0) * Math.PI / 180, // rad/s
         sizeMix: plan.incoming.sizeMix,
         sent: 0,
     };
@@ -165,31 +168,62 @@ export function spawnIncoming(rand, inc, { shipPos, shipVel, size, distance, nex
     const reach = (rock.radius + shipRadius) * (inc.missFactor ?? RULES3D.incomingMiss);
     const miss = vScale(perpendicular(rand, dir), reach * Math.sqrt(rand()));
     rock.vel = aimVelocity(pos, rockSpeed, shipPos, shipVel, size, miss);
-    rock.incoming = { speed: rockSpeed, miss, locked: false, since: time };
+    rock.incoming = { speed: rockSpeed, miss, turnRate: inc.turnRate ?? 0, homing: false, locked: false, since: time };
     return rock;
 }
 
 /**
- * Re-aim an incoming rock while it is still in the fog (farther than `lockDistance`, the fog
- * start); once it is fully visible it flies straight. It stops counting as incoming after its closest approach.
+ * Turn `v` toward the direction `want` by at most `maxAngle` radians, keeping its length.
+ */
+export function turnVelocity(v, want, maxAngle) {
+    const speed = vLen(v);
+    const u = vScale(v, 1 / speed);
+    const w = vNorm(want);
+    const c = Math.max(-1, Math.min(1, vDot(u, w)));
+    const angle = Math.acos(c);
+    if (angle <= maxAngle) return vScale(w, speed);
+    // The part of w across u (any perpendicular when w points straight back)
+    let p = vSub(w, vScale(u, c));
+    if (vLen(p) < 1e-9) p = vCross(u, Math.abs(u[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]);
+    p = vNorm(p);
+    return vScale(vAdd(vScale(u, Math.cos(maxAngle)), vScale(p, Math.sin(maxAngle))), speed);
+}
+
+/**
+ * Steer an incoming rock. In the fog (farther than `lockDistance`, the fog start) it re-aims
+ * exactly; once visible (`homing`) it turns toward the aim point at most its turn rate × dt (speed
+ * unchanged); in the final approach it flies straight for good (`locked`). It stops counting
+ * as incoming after its closest approach, and is never steered once past the ship.
  * @returns {boolean} still on its way in
  */
-export function steerIncoming(rock, shipPos, shipVel, size, lockDistance) {
+export function steerIncoming(rock, shipPos, shipVel, size, lockDistance, dt = 0) {
     const inc = rock.incoming;
     if (!inc) return false;
     const d = nearestDelta(rock.pos, shipPos, size); // rock → ship
-    if (!inc.locked) {
-        if (vLen(d) > lockDistance) {
+    const dist = vLen(d);
+    if (!inc.homing && !inc.locked) {
+        if (dist > lockDistance) {
             rock.vel = aimVelocity(rock.pos, inc.speed, shipPos, shipVel, size, inc.miss);
             return true;
         }
-        inc.locked = true;
+        inc.homing = true;
     }
+    const rel = vSub(rock.vel, shipVel);
+    const closing = vDot(d, rel);
     // Past the closest approach: an ordinary rock now
-    if (vDot(d, vSub(rock.vel, shipVel)) <= 0) {
+    if (closing <= 0) {
         rock.incoming = null;
         return false;
     }
+    if (inc.locked) return true;
+    // Final approach: from here it flies straight
+    const tClosest = closing / Math.max(1e-9, vDot(rel, rel));
+    if (!(inc.turnRate > 0) || dist <= RULES3D.incomingFinal || tClosest <= RULES3D.incomingFinalTime) {
+        inc.locked = true;
+        return true;
+    }
+    const want = aimVelocity(rock.pos, inc.speed, shipPos, shipVel, size, inc.miss);
+    rock.vel = turnVelocity(rock.vel, want, inc.turnRate * dt);
     return true;
 }
 

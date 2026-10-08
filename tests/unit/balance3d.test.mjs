@@ -2,10 +2,12 @@
 // headless harness (scripts/balance3d.mjs) on short seeded runs so a change can't silently
 // make the game trivial or unfair again.
 //
-// With UFOs (Phase 2 and 3) the bands are the plan's full targets (Medium, level 1, Far) with
-// a tolerance for the short seeded runs: a threat every 6 to 10 s, the careless pilot losing a
-// life every 30 to 60 s (± 10 %), the dodging pilot every 2 to 3 minutes (± 20 %, it is a
-// simple bot). The measured numbers are in plan 07 §2.1.
+// The bands are the plan's targets (Medium, Far, owner feedback 8 October 2026: more danger,
+// growing with the level) with a tolerance for the short seeded runs: the careless pilot
+// (always moving toward crystals) loses a life every 30 to 40 s at level 1, 22 to 30 s at
+// level 3 and 15 to 22 s at level 5 (± 10 %); the dodging pilot every 75 to 120 s at level 1
+// (± 20 %, it is a simple bot) and clearly more often at levels 3 and 5. The measured numbers
+// are in plan 07 §2.1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { averagePilot, runPilot, turnToward, leadDirection, ufoHitCheck, PILOT } from '../../scripts/balance3d.mjs';
@@ -29,26 +31,46 @@ test('pilot helpers: turning is rate-limited; the lead meets a moving target', (
     assert.ok(vLen(vSub(vScale(rel, t), d)) < 1, 'hits');
 });
 
-test('Medium, level 1: a threat every 6 to 10 s; careless pilot loses a life every 30 to 60 s, the dodging pilot every 2 to 3 min', () => {
-    const careless = averagePilot({ seconds: SECONDS, pilot: 'nododge', difficulty: 'medium', view: 'far' }, SEEDS);
-    const dodge = averagePilot({ seconds: SECONDS, pilot: 'dodge', difficulty: 'medium', view: 'far' }, SEEDS);
-    const msg = `threats ${careless.threatsPerMin.toFixed(2)}/min, lives lost ${careless.hitsPerMin.toFixed(2)} vs ${dodge.hitsPerMin.toFixed(2)}/min`;
-    assert.ok(careless.threatsPerMin >= 6 && careless.threatsPerMin <= 10, msg);
-    assert.ok(careless.hitsPerMin >= 0.9 && careless.hitsPerMin <= 2.2, msg);
-    assert.ok(dodge.hitsPerMin >= 60 / 216 && dodge.hitsPerMin <= 60 / 96, msg);
-    assert.ok(dodge.hitsPerMin < careless.hitsPerMin * 0.7, msg);
+// One measurement per pilot, difficulty and level, shared by the tests below (8 seeds × 3
+// minutes; the dodging pilot's level 3 and 5 rates need 16 seeds to be steady)
+const cache = new Map();
+function measure(pilot, difficulty, level, seeds = SEEDS) {
+    const key = `${pilot} ${difficulty} ${level} ${seeds}`;
+    if (!cache.has(key)) cache.set(key, averagePilot({ seconds: SECONDS, pilot, difficulty, view: 'far', level }, seeds));
+    return cache.get(key);
+}
+const lifeEvery = (a) => 60 / Math.max(a.hitsPerMin, 1e-9);
+
+test('Medium, level 1: a threat every 5 to 10 s; careless pilot loses a life every 30 to 40 s, the dodging pilot every 75 to 120 s', () => {
+    const careless = measure('nododge', 'medium', 1);
+    const dodge = measure('dodge', 'medium', 1);
+    const msg = `threat every ${(60 / careless.threatsPerMin).toFixed(1)} s, a life every ${lifeEvery(careless).toFixed(0)} vs ${lifeEvery(dodge).toFixed(0)} s`;
+    assert.ok(careless.threatsPerMin >= 6 && careless.threatsPerMin <= 12, msg);
+    assert.ok(lifeEvery(careless) >= 27 && lifeEvery(careless) <= 44, msg);
+    assert.ok(lifeEvery(dodge) >= 60 && lifeEvery(dodge) <= 144, msg);
+    assert.ok(lifeEvery(dodge) > lifeEvery(careless) * 1.5, msg);
     // Collecting works: most of the level's crystals within 3 minutes
     assert.ok(careless.collected >= 10, `crystals ${careless.collected}`);
 });
 
-test('difficulty orders the danger: Easy < Medium < Hard', () => {
-    // 12 seeds: lives lost come in whole numbers per run, so 4 seeds could tie Medium and Hard
-    const easy = averagePilot({ seconds: SECONDS, pilot: 'nododge', difficulty: 'easy', view: 'far' }, 12);
-    const medium = averagePilot({ seconds: SECONDS, pilot: 'nododge', difficulty: 'medium', view: 'far' }, 12);
-    const hard = averagePilot({ seconds: SECONDS, pilot: 'nododge', difficulty: 'hard', view: 'far' }, 12);
-    assert.ok(easy.threatsPerMin < hard.threatsPerMin, `${easy.threatsPerMin} < ${hard.threatsPerMin}`);
-    assert.ok(easy.hitsPerMin < medium.hitsPerMin && medium.hitsPerMin < hard.hitsPerMin,
-        `${easy.hitsPerMin} < ${medium.hitsPerMin} < ${hard.hitsPerMin}`);
+test('Medium: danger grows with the level (careless 22 to 30 s at level 3, 15 to 22 s at level 5; dodging clearly more often)', () => {
+    const c = [1, 3, 5].map((L) => lifeEvery(measure('nododge', 'medium', L)));
+    const d = [1, 3, 5].map((L) => lifeEvery(measure('dodge', 'medium', L, 16)));
+    const msg = `careless ${c.map((x) => x.toFixed(0)).join(' / ')} s, dodging ${d.map((x) => x.toFixed(0)).join(' / ')} s at levels 1 / 3 / 5`;
+    assert.ok(c[1] >= 20 && c[1] <= 33, msg);
+    assert.ok(c[2] >= 13.5 && c[2] <= 24, msg);
+    assert.ok(c[0] > c[1] && c[1] > c[2], msg);
+    // Level 1 → 5: 10 to 30 % more often per level
+    const growth = c[0] / c[2];
+    assert.ok(growth >= 1.1 ** 4 && growth <= 1.3 ** 4, `${msg}: × ${growth.toFixed(2)}`);
+    assert.ok(d[0] > d[1] && d[1] > d[2] && d[2] < d[0] * 0.7, msg);
+});
+
+test('difficulty orders the danger: Easy < Medium < Hard at levels 1, 3 and 5', () => {
+    for (const L of [1, 3, 5]) {
+        const [easy, medium, hard] = ['easy', 'medium', 'hard'].map((d) => measure('nododge', d, L).hitsPerMin);
+        assert.ok(easy < medium && medium < hard, `level ${L}: ${easy.toFixed(2)} < ${medium.toFixed(2)} < ${hard.toFixed(2)} lives/min`);
+    }
 });
 
 test('a level can be cleared: the dodging pilot finishes level 1 in about 2 to 5 minutes', () => {
@@ -59,14 +81,14 @@ test('a level can be cleared: the dodging pilot finishes level 1 in about 2 to 5
 });
 
 // Easy and Hard against Medium (plan 07 §2.1): Easy about half the Medium threat rate, Hard
-// about 1.5 times, at levels 1, 3 and 5; and the threat rate grows with the level (about
-// 8 % a level in the plan; 4 to 15 % a level passes). 8 seeds × 3 minutes per point: the
-// ratios are steady to about ± 0.1 at that size (measured 0.47 to 0.56 and 1.34 to 1.56).
+// about 1.5 times, at levels 1, 3 and 5; and the threat rate grows with the level (4 to 15 %
+// a level passes; measured about 11 %). 8 seeds × 3 minutes per point: the ratios are steady
+// to about ± 0.1 at that size.
 test('Easy about half, Hard about 1.5 times the Medium threat rate, at levels 1, 3 and 5; it grows with the level', () => {
     const tpm = {};
     for (const level of [1, 3, 5]) {
         for (const difficulty of ['easy', 'medium', 'hard']) {
-            tpm[`${difficulty}${level}`] = averagePilot({ seconds: SECONDS, pilot: 'nododge', difficulty, view: 'far', level }, 8).threatsPerMin;
+            tpm[`${difficulty}${level}`] = measure('nododge', difficulty, level).threatsPerMin;
         }
         const easy = tpm[`easy${level}`] / tpm[`medium${level}`];
         const hard = tpm[`hard${level}`] / tpm[`medium${level}`];
@@ -78,7 +100,7 @@ test('Easy about half, Hard about 1.5 times the Medium threat rate, at levels 1,
     assert.ok(tpm.medium3 > tpm.medium1 && tpm.medium5 > tpm.medium3, `${tpm.medium1} < ${tpm.medium3} < ${tpm.medium5}`);
 });
 
-// Measured over 16 seeds: Easy 107 to 253 s, Medium 163 to 265 s, Hard 172 to 500 s
+// Measured over 16 seeds: Easy 103 to 338 s, Medium 140 to 312 s, Hard 211 to 533 s
 test('the boss level (level 2) can be beaten: the dodging pilot clears it within 6 minutes (Hard 9)', () => {
     for (const difficulty of ['easy', 'medium', 'hard']) {
         const limit = difficulty === 'hard' ? 540 : 360;

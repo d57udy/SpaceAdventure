@@ -59,6 +59,7 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 - A pilot who flies straight at crystals and never dodges loses a life about **every 30 to 60 seconds**.
 - A pilot who dodges loses a life about **every 2 to 3 minutes**.
 - Easy halves the threat rate; Hard is about 1.5 times Medium. Each level raises it about 8 %.
+- Since the homing re-tune (below): the careless pilot (always moving toward crystals) loses a life every **30 to 40 s at level 1, 22 to 30 s at level 3 and 15 to 22 s at level 5**; the dodging pilot every **75 to 120 s at level 1** and clearly more often later. Lost lives come about 15 to 25 % more often per level.
 
 **Phase 1 result (rocks only, 8 October 2026).** `scripts/balance3d.mjs`, 16 seeds × 4 minutes, Far, level 1. The careless pilot flies at the nearest crystal and never reacts; the dodging pilot also shoots rocks in its way and reacts to threats after 0.6 s:
 
@@ -112,13 +113,35 @@ Levels 3 and 5: Easy × 0.52 to 0.53, Hard × 1.45 to 1.57. Boss level 2 for the
 
 `tests/unit/balance3d.test.mjs` checks the ratios at levels 1, 3 and 5 (Easy 0.4 to 0.68, Hard 1.25 to 1.8), the growth (4 to 15 % a level), the boss level (cleared within 6 minutes, Hard 9), the boss-level counts and the UFO hit chance (× 0.8 to 1.2 of 2D).
 
+**Homing incoming rocks (owner feedback, 8 October 2026).** On the Pixel 7 Pro collisions in the first two levels were still rare. The cause: an incoming rock re-aimed only while in the fog and then flew straight, so a player who keeps moving (toward the next crystal) was rarely hit, and danger grew only about 10 % a level. The harness pilot also slowed down near each crystal, which players don't. Changes (`rules3d.js`, `spawn3d.js` `steerIncoming`, §2.2):
+
+- Once visible, an incoming rock keeps turning toward the ship's predicted position (plus its miss offset) at a limited rate: 12°/s at level 1, +2°/s per level, at most 30°/s, × 0.6 on Easy and × 1.3 on Hard. Its speed doesn't change. In the last 150 units, or the last 0.8 s before its closest approach, it flies straight, so a late dodge still works; once past the ship it is an ordinary rock.
+- The miss disc shrinks 3 % per level (at least half the level 1 disc). Medium's disc is 1.2 × the radii (was 1.35), Easy 1.5 (was 2.2), Hard 1.5 (was 1.9).
+- Incoming rocks get 6 % faster per level (was 4 %). Interval and count growth are unchanged.
+- The careless harness pilot never drops below 180 units per second toward a crystal.
+
+The first draft (6°/s + 3°/s per level, miss 8 % smaller per level) barely changed level 1 and made level 3 too hard: below about 1 × the radii almost every aimed rock hits, so the miss disc is the steep lever and the turn rate the gentle one. Hence the higher start and slower growth of both.
+
+Lives lost, a life every N seconds, `node scripts/balance3d.mjs --levels 1-6`, 32 seeds × 3 minutes from each starting level, Far (before: old rules and the old pilots; after: both changes). Levels 2, 4 and 6 are boss levels, where the boss and its shots dominate:
+
+| Difficulty | Pilot | L1 | L2 | L3 | L4 | L5 | L6 |
+|---|---|---|---|---|---|---|---|
+| Easy | careless | 115 → 101 | 20 → 22 | 105 → 63 | 22 → 20 | 65 → 47 | 29 → 32 |
+| Easy | dodging | 443 → 524 | 98 → 89 | 339 → 303 | 111 → 111 | 360 → 250 | 120 → 160 |
+| Medium | careless | 53 → 40 | 24 → 21 | 42 → 24 | 36 → 31 | 30 → 18 | 30 → 25 |
+| Medium | dodging | 160 → 101 | 80 → 68 | 125 → 66 | 109 → 72 | 87 → 37 | 96 → 59 |
+| Hard | careless | 39 → 28 | 28 → 23 | 33 → 20 | 30 → 26 | 26 → 15 | 25 → 19 |
+| Hard | dodging | 83 → 56 | 77 → 45 | 73 → 38 | 79 → 51 | 55 → 27 | 55 → 36 |
+
+On the normal levels Medium now meets the targets (careless 40, 24, 18 s; growth about 22 % a level), and lost lives grow level over level on every difficulty for the careless pilot. Easy's dodging pilot is too rarely hit to measure well (a handful of hits per run). Boss levels don't follow the curve: level 4 is calmer than level 3 on Medium, since a boss level has 40 % of the rocks (open point). Threats: one every 6.4 s on Medium level 1 (was 7.8), Easy × 0.54 and Hard × 1.52 of Medium. Levels stay clearable: the dodging pilot clears level 1 in 212 to 274 s on Medium (was 181 to 294), 124 to 189 s on Easy, and 11 of 16 Hard runs within 330 s (was 10); boss level 2 in 103 to 338 s (Easy), 140 to 312 s (Medium) and 211 to 533 s (Hard), all 16 seeds. `tests/unit/balance3d.test.mjs` checks the new bands (8 seeds, 16 for the dodging pilot's level 3 and 5) and Easy < Medium < Hard at levels 1, 3 and 5; `tests/unit/spawn3d.test.mjs` checks the homing (turn-rate limit, speed kept, straight in the final approach, never after passing, the same seed gives the same rocks).
+
 Rocks alone deliver about half of the targets above. A fixed set of rocks per level (the 2D rule) caps how much rock danger a level can hold without making it very long to clear, so the rest comes from the UFOs (§2.4, Phase 2), which in 2D shoot every 2 s. `tests/unit/balance3d.test.mjs` checks the rocks' share now (Medium: a threat every 7.5 to 17 s, the careless pilot losing a life every 50 to 240 s, dodging helps, Easy < Hard, level 1 clearable in 2 to 5 minutes); Phase 2 tightens it to the full targets.
 
 ### 2.2 Incoming rocks (fix 1)
 
 - Each level's red rocks are a **fixed set** (§2.5). About half of them don't start in the field: they arrive during the level as **incoming rocks** (level 1 on Medium: 22, +2 per level; Easy 0.25 × and Hard 1.5 × as many, §2.1; `js/3d/rules3d.js`). This keeps the 2D rule that a level ends once every rock is gone.
-- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.35 × (rock radius + ship radius) on Medium (1.75 in the first draft, then 1.5; 2.2 on Easy and Hard, §2.1), so on Medium about half would hit a ship that holds its course. While it's still in the fog it keeps re-aiming; from the fog start (fully visible) it flies straight (`js/3d/spawn3d.js`).
-- Speed 130 to 190 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 4 % per level. Mostly small (65 %) and medium (30 %), a few large (5 %): danger comes from the aim, and small ones are quick to clear. Shooting a larger one splits it into pieces that keep flying toward you.
+- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.2 × (rock radius + ship radius) on Medium at level 1 (1.75 in the first draft, then 1.5, then 1.35; Easy and Hard 1.5, §2.1), 3 % smaller per level down to half. While it's still in the fog it keeps re-aiming exactly. From the fog start (fully visible) it homes in: it turns toward the predicted position at 12°/s at level 1, +2°/s per level, at most 30°/s (Easy × 0.6, Hard × 1.3), at constant speed. In the last 150 units or 0.8 s before its closest approach it flies straight, so it can still be dodged (`js/3d/spawn3d.js` `steerIncoming`).
+- Speed 130 to 190 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 6 % per level (4 % before the homing re-tune). Mostly small (65 %) and medium (30 %), a few large (5 %): danger comes from the aim, and small ones are quick to clear. Shooting a larger one splits it into pieces that keep flying toward you.
 - Timing: Medium level 1 one every 4.5 s, Easy 10 s, Hard 3 s (5.5 / 8.5 / 4 in the first draft, 4.5 / 7 / 3.5 after the UFO re-tune, §2.1); 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
 - An incoming rock that has passed its closest approach is an ordinary rock of the field.
 - They fade in through the fog like every other object. The radar threat flash (already built) marks them once they're within 25 % of the view distance on a closing course.

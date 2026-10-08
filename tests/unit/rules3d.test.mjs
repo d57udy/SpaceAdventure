@@ -98,3 +98,21 @@ test('3D tuning per difficulty: Easy fewer incoming rocks and smaller clusters, 
     assert.equal(m.clusterRocks.small, 3);
     assert.ok(e.incoming.interval > m.incoming.interval && m.incoming.interval > h.incoming.interval);
 });
+
+test('incoming rocks get more dangerous with the level: closer aim, faster homing, faster rocks', async () => {
+    const { TUNING_3D } = await import('../../js/3d/rules3d.js');
+    const p = (level, difficulty = 'medium') => levelPlan(level, { difficulty }).incoming;
+    assert.equal(p(1).turnRate, RULES3D.incomingTurn);
+    assert.equal(p(2).turnRate, RULES3D.incomingTurn + RULES3D.incomingTurnPerLevel);
+    assert.equal(p(40).turnRate, RULES3D.incomingTurnMax, 'capped');
+    assert.ok(Math.abs(p(3, 'easy').turnRate - p(3).turnRate * TUNING_3D.easy.homing) < 1e-9);
+    assert.ok(Math.abs(p(3, 'hard').turnRate - p(3).turnRate * TUNING_3D.hard.homing) < 1e-9);
+    assert.ok(p(3, 'easy').turnRate < p(3).turnRate && p(3).turnRate < p(3, 'hard').turnRate);
+    assert.equal(p(1).miss, TUNING_3D.medium.miss);
+    assert.ok(Math.abs(p(4).miss - TUNING_3D.medium.miss * (1 - 3 * RULES3D.incomingMissPerLevel)) < 1e-9);
+    assert.ok(Math.abs(p(200).miss - TUNING_3D.medium.miss * RULES3D.incomingMissMin) < 1e-9, 'floor');
+    for (let L = 1; L < 8; L++) {
+        assert.ok(p(L + 1).miss < p(L).miss && p(L + 1).turnRate > p(L).turnRate && p(L + 1).speed[0] > p(L).speed[0], `level ${L}`);
+    }
+    assert.ok(Math.abs(p(2).speed[0] / p(1).speed[0] - (1 + RULES3D.incomingSpeedPerLevel)) < 1e-9);
+});

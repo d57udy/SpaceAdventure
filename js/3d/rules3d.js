@@ -16,19 +16,20 @@ import { Difficulty, createDynamicDifficulty } from '../difficulty.js';
 // 3D-only numbers per difficulty (plan 07 §2.1, §2.2), tuned with scripts/balance3d.mjs so Easy
 // has about half the Medium threat rate and Hard about 1.5 times: incoming rocks (seconds
 // between them at level 1, how many a level has × the Medium count, the miss disc × rock +
-// ship radius) and the small rocks in each cluster. The 2D numbers (UFO timing and accuracy,
-// rock speed, lives, scores) come from the shared table unchanged.
+// ship radius), how fast they home in (× the level's turn rate) and the small rocks in each
+// cluster. The 2D numbers (UFO timing and accuracy, rock speed, lives, scores) come from the
+// shared table unchanged.
 export const TUNING_3D = Object.freeze({
-    easy: Object.freeze({ interval: 10, count: 0.25, miss: 2.2, clusterSmall: 2 }),
-    medium: Object.freeze({ interval: 4.5, count: 1, miss: 1.35, clusterSmall: 3 }),
-    hard: Object.freeze({ interval: 3, count: 1.5, miss: 1.9, clusterSmall: 3 }),
+    easy: Object.freeze({ interval: 10, count: 0.25, miss: 1.5, homing: 0.6, clusterSmall: 2 }),
+    medium: Object.freeze({ interval: 4.5, count: 1, miss: 1.2, homing: 1, clusterSmall: 3 }),
+    hard: Object.freeze({ interval: 3, count: 1.5, miss: 1.5, homing: 1.3, clusterSmall: 3 }),
 });
 
 /** Easy / Medium / Hard: the 2D table (js/difficulty.js Difficulty) plus the 3D incoming-rock numbers. */
 export const DIFFICULTY_3D = Object.freeze(Object.fromEntries(Object.values(Difficulty).map((d) => [
     d.id, Object.freeze({
         ...d, incomingInterval: TUNING_3D[d.id].interval, incomingCount: TUNING_3D[d.id].count, incomingMiss: TUNING_3D[d.id].miss,
-        clusterSmall: TUNING_3D[d.id].clusterSmall,
+        incomingHoming: TUNING_3D[d.id].homing, clusterSmall: TUNING_3D[d.id].clusterSmall,
     }),
 ])));
 export const DIFFICULTY_IDS_3D = Object.freeze(Object.keys(DIFFICULTY_3D));
@@ -80,8 +81,15 @@ export const RULES3D = Object.freeze({
     incomingCone: 35,          // degrees: half angle of the cone around the ship's motion they come from
     incomingStill: 40,         // below this ship speed they come from any direction
     incomingSpeed: [130, 190], // level 1, before the difficulty and adaptive multipliers
-    incomingSpeedPerLevel: 0.04,
+    incomingSpeedPerLevel: 0.06,
     incomingMiss: 1.5,         // aim offset: uniform in a disc of this × (rock + ship radius): over a third would hit a ship that holds its course (plan 07 §2.1 re-tune)
+    incomingMissPerLevel: 0.03, // the miss disc shrinks by this share per level, down to
+    incomingMissMin: 0.5,      // this share of the level 1 disc (below about 1 × the radii almost every rock hits)
+    incomingTurn: 12,          // degrees per second: once visible, incoming rocks home in this fast at level 1,
+    incomingTurnPerLevel: 2,   // this much faster per level,
+    incomingTurnMax: 30,       // up to this (all × the difficulty's homing factor)
+    incomingFinal: 150,        // no homing this close to the ship or in the last
+    incomingFinalTime: 0.8,    // seconds before the closest approach, so a late dodge still works
 });
 
 /**
@@ -102,7 +110,7 @@ export const isBossLevel = (level) => level > 0 && level % RULES3D.bossEvery ===
  * @returns {{
  *   level, difficulty, speedMult, clusters: number, clusterRocks: {large, medium, small},
  *   scattered: number, greens: number, clusterGreenShare: number, crystalMix: Array,
- *   incoming: { count, interval, speed: [min, max], miss, sizeMix }
+ *   incoming: { count, interval, speed: [min, max], miss, turnRate (degrees per second), sizeMix }
  * }}
  */
 export function levelPlan(level = 1, { difficulty = DEFAULT_DIFFICULTY_3D, dda = null, boss = false } = {}) {
@@ -130,6 +138,9 @@ export function levelPlan(level = 1, { difficulty = DEFAULT_DIFFICULTY_3D, dda =
         : baseIncoming;
     const interval = Math.max(RULES3D.incomingMinInterval, d.incomingInterval - RULES3D.incomingPerLevel * (L - 1));
     const sp = speedMult * (1 + RULES3D.incomingSpeedPerLevel * (L - 1));
+    // Higher levels aim closer and home in harder (plan 07 §2.2)
+    const missShare = Math.max(RULES3D.incomingMissMin, 1 - RULES3D.incomingMissPerLevel * (L - 1));
+    const turn = Math.min(RULES3D.incomingTurnMax, RULES3D.incomingTurn + RULES3D.incomingTurnPerLevel * (L - 1));
     return {
         level: L,
         difficulty: d.id,
@@ -143,7 +154,8 @@ export function levelPlan(level = 1, { difficulty = DEFAULT_DIFFICULTY_3D, dda =
         incoming: {
             count: incomingCount,
             interval,
-            miss: d.incomingMiss,
+            miss: d.incomingMiss * missShare,
+            turnRate: turn * d.incomingHoming,
             speed: [RULES3D.incomingSpeed[0] * sp, RULES3D.incomingSpeed[1] * sp],
             sizeMix: [['large', 0.05], ['medium', 0.3], ['small', 0.65]],
         },

@@ -27,6 +27,7 @@ const ufoShot = (s, pos, vel) => s.ufoSys.state.bullets.push({ id: nextId(s), ho
 test('UFOs appear on a level after the 2D interval and follow the adaptive modifiers', () => {
     const adaptive = createAdaptive3d();
     const s = createSim({ seed: 2, adaptive });
+    s.incoming.left = 0; // no incoming rocks: a lost life would change the adaptive UFO timer
     assert.equal(s.ufos.length, 0);
     const t = s.ufoSys.state.spawnTimer;
     assert.ok(t > 15 * 0.95 * 0.74 && t < 15 * 1.26, `timer ${t}`);
