@@ -317,6 +317,8 @@ let palette = findPalette('standard');  // Colour palette (js/palette.js), from 
 
 // Device-level settings (js/settings.js; keys spaceAdventure_<name>)
 const settings = createSettings();
+// Easy / Medium / Hard is shared with the 3D game (setting 'difficulty', default Medium)
+selectedDifficulty = Object.values(Difficulty).find(d => d.id === settings.get('difficulty')) || Difficulty.MEDIUM;
 
 // Vibration (Android): follows the 'haptics' setting; independent of mute.
 const haptics = new Haptics({ enabled: () => settings.get('haptics') });
@@ -504,6 +506,7 @@ function cycleDifficulty(dir) {
     const list = Object.values(Difficulty);
     const i = list.indexOf(selectedDifficulty);
     selectedDifficulty = list[(i + (dir < 0 ? -1 : 1) + list.length) % list.length];
+    settings.set('difficulty', selectedDifficulty.id);
     console.log(`Difficulty set to: ${selectedDifficulty.name}`);
 }
 

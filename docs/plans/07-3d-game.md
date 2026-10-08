@@ -2,7 +2,7 @@
 
 This plan turns the Phase 0 prototype (`?3d=1`, [06-3d-mode.md](06-3d-mode.md) §10) into the complete 3D game. It builds on the investigation in plan 06 and on everything the owner decided and tested since. Where this plan differs from plan 06 §6 (roadmap), this plan wins.
 
-Status: **planned 8 October 2026**, owner answers to the open questions added the same day (§1, items 11 to 15). Not started. The prototype stays behind `?3d=1` until Phase 6.
+Status: **planned 8 October 2026**, owner answers to the open questions added the same day (§1, items 11 to 15). **In progress** (8 October 2026): Phase 1 code and balance harness done, phases 2 to 5 partly built (see the Status column in §7). The game stays behind `?3d=1` until Phase 6.
 
 ## Summary
 
@@ -68,14 +68,24 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 | Medium | 12 s | 120 s | 295 s | about 205 s |
 | Hard | 10 s | 87 s | 240 s | about 220 s |
 
+**With UFOs (Phases 2 and 3, 8 October 2026).** Same harness, 16 seeds × 3 minutes, Far, level 1. Threats now also count UFOs on a collision course and UFO shots heading for the ship. The dodging pilot also shoots UFOs in its way and watches UFO shots from the view distance (they glow), since a shot can only be dodged:
+
+| Difficulty | Threat every | Careless pilot loses a life every | Dodging pilot loses a life every |
+|---|---|---|---|
+| Easy | 9 s | 85 s | 360 s |
+| Medium | 7 s | 56 s | 120 s |
+| Hard | 6 s | 38 s | 90 s |
+
+Medium meets the §2.1 targets (the dodging pilot at the low end of 2 to 3 minutes). About a third of the careless pilot's lost lives are UFO shots (2.8 % of the shots aimed at the ship hit, the 2D hit chance); the dodging pilot loses most of its lives to UFO shots. Two numbers changed to get there (deviations from §2.2): incoming rocks come every **4.5 s** on Medium (was 5.5; Easy 7, was 8.5; Hard 3.5, was 4) and aim a little closer (miss disc **1.5** × the radii, was 1.75). `tests/unit/balance3d.test.mjs` now checks the full targets with a tolerance (threat every 6 to 10 s, careless 30 to 60 s ± 10 %, dodging 2 to 3 minutes ± 20 %) and Easy < Medium < Hard.
+
 Rocks alone deliver about half of the targets above. A fixed set of rocks per level (the 2D rule) caps how much rock danger a level can hold without making it very long to clear, so the rest comes from the UFOs (§2.4, Phase 2), which in 2D shoot every 2 s. `tests/unit/balance3d.test.mjs` checks the rocks' share now (Medium: a threat every 7.5 to 17 s, the careless pilot losing a life every 50 to 240 s, dodging helps, Easy < Hard, level 1 clearable in 2 to 5 minutes); Phase 2 tightens it to the full targets.
 
 ### 2.2 Incoming rocks (fix 1)
 
 - Each level's red rocks are a **fixed set** (§2.5). About half of them don't start in the field: they arrive during the level as **incoming rocks** (level 1: 22, +2 per level; `js/3d/rules3d.js`). This keeps the 2D rule that a level ends once every rock is gone.
-- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.75 × (rock radius + ship radius), so about a third would hit a ship that holds its course. While it's still in the fog it keeps re-aiming; from the fog start (fully visible) it flies straight (`js/3d/spawn3d.js`).
+- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.5 × (rock radius + ship radius) (1.75 before the UFO re-tune), so a bit more than a third would hit a ship that holds its course. While it's still in the fog it keeps re-aiming; from the fog start (fully visible) it flies straight (`js/3d/spawn3d.js`).
 - Speed 130 to 190 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 4 % per level. Mostly small (65 %) and medium (30 %), a few large (5 %): danger comes from the aim, and small ones are quick to clear. Shooting a larger one splits it into pieces that keep flying toward you.
-- Timing: Medium level 1 one every 5.5 s, Easy 8.5 s, Hard 4 s; 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
+- Timing: Medium level 1 one every 4.5 s, Easy 7 s, Hard 3.5 s (5.5 / 8.5 / 4 before the UFO re-tune, §2.1); 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
 - An incoming rock that has passed its closest approach is an ordinary rock of the field.
 - They fade in through the fog like every other object. The radar threat flash (already built) marks them once they're within 25 % of the view distance on a closing course.
 
@@ -200,14 +210,14 @@ After phases 1, 2, 3 and 5 on the Pixel 7 Pro (and an iPhone if available): feel
 
 ## 7. Phases
 
-| Phase | Content | Size | Done when |
-|---|---|---|---|
-| 1 Danger and levels | `rules3d`, `spawn3d`: fixed rock set per level, clusters, incoming rocks, 2D level-complete rule, shootable greens, 2D hit and shield rules, last-5 radar and arrows, rocks-left counter, level banner, damage-direction marker, threat tone; balance harness; extract `DynamicDifficulty` and the difficulty table from `main.js` | L | Harness meets §2.1 targets; owner phone check: "I get hit when I'm careless" |
-| 2 UFOs and assistance | 2D-rule UFOs with the 3D translations (§2.4), UFO bullets, adaptive difficulty in 3D with its HUD label, the 3D aids table (§2.9: aim assist, lead marker, arrows, warnings), target brackets, explosions, sound effects in 3D (stereo pan by direction) | L | UFO hit chance matches 2D in the harness; aids change with the adaptive level; owner phone check |
-| 3 Boss, power-ups, hyperspace | Boss with weak points, turrets, escorts, boss glow and arrow; 7 power-ups; hyperspace | XL | Matches 2D single-player content; owner phone check |
-| 4 Menus and progression | `game3d` entry, `ui3d`, `input3d`; 3D menu, pause menu, settings, Help page; **Start 3D** row in the 2D menu and **Switch to 2D** in the 3D menu; 3D high scores and name entry; shared credits, upgrades and achievements; 2D High Scores 2D / 3D switch; version label | L | A full game from menu to high-score entry; 2D suite green and unchanged |
-| 5 Platform and comfort | 3D tutorial (asks first, like 2D), music, vibration and rumble, controller, desktop polish, field of view, vignette, invert, left-handed layout, capability check and slow-device offer to switch to 2D | L | Every input type tested; owner phone check |
-| 6 Launch | "Start 3D" first in the main menu and the default; remove the `?3d=1` gate (keep it as a direct link); context-loss handling; iPhone motion-permission check in the installed app; docs and README | M | Live on Pages, works offline and installed, 2D unchanged |
+| Phase | Content | Size | Done when | Status (8 October 2026) |
+|---|---|---|---|---|
+| 1 Danger and levels | `rules3d`, `spawn3d`: fixed rock set per level, clusters, incoming rocks, 2D level-complete rule, shootable greens, 2D hit and shield rules, last-5 radar and arrows, rocks-left counter, level banner, damage-direction marker, threat tone; balance harness; extract `DynamicDifficulty` and the difficulty table from `main.js` | L | Harness meets §2.1 targets; owner phone check: "I get hit when I'm careless" | Code and harness done (`rules3d`, `spawn3d`, `scripts/balance3d.mjs`, `js/difficulty.js`); owner phone check pending |
+| 2 UFOs and assistance | 2D-rule UFOs with the 3D translations (§2.4), UFO bullets, adaptive difficulty in 3D with its HUD label, the 3D aids table (§2.9: aim assist, lead marker, arrows, warnings), target brackets, explosions, sound effects in 3D (stereo pan by direction) | L | UFO hit chance matches 2D in the harness; aids change with the adaptive level; owner phone check | In progress: `ufo3d`, `assist3d`, `audio3d` and the sim wiring built; UFO meshes in `meshes3d.js`, not yet drawn by `render3d`; phone check pending |
+| 3 Boss, power-ups, hyperspace | Boss with weak points, turrets, escorts, boss glow and arrow; 7 power-ups; hyperspace | XL | Matches 2D single-player content; owner phone check | In progress: `boss3d`, `powerup3d`, `hyperspace3d` in the sim; their meshes in `meshes3d.js`, not yet drawn by `render3d` |
+| 4 Menus and progression | `game3d` entry, `ui3d`, `input3d`; 3D menu, pause menu, settings, Help page; **Start 3D** row in the 2D menu and **Switch to 2D** in the 3D menu; 3D high scores and name entry; shared credits, upgrades and achievements; 2D High Scores 2D / 3D switch; version label | L | A full game from menu to high-score entry; 2D suite green and unchanged | In progress: Start 3D / Switch to 2D (`mode3d.js`), 2D / 3D High Scores switch, `progress3d.js` and the menus module `ui3d.js` built; `ui3d` not yet wired into the 3D page (`tests/integration/game3d.spec.js` skips until then); `game3d` entry and `input3d` not started |
+| 5 Platform and comfort | 3D tutorial (asks first, like 2D), music, vibration and rumble, controller, desktop polish, field of view, vignette, invert, left-handed layout, capability check and slow-device offer to switch to 2D | L | Every input type tested; owner phone check | In progress: `tutorial3d`, `haptics3d`, `perf3d` built; field of view, vignette, invert and left-handed settings exist (`settings.js`, `ui3d.js`) but are not applied in the game yet |
+| 6 Launch | "Start 3D" first in the main menu and the default; remove the `?3d=1` gate (keep it as a direct link); context-loss handling; iPhone motion-permission check in the installed app; docs and README | M | Live on Pages, works offline and installed, 2D unchanged | Planned |
 
 S = under a day, M = 1 to 2 days, L = 2 to 3 days, XL = a week or more. Phases 1 and 2 can overlap (separate modules), and phases 4 and 5 can partly run in parallel with agent teams. Each phase ends with a CI run and a deploy behind `?3d=1`.
 

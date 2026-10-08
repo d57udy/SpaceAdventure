@@ -157,16 +157,26 @@ Auto picks side by side in landscape and facing in portrait. Turning the tablet 
 
 Every player has a colour, a hull mark and a number; HUD panel text is at least 18 px. The multiplayer pause menu also has **Mute**.
 
-## 3D prototype (?3d=1)
+## 3D game (?3d=1, in development)
 
-A hidden first-person 3D feel test (Phase 0 of [docs/plans/06-3d-mode.md](docs/plans/06-3d-mode.md)). Add `?3d=1` to the address, for example `https://d57udy.github.io/SpaceAdventure/?3d=1`. Without the parameter the normal game is unchanged and loads no 3D file. **Back to 2D** returns to the normal game.
+A first-person 3D version of the game, being built in phases ([docs/plans/07-3d-game.md](docs/plans/07-3d-game.md); §7 has the status of each phase). It stays behind `?3d=1` until it is complete. Without the parameter the 2D game is unchanged and loads no 3D file.
 
-- **Goal:** fly into green crystals (+100), shoot red spiky rocks (they split large, medium, small); hitting a red rock costs a life. The world is a wrap-around cube.
-- **Control types** (chosen on the prototype screen, remembered): **Direct** (the phone is the ship: turn, tilt and roll it), **Rate** (tilt away from the start position to keep turning, like a joystick), **Joystick** (drag on the left half to turn, ⟲ ⟳ to roll). **Level horizon** blocks roll in all three. **Recentre** (or a double-tap) makes the current phone position "straight ahead".
-- **Phone:** hold it in landscape, then tap **Start**. iPhone and iPad ask for motion access on that tap; without it (or without a motion sensor) the prototype uses Joystick.
-- **Desktop:** click to capture the mouse (mouse turns), W or ↑ thrust, Space or F fire, A/D or Q/E roll, ←/→ turn, R recentre, L level horizon, M control type, P pause, Esc releases the mouse. A game controller: left stick turns, right stick rolls, RT thrust, A or RB fire.
-- The bottom line shows the control type, frames per second and the render scale (lowered automatically on slow devices). Other URL options: `&seed3d=N` repeats a layout.
-- three.js r185 is included in `js/3d/vendor/` (MIT licence) and cached for offline play like the rest of the game.
+**Play 3D**
+- Open `https://d57udy.github.io/SpaceAdventure/?3d=1`. Where 3D runs well, the 2D main menu also has a **Start 3D** row; the 3D menu has **Switch to 2D**. The installed app remembers which of the two you used last and opens it again.
+- Hold a phone in landscape. iPhone and iPad ask for motion access on the first Start; without it (or without a motion sensor) the game uses Joystick.
+- The same rules as 2D: fly into green crystals to collect them, shoot red rocks (they split), and clear every red and green to finish a level. Shooting a green wastes it. UFOs appear and shoot, a boss arrives every 2 levels, and the 2D power-ups drop. The world is a wrap-around cube.
+- The 3D game has its own high-score board. Your pilot name, credits, upgrades and achievements are shared with 2D.
+
+**Controls**
+- **Control types** (Settings, remembered): **Direct** (the phone is the ship: turn, tilt and roll it), **Rate** (tilt away from where you held the phone to keep turning), **Joystick** (drag on the left half to turn, ⟲ ⟳ to roll). **Level horizon** blocks roll. **Recentre** (or a double tap) makes the current phone position "straight ahead". Hold **THRUST**, hold **FIRE**.
+- **Desktop:** click to capture the mouse (the mouse turns), W or ↑ thrust, Space or F fire, A/D or Q/E roll, ← → ↓ turn, R recentre, P pause, Esc releases the mouse.
+- **Game controller:** left stick turns, right stick rolls, RT (or LT) thrust, Ⓐ or RB fire.
+- **Radar:** two circles on the right edge. The top one shows what is in front of you, the bottom one what is behind.
+- More settings: view distance (Normal, Far, Very far), sensitivity, and the shared colours, sound, music and vibration settings. Field of view, vignette, invert up/down and the left-handed layout are being added.
+
+**Install and offline:** the 3D page is part of the same installable app and is cached for offline play like everything else (three.js r185 is included in `js/3d/vendor/`, MIT licence). See the next section.
+
+URL options for testing: `&seed3d=N` repeats a layout, `&layout3d=range|far|last` loads small test layouts, `&lowres3d=1` draws at half resolution (for software renderers).
 
 ## Install, full screen and offline play
 
@@ -221,7 +231,7 @@ npx playwright install chromium webkit
 npm run test:unit
 
 # Integration and acceptance tests (Playwright: desktop keyboard, iPad touch, Pixel 7 Pro phone,
-# 3D prototype with WebGL through SwiftShader: --project=chromium-3d --project=chromium-3d-desktop)
+# 3D game with WebGL through SwiftShader: --project=chromium-3d --project=chromium-3d-desktop)
 npm run test:e2e
 
 # Everything

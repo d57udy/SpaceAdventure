@@ -61,3 +61,154 @@ test('3D: reloads offline from the service worker cache', async ({ page, context
   await context.setOffline(false);
   expect(errors).toEqual([]);
 });
+
+// --- Acceptance flows through the 3D menus (js/3d/ui3d.js). They skip themselves while the
+// live site's 3D page has no menus yet (game3d.ui missing). The live site hides Start 3D from
+// automated browsers unless ?force3d=1 (js/mode3d.js), so 2D -> 3D uses it.
+//
+// REQUIRED (see tests/integration/game3d.spec.js for the full list): game3d.ui (ui.snapshot()),
+// game3d.screen / steps / time / over / score as today, P pauses while playing, and the
+// URL option &layout3d=doom (1 life, a crystal at the ship, a red rock on a collision course:
+// a quick, deterministic game over with a score above 0).
+
+const ui = (page) => page.evaluate(() => window.__spaceAdventure.game3d.ui);
+const item = (page, id) => page.locator(`[data-u3d="${id}"]`);
+const uiScreen = (page) => expect.poll(async () => ((await ui(page)) || {}).screen, { timeout: T });
+const gameScreen = (page) => expect.poll(async () => (await g3(page)).screen, { timeout: T });
+
+/** The menus are live? Otherwise skip (older deploy). */
+async function requireUi(page) {
+  test.skip(!(await page.evaluate(() => !!window.__spaceAdventure.game3d.ui)), '3D menus (ui3d) not deployed yet');
+}
+async function gameSeconds(page, s) {
+  const t0 = (await g3(page)).time;
+  await page.waitForFunction((t) => window.__spaceAdventure.game3d.time >= t, t0 + s, { timeout: Math.max(T, s * 8000) });
+}
+/** Fresh storage, then the profile screen: Play as guest. The tutorial is off (open3dLive). */
+async function asGuest(page) {
+  await requireUi(page);
+  await uiScreen(page).toBe('profile');
+  await item(page, 'guest').click();
+  await uiScreen(page).toBe('menu');
+}
+
+test('3D menus: Play as guest, 60 game seconds without page errors, pause and resume', async ({ page }, testInfo) => {
+  test.setTimeout(900000); // 60 game seconds can take many minutes of SwiftShader wall time
+  const errors = await open3dLive(page, '&seed3d=2');
+  await asGuest(page);
+  await shot(page, testInfo, 'ui-menu');
+  await item(page, 'play').click();
+  await gameScreen(page).toBe('playing');
+  await gameSeconds(page, 30);
+  await page.keyboard.press('p');
+  await uiScreen(page).toBe('pause');
+  await gameScreen(page).toBe('paused');
+  await shot(page, testInfo, 'ui-pause');
+  await item(page, 'resume').click();
+  await gameScreen(page).toBe('playing');
+  // A game over before 60 s is fine (careless autopilot-free flying): play again and go on
+  for (let left = 30; left > 0;) {
+    const s = await g3(page);
+    if (s.over) {
+      await uiScreen(page).toBe('gameOver');
+      await item(page, 'again').click();
+      await gameScreen(page).toBe('playing');
+    }
+    await gameSeconds(page, 5);
+    left -= 5;
+  }
+  await shot(page, testInfo, 'ui-60s');
+  expect(errors).toEqual([]);
+});
+
+test('3D menus: settings persist after a reload', async ({ page }) => {
+  const errors = await open3dLive(page);
+  await asGuest(page);
+  await item(page, 'settings').click();
+  await uiScreen(page).toBe('settings');
+  await page.locator('#u3d-set-viewDistance3d button').nth(0).click(); // Far -> Normal
+  await page.locator('#u3d-set-fov3d button').nth(2).click(); // 70 -> 75
+  await page.reload();
+  await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
+    && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+  expect((await g3(page)).viewDistance).toBe('normal');
+  const stored = await page.evaluate(() => [localStorage.getItem('spaceAdventure_viewDistance3d'), localStorage.getItem('spaceAdventure_fov3d')]);
+  expect(stored).toEqual(['normal', '75']);
+  expect(errors).toEqual([]);
+});
+
+test('3D menus: a game over puts the score on the 3D board, highlighted', async ({ page }, testInfo) => {
+  test.setTimeout(600000);
+  // A named pilot (guests keep no scores), set before the page loads
+  await page.addInitScript(() => {
+    try {
+      if (!sessionStorage.getItem('__uat3d_named')) {
+        localStorage.setItem('asteroids_currentUser', 'UATPILOT');
+        localStorage.setItem('asteroids_userList', JSON.stringify(['UATPILOT']));
+        sessionStorage.setItem('__uat3d_named', '1');
+      }
+    } catch (e) { /* storage unavailable */ }
+  });
+  const errors = await open3dLive(page, '&seed3d=1&layout3d=doom');
+  await requireUi(page);
+  await uiScreen(page).toBe('menu');
+  await item(page, 'play').click();
+  await gameScreen(page).toBe('playing');
+  await expect.poll(async () => (await g3(page)).over, { timeout: T * 4 }).toBe(true);
+  await uiScreen(page).toBe('gameOver');
+  const over = (await ui(page)).view;
+  expect(over.score).toBeGreaterThan(0);
+  expect(over.newHigh).toBe(true);
+  await item(page, 'highscores').click();
+  await uiScreen(page).toBe('highScores');
+  await expect(page.locator('#u3d tr.u3d-hl')).toContainText(String(over.score));
+  await shot(page, testInfo, 'ui-highscores');
+  expect(errors).toEqual([]);
+});
+
+test('3D menus offline: start a game with the network off, Switch to 2D and back', async ({ page, context }, testInfo) => {
+  test.setTimeout(600000);
+  const errors = await open3dLive(page);
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller)), { timeout: T }).toBe(true);
+  await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
+    && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+  await requireUi(page);
+  await context.setOffline(true);
+  try {
+    await page.reload();
+    await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
+      && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+    await asGuest(page);
+    await item(page, 'play').click();
+    await gameScreen(page).toBe('playing');
+    await gameSeconds(page, 3);
+    await page.keyboard.press('p');
+    await uiScreen(page).toBe('pause');
+    await item(page, 'quit').click();
+    await uiScreen(page).toBe('menu');
+    // Switch to 2D, offline, from the cache
+    await Promise.all([page.waitForURL(/[?&]2d=1/, { timeout: T }), item(page, 'switch2d').click()]);
+    await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: T });
+    await shot(page, testInfo, 'ui-offline-2d');
+    // ... and back: ?force3d=1 because the live site hides Start 3D from automated browsers
+    await page.goto('./?force3d=1');
+    await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: T });
+    if (await page.evaluate(() => window.__spaceAdventure.state === 'prompt_user')) {
+      const input = page.locator('#username-input');
+      await input.fill('UATOFF');
+      await page.keyboard.press('Enter');
+    }
+    await page.waitForFunction(() => window.__spaceAdventure.state === 'menu', null, { timeout: T });
+    expect((await page.evaluate(() => window.__spaceAdventure.menuOptions))[0]).toBe('Start 3D');
+    await Promise.all([page.waitForURL(/[?&]3d=1/, { timeout: T }), page.keyboard.press('Enter')]);
+    await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
+      && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+    await uiScreen(page).toBe('menu');
+    await shot(page, testInfo, 'ui-offline-3d');
+  } finally {
+    await context.setOffline(false);
+  }
+  expect(errors).toEqual([]);
+});

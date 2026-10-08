@@ -202,12 +202,13 @@ test('level complete: nothing left → next level, banner, protection; UFOs and 
     // Pretend every incoming rock was dealt with
     s.incoming.left = 0;
     s.rocks = [];
-    s.ufos = [{ alive: true }];
+    const [x, y, z] = s.ship.pos;
+    const u = s.ufoSys.spawnAt([x + 1000, y, z], s.ship.pos);
     stepSim(s, { q: qIdentity() });
     assert.equal(s.level, 1, 'a hostile UFO blocks the level end');
     assert.equal(levelBlocked(s), true);
-    s.ufos = [];
-    s.boss = { alive: true };
+    s.ufoSys.destroy(u.id);
+    s.boss = { alive: true, update: () => [], hitTest: () => null, collideBullets: () => [], touches: () => false, state: { pos: [0, 0, 0], bullets: [] } };
     stepSim(s, { q: qIdentity() });
     assert.equal(s.level, 1, 'the boss blocks the level end');
     s.boss = null;
@@ -261,7 +262,7 @@ test('incoming rocks: sent on the difficulty interval, at the cull distance, aim
 });
 
 test('rocks left = rocks on the field + incoming ones not sent yet, throughout a run', () => {
-    const s = createSim({ seed: 4, view: 'far' });
+    const s = createSim({ seed: 4, view: 'far', ufos: false }); // UFO hits would hold the incoming rocks
     const plan = levelPlan(1);
     for (let i = 0; i < 60 * 40; i++) {
         stepSim(s, { q: qIdentity() });

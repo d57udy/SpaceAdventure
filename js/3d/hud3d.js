@@ -5,6 +5,8 @@
 // Drawn on a 2D canvas layered over the WebGL canvas. formatHud() is pure (unit-testable);
 // the draw functions only use the CanvasRenderingContext2D they are given.
 
+import { PowerUpType } from '../powerup.js';
+
 const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
 
 /** HUD text lines from the game state (pure). */
@@ -61,9 +63,11 @@ export function drawHudText(ctx, w, h, info, insets = { top: 0, left: 0, right: 
     ctx.font = `${Math.round(fs * 0.8)}px Arial, sans-serif`;
     ctx.fillStyle = '#9fc0d8';
     ctx.fillText(t.speed, 12 + insets.left, 14 + fs + insets.top);
+    let bottom = 14 + fs + Math.round(fs * 0.8) + insets.top;
     if (t.difficulty) {
         ctx.fillStyle = info.adjustmentColor || '#FFFFFF';
-        ctx.fillText(t.difficulty, 12 + insets.left, 18 + fs + Math.round(fs * 0.8) + insets.top);
+        ctx.fillText(t.difficulty, 12 + insets.left, bottom + 4);
+        bottom += 4 + Math.round(fs * 0.8);
     }
     ctx.textAlign = 'center';
     ctx.fillText(t.right, w / 2, h - Math.max(18, h * 0.06) + 4);
@@ -72,6 +76,68 @@ export function drawHudText(ctx, w, h, info, insets = { top: 0, left: 0, right: 
         ctx.fillStyle = '#ffd27a';
         ctx.fillText(info.message, w / 2, h * 0.2);
     }
+    ctx.restore();
+    return bottom; // y below the top-left block (power-up chips go there)
+}
+
+/** 2D power-up colours and letters (js/powerup.js PowerUpType), by id. */
+export const CHIP_STYLE = Object.freeze(Object.fromEntries(Object.values(PowerUpType).map((t) => [t.id, { color: t.color, label: t.symbol }])));
+
+/**
+ * Chip rectangles for the active power-ups (pure): one row, left to right, from (x, y).
+ * effects: sim3d.js activeEffects() [{ kind, left, max }]. Returns [{ kind, x, y, w, h, fill: 0..1 }].
+ */
+export function chipLayout(effects, x, y, { w = 40, h = 22, gap = 6 } = {}) {
+    return (effects || []).map((e, i) => ({
+        kind: e.kind, x: x + i * (w + gap), y, w, h, fill: Math.max(0, Math.min(1, e.max > 0 ? e.left / e.max : 0)),
+    }));
+}
+
+/** Active power-up chips with a timer bar under each (top left, under the score). */
+export function drawPowerUpChips(ctx, effects, x, y) {
+    const chips = chipLayout(effects, x, y);
+    if (!chips.length) return;
+    ctx.save();
+    ctx.font = 'bold 12px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const c of chips) {
+        const st = CHIP_STYLE[c.kind] || { color: '#FFFFFF', label: '?' };
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = 'rgba(8, 16, 30, 0.6)';
+        ctx.fillRect(c.x, c.y, c.w, c.h);
+        ctx.strokeStyle = st.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(c.x, c.y, c.w, c.h);
+        ctx.fillStyle = st.color;
+        ctx.fillText(st.label, c.x + c.w / 2, c.y + c.h / 2 - 2);
+        // Timer bar: what is left of the duration
+        ctx.fillRect(c.x + 3, c.y + c.h - 5, (c.w - 6) * c.fill, 3);
+    }
+    ctx.restore();
+}
+
+/** Boss health bar across the top centre (boss: { health, maxHealth, phase }). */
+export function drawBossBar(ctx, w, h, boss) {
+    if (!boss || !(boss.maxHealth > 0)) return;
+    const bw = Math.min(360, w * 0.4), bh = 10;
+    const x = (w - bw) / 2, y = 14;
+    const f = Math.max(0, Math.min(1, boss.health / boss.maxHealth));
+    ctx.save();
+    ctx.fillStyle = 'rgba(8, 16, 30, 0.6)';
+    ctx.fillRect(x, y, bw, bh);
+    ctx.fillStyle = boss.phase === 'entering' ? 'rgba(255, 200, 80, 0.9)' : 'rgba(255, 70, 90, 0.95)';
+    ctx.fillRect(x, y, bw * f, bh);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.font = 'bold 11px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ffd0d0';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+    ctx.shadowBlur = 3;
+    ctx.fillText('BOSS', w / 2, y + bh + 2);
     ctx.restore();
 }
 
@@ -158,7 +224,7 @@ export function drawFlash(ctx, w, h, hit, collect) {
     }
 }
 
-/** Radar glyph per type: diamond = crystal, × = red rock (later: saucer, ring = boss, square = power-up). */
+/** Radar glyph per type: diamond = crystal, × = red rock, flat ellipse = UFO, ring = boss, square = power-up, dot = shot. */
 function glyph(ctx, type, x, y, s) {
     ctx.beginPath();
     if (type === 'crystal') {
@@ -175,6 +241,9 @@ function glyph(ctx, type, x, y, s) {
         // A cluster beyond the view distance: a faint ring on the rim
         ctx.arc(x, y, s * 1.8, 0, Math.PI * 2);
         ctx.stroke();
+    } else if (type === 'shot') {
+        ctx.arc(x, y, s * 0.55, 0, Math.PI * 2);
+        ctx.fill();
     } else if (type === 'powerup') {
         ctx.rect(x - s * 0.8, y - s * 0.8, s * 1.6, s * 1.6);
         ctx.fill();
@@ -186,7 +255,8 @@ function glyph(ctx, type, x, y, s) {
 
 /**
  * Two radar circles (radar3d.js buildRadar + radarLayout). colors: { collect, hazard } (the
- * palette's radar colours, colour-safe aware). time: seconds, for the threat flash.
+ * palette's radar colours, colour-safe aware), optional ufo, boss, powerup. time: seconds,
+ * for the threat flash.
  */
 export function drawRadar(ctx, layout, radar, colors, time = 0) {
     if (!layout || !radar) return;
@@ -228,7 +298,7 @@ export function drawRadar(ctx, layout, radar, colors, time = 0) {
         // Far first, so near blips are drawn on top
         const blips = [...radar[hemi]].sort((a, b) => a.near - b.near);
         for (const b of blips) {
-            const color = b.type === 'crystal' ? colors.collect : colors.hazard;
+            const color = b.type === 'crystal' ? colors.collect : (colors[b.type === 'saucer' ? 'ufo' : b.type] || colors.hazard);
             const x = cx + b.x * r;
             const y = cy - b.y * r;
             // The last rocks of a level stay clearly visible however far they are

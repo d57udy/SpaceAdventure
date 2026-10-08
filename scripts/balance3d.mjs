@@ -3,10 +3,13 @@
 // simulation (js/3d/sim3d.js) headless for seeded minutes with two scripted pilots and
 // reports how often danger shows up:
 //   - 'nododge': flies straight at the nearest crystal and never reacts to danger; once the
-//     crystals are gone it hunts the remaining red rocks;
-//   - 'dodge': the same, but it shoots red rocks in its way, and after a human reaction time
-//     turns to shoot a threat in front of it, or flies across the threat's path when it is not.
-// Lives are unlimited here so the rates stay measurable.
+//     crystals are gone it hunts the remaining red rocks and UFOs (a UFO blocks the level end);
+//   - 'dodge': the same, but it shoots red rocks and UFOs in its way, and after a human
+//     reaction time turns to shoot a threat in front of it, or flies across the threat's path
+//     when it is not. UFO shots can only be dodged; they glow, so it sees them from the view
+//     distance instead of waiting for the radar flash.
+// Threats are what the radar flashes for: red rocks and UFOs on a collision course and UFO or
+// boss shots heading for the ship. Lives are unlimited here so the rates stay measurable.
 //
 // Usage: node scripts/balance3d.mjs [--seconds 180] [--seeds 4] [--difficulty medium] [--view far] [--level 1]
 // tests/unit/balance3d.test.mjs checks the plan's targets with a short run.
@@ -14,7 +17,7 @@
 import { pathToFileURL } from 'node:url';
 import { createSim, stepSim, drainEvents, SIM } from '../js/3d/sim3d.js';
 import { nearestDelta } from '../js/3d/world3d.js';
-import { isThreat } from '../js/3d/radar3d.js';
+import { isThreat, RADAR } from '../js/3d/radar3d.js';
 import {
     vDot, vLen, vNorm, vCross, vSub, vScale, vAdd, qMul, qFromAxisAngle, qNorm, forwardOf, clamp,
 } from '../js/3d/math3d.js';
@@ -48,7 +51,7 @@ const angleTo = (q, dir) => Math.acos(clamp(vDot(forwardOf(q), vNorm(dir)), -1, 
 
 function nearest(s, pred) {
     let best = null;
-    for (const r of s.rocks) {
+    for (const r of [...s.rocks, ...s.ufos]) {
         if (!pred(r)) continue;
         const d = nearestDelta(s.ship.pos, r.pos, s.size);
         const dist = vLen(d);
@@ -78,7 +81,7 @@ export function leadDirection(d, shipVel, vel) {
 function clearShot(s, q, range) {
     const f = forwardOf(q);
     let first = null;
-    for (const r of s.rocks) {
+    for (const r of [...s.rocks, ...s.ufos]) {
         const d = nearestDelta(s.ship.pos, r.pos, s.size);
         const w = vAdd(vScale(f, SIM.bulletSpeed), vSub(s.ship.vel, r.vel)); // bullet relative to the rock
         const wl = vLen(w);
@@ -88,16 +91,27 @@ function clearShot(s, q, range) {
         if (off > r.radius * PILOT.aimSlack) continue;
         if (!first || along < first.along) first = { r, along };
     }
-    return !!first && first.r.kind === 'red';
+    return !!first && (first.r.kind === 'red' || first.r.kind === 'ufo');
 }
 
-function threats(s) {
+/**
+ * Threats the pilot knows about: what the radar flashes for (red rocks, UFOs, shots within its
+ * threat distance). seeShots: UFO and boss shots within the whole view distance (the dodging
+ * pilot watches them; they are counted as radar threats only within the radar's distance).
+ */
+function threats(s, { seeShots = false } = {}) {
     const out = [];
     const range = s.world.fogFar;
-    for (const r of s.rocks) {
-        if (r.kind !== 'red') continue;
+    const shots = [...s.ufoSys.bullets, ...(s.boss ? s.boss.state.bullets : [])];
+    for (const r of [...s.rocks.filter((x) => x.kind === 'red'), ...s.ufos]) {
         const d = nearestDelta(s.ship.pos, r.pos, s.size);
-        if (isThreat(d, vSub(r.vel, s.ship.vel), r.radius, range)) out.push({ r, d, dist: vLen(d) });
+        if (isThreat(d, vSub(r.vel, s.ship.vel), r.radius, range)) out.push({ r, d, dist: vLen(d), radar: true });
+    }
+    for (const r of shots) {
+        const d = nearestDelta(s.ship.pos, r.pos, s.size);
+        const rel = vSub(r.vel, s.ship.vel);
+        const radar = isThreat(d, rel, r.radius, range);
+        if (radar || (seeShots && isThreat(d, rel, r.radius, range / RADAR.threatFraction))) out.push({ r, d, dist: vLen(d), radar });
     }
     return out.sort((a, b) => a.dist - b.dist);
 }
@@ -109,7 +123,8 @@ export function pilotInput(s, kind, q, dt, threatList) {
     const seen = kind === 'dodge' && threatList ? threatList.filter((t) => t.age >= PILOT.reaction) : [];
     if (seen.length) {
         const t = seen[0];
-        if (angleTo(q, t.d) < PILOT.engageCone) {
+        // Rocks and UFOs in front are shot; shots can only be dodged
+        if (t.r.kind && angleTo(q, t.d) < PILOT.engageCone) {
             const nq = turnToward(q, leadDirection(t.d, s.ship.vel, t.r.vel), PILOT.turnRate * dt);
             return { q: nq, thrust: false, fire: clearShot(s, nq, range) };
         }
@@ -123,7 +138,7 @@ export function pilotInput(s, kind, q, dt, threatList) {
         return { q: nq, thrust: angleTo(nq, away) < PILOT.thrustCone * 2, fire: clearShot(s, nq, range) };
     }
     const crystal = nearest(s, (r) => r.kind === 'green');
-    const target = crystal || nearest(s, (r) => r.kind === 'red');
+    const target = crystal || nearest(s, (r) => r.kind === 'red' || r.kind === 'ufo');
     if (!target) return { q, thrust: false, fire: false };
     // The careless pilot only shoots once it is hunting red rocks
     const shoots = kind === 'dodge' || !crystal;
@@ -156,10 +171,10 @@ export function runPilot({ seed = 1, seconds = 120, pilot = 'nododge', difficult
     const steps = Math.round(seconds / SIM.dt);
     for (let i = 0; i < steps; i++) {
         if (i % PILOT.threatSample === 0) {
-            list = s.ship.alive ? threats(s) : [];
+            list = s.ship.alive ? threats(s, { seeShots: pilot === 'dodge' }) : [];
             const now = new Map();
             for (const t of list) {
-                if (!seen.has(t.r.id)) threatCount++;
+                if (!seen.has(t.r.id) && t.radar) threatCount++;
                 now.set(t.r.id, seen.get(t.r.id) ?? s.time);
                 t.age = s.time - now.get(t.r.id);
             }

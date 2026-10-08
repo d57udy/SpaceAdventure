@@ -193,3 +193,27 @@ test('clusters beyond the view distance: a rim marker at the centre of their rem
     assert.equal(marks[0].id, 1);
     assert.equal(marks[0].beyond, true);
 });
+
+test('UFOs, power-ups and the boss on the radar; the boss at any distance; hostile shots only when threatening', () => {
+    const ship = { pos: C, q: qIdentity(), vel: [0, 0, 0] };
+    const objs = [
+        { id: 'u', kind: 'ufo', pos: [C[0], C[1], C[2] - 300], vel: [0, 0, 0], radius: 15 },
+        { id: 'p', kind: 'powerup', pos: [C[0] + 200, C[1], C[2]], radius: 14 },
+        { id: 'boss', kind: 'boss', pos: [C[0], C[1], C[2] - 1550], radius: 150 },
+    ];
+    const shots = [
+        { id: 's1', pos: [C[0], C[1], C[2] - 200], vel: [0, 0, 350], radius: 3 },  // straight at the ship
+        { id: 's2', pos: [C[0], C[1], C[2] - 200], vel: [0, 0, -350], radius: 3 }, // going away
+    ];
+    const r = buildRadar(ship, objs, { size: SIZE, range: RANGE, shots });
+    const all = [...r.front, ...r.rear];
+    assert.equal(all.find((b) => b.id === 'u').type, 'saucer');
+    assert.equal(all.find((b) => b.id === 'p').type, 'powerup');
+    assert.equal(all.find((b) => b.id === 'boss').type, 'boss', 'beyond the view distance, still shown');
+    const shot = all.filter((b) => b.type === 'shot');
+    assert.deepEqual(shot.map((b) => [b.id, b.threat]), [['s1', true]]);
+    assert.equal(radar3d.radarType('ufo'), 'saucer');
+    // A UFO on a collision course flashes like a rock
+    const ram = buildRadar({ ...ship, vel: [0, 0, -100] }, [objs[0]], { size: SIZE, range: RANGE });
+    assert.equal(ram.front[0].threat, true);
+});

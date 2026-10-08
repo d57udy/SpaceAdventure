@@ -21,8 +21,9 @@ export const RADAR = Object.freeze({
     shipRadius: 9,
 });
 
-// Object kinds -> radar types (later: 'saucer' UFO, 'boss', 'powerup')
-const TYPE_OF = { green: 'crystal', red: 'rock' };
+// Object kinds -> radar types; 'shot' is a hostile bullet on a collision course
+const TYPE_OF = { green: 'crystal', red: 'rock', ufo: 'saucer', boss: 'boss', powerup: 'powerup' };
+export const radarType = (kind) => TYPE_OF[kind] || kind;
 
 /**
  * Where a ship-local direction goes on the radar.
@@ -100,12 +101,15 @@ export function clusterCentres(shipPos, rocks, size) {
  * @param {object[]} rocks - sim rocks ({ id, kind, pos, vel, radius, cluster? })
  * @param {object} o - { size: world cube side, range: view distance (fog far),
  *   all: show every rock at any distance (the last few of a level), clusters: also mark
- *   clusters beyond the view distance on the rim }
+ *   clusters beyond the view distance on the rim, shots: hostile bullets (UFO and boss
+ *   shots: only those on a collision course show, as flashing threats) }
+ * Rocks, crystals, UFOs (kind 'ufo'), power-ups ('powerup') and the boss ('boss') can all be
+ * in `rocks`; the boss shows at any distance (it is always findable, plan 07 §2.6).
  * @returns {{ front: object[], rear: object[] }} blips { id, type, x, y, dist, near, threat, beyond }
  *   near: 1 = right at the ship, 0 = at the view distance (beyond-range crystals: 0)
  *   type 'cluster' (beyond range only): id is the cluster id
  */
-export function buildRadar(ship, rocks, { size, range, all = false, clusters = false }) {
+export function buildRadar(ship, rocks, { size, range, all = false, clusters = false, shots = null }) {
     const shipVel = ship.vel || [0, 0, 0];
     const inRange = [];
     const beyond = [];
@@ -116,8 +120,15 @@ export function buildRadar(ship, rocks, { size, range, all = false, clusters = f
         const dist = vLen(delta);
         const e = { r, type, delta, dist };
         if (dist <= range) inRange.push(e);
-        else if (all) far.push(e);
+        else if (all || type === 'boss') far.push(e);
         else if (type === 'crystal') beyond.push(e);
+    }
+    // Hostile shots on a collision course (the threat flash for UFO and boss bullets)
+    for (const b of shots || []) {
+        const delta = nearestDelta(ship.pos, b.pos, size);
+        if (isThreat(delta, vSub(b.vel || [0, 0, 0], shipVel), b.radius || 0, range)) {
+            inRange.push({ r: b, type: 'shot', delta, dist: vLen(delta), shot: true });
+        }
     }
     inRange.sort((a, b) => a.dist - b.dist);
     beyond.sort((a, b) => a.dist - b.dist);
@@ -136,8 +147,8 @@ export function buildRadar(ship, rocks, { size, range, all = false, clusters = f
     const out = { front: [], rear: [] };
     for (const e of pick) {
         const p = radarPoint(qRotate(inv, e.delta));
-        const threat = !e.beyond && e.type === 'rock'
-            && isThreat(e.delta, vSub(e.r.vel || [0, 0, 0], shipVel), e.r.radius || 0, range);
+        const threat = e.shot || (!e.beyond && (e.type === 'rock' || e.type === 'saucer')
+            && isThreat(e.delta, vSub(e.r.vel || [0, 0, 0], shipVel), e.r.radius || 0, range));
         out[p.hemi].push({
             id: e.r.id,
             type: e.type,

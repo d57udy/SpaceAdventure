@@ -458,3 +458,50 @@ test('Graphics context loss pauses the game; a restored context is rebuilt and p
   await poll(page, 'drawCalls').toBeGreaterThan(0);
   expect(errors).toEqual([]);
 });
+
+test('layout3d=ufo: the UFO ahead shows on the radar; Space shoots it for 200 points', async ({ page }, testInfo) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=ufo', storage: { spaceAdventure_control3d: 'joystick' } });
+  await start(page);
+  await poll(page, 'ufos').toHaveLength(1);
+  const s = await g3(page);
+  expect(s.ufos[0].dist).toBe(400);
+  expect(s.radar.front.some((b) => b.type === 'saucer')).toBe(true);
+  await shot(page, testInfo, 'ufo');
+  await page.keyboard.down('Space');
+  await expect.poll(() => g3get(page, 'stats').then((st) => st.ufosShot), { timeout: T }).toBe(1);
+  await page.keyboard.up('Space');
+  expect(await g3get(page, 'score')).toBe(200);
+  expect(await g3get(page, 'ufos')).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('layout3d=boss: the boss enters, one shot at its exposed core defeats it, its drops appear, level 3 follows', async ({ page }, testInfo) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=boss', storage: { spaceAdventure_control3d: 'joystick' } });
+  const s0 = await g3(page);
+  expect(s0.level).toBe(2);
+  expect(s0.boss.phase).toBe('entering');
+  await start(page);
+  await expect.poll(() => g3get(page, 'boss').then((b) => b && b.phase), { timeout: T }).toBe('fighting');
+  await shot(page, testInfo, 'boss');
+  await page.keyboard.down('Space');
+  await expect.poll(() => g3get(page, 'stats').then((st) => st.bosses), { timeout: T }).toBe(1);
+  await page.keyboard.up('Space');
+  await poll(page, 'level').toBe(3);
+  expect(await g3get(page, 'boss')).toBe(null);
+  expect(errors).toEqual([]);
+});
+
+test('layout3d=powerup: thrust into the triple shot, then each shot fires 3 bullets; H jumps through hyperspace', async ({ page }) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=powerup', storage: { spaceAdventure_control3d: 'joystick' } });
+  await start(page);
+  expect((await g3get(page, 'powerUps'))[0].type).toBe('triple_shot');
+  await page.keyboard.down('KeyW');
+  await expect.poll(() => g3get(page, 'effects').then((e) => e.triple_shot || 0), { timeout: T }).toBeGreaterThan(0);
+  await page.keyboard.up('KeyW');
+  await page.keyboard.down('Space');
+  await expect.poll(() => g3get(page, 'counts').then((c) => c.bullets), { timeout: T }).toBeGreaterThanOrEqual(3);
+  await page.keyboard.up('Space');
+  await page.keyboard.press('KeyH');
+  await expect.poll(() => g3get(page, 'hyperspace').then((h) => h.jumps), { timeout: T }).toBe(1);
+  expect(errors).toEqual([]);
+});

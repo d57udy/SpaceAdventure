@@ -6,7 +6,10 @@
 // URL options: ?3d=1 (required), &seed3d=N (repeatable layout), &layout3d=range (one red
 // rock straight ahead and one crystal behind: used by the browser tests), &layout3d=far
 // (one red rock FAR_ROCK_DISTANCE straight ahead: past the original fog end), &layout3d=last
-// (level 1 down to a small crystal and a small red rock straight ahead), &lowres3d=1
+// (level 1 down to a small crystal and a small red rock straight ahead), &layout3d=ufo (one
+// UFO 400 straight ahead, holding still and not firing), &layout3d=boss (level 2 with only the
+// boss left, holding still 700 ahead, its outer weak points already gone and the core down
+// to one shot: a test shortcut), &layout3d=powerup (a triple-shot power-up 60 ahead, a red rock 500 ahead), &lowres3d=1
 // (tests only: fixed half-resolution drawing buffer, no antialiasing, 1x HUD, so a software
 // renderer on CI keeps a usable frame rate; real devices never get it).
 //
@@ -25,9 +28,10 @@ import { createWakeLock } from '../wakeLock.js';
 import { radialDeadzone, GP, TRIGGER_THRESHOLD, BUTTON_THRESHOLD, RUMBLE_PATTERNS } from '../gamepad.js';
 import { URL_2D } from '../mode3d.js';
 import {
-    createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, adaptiveInfo, aimTargets, SIM,
+    createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, adaptiveInfo, aimTargets, bossBody, activeEffects, hyperspaceState, SIM,
 } from './sim3d.js';
 import { createAdaptive3d, DIFFICULTY_3D, DIFFICULTY_IDS_3D } from './rules3d.js';
+import { POWERUP3D, powerUpScale } from './powerup3d.js';
 import { crosshairTarget, leadPoint, projectLocal, crystalArrowOptions } from './assist3d.js';
 import { createPerfMonitor, createContextLossTracker } from './perf3d.js';
 import { createBrowserAudio3d } from './audio3d.js';
@@ -42,7 +46,7 @@ import {
 } from './sensors.js';
 import {
     drawCrosshair, drawHudText, drawJoystick, drawFlash, drawRadar, drawEdgeMarker, drawBanner, drawDamage, damageAngle,
-    drawTargetBrackets, drawLeadMarker, drawHitMarker,
+    drawTargetBrackets, drawLeadMarker, drawHitMarker, drawPowerUpChips, drawBossBar,
 } from './hud3d.js';
 import { buildRadar, edgeMarker, radarLayout, remainingMarkers, lastFew } from './radar3d.js';
 import { findPalette } from '../palette.js';
@@ -56,6 +60,9 @@ const MODE_HELP = {
 const NO_DATA_MS = 1500;
 const MIN_RENDER_SCALE = 0.5; // nextRenderScale's floor (perf3d.js offers 2D below 30 fps there)
 const FALLBACK_MS = 2500;     // the context-loss message shows this long before 2D opens
+const UFO_COLOR = '#B266FF';  // purple saucer (plan 07 §2.4)
+const BOSS_COLOR = '#FF8844';
+const POWERUP_COLOR = '#FFD24A';
 const STICK_RADIUS = 64;
 const MAX_STEPS = 6;
 export const FAR_ROCK_DISTANCE = 1000; // &layout3d=far: beyond the original fog end (720)
@@ -94,6 +101,11 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 #p3-thrust { left: calc(16px + env(safe-area-inset-left, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
 #p3-fire { right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   background: rgba(255,80,80,0.22); }
+#p3-hyper { width: 56px; height: 56px; font-size: 11px; right: calc(108px + env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: rgba(120,160,255,0.2); }
+#p3-hyper.p3-cool { opacity: 0.45; }
+#proto3d.p3-joystick #p3-hyper { right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+#proto3d.p3-joystick.p3-free #p3-hyper { bottom: calc(188px + env(safe-area-inset-bottom, 0px)); }
 #proto3d.p3-joystick #p3-thrust { left: auto; right: calc(116px + env(safe-area-inset-right, 0px)); }
 .p3-roll { display: none; width: 64px; height: 64px; font-size: 26px; }
 #proto3d.p3-joystick.p3-free .p3-roll { display: block; }
@@ -137,6 +149,7 @@ const HTML = `
 <div id="p3-insets" aria-hidden="true"></div>
 <button type="button" id="p3-thrust" class="p3-btn p3-game" aria-label="Thrust">THRUST</button>
 <button type="button" id="p3-fire" class="p3-btn p3-game" aria-label="Fire">FIRE</button>
+<button type="button" id="p3-hyper" class="p3-btn p3-game" aria-label="Hyperspace">HYPER</button>
 <button type="button" id="p3-roll-left" class="p3-btn p3-roll p3-game" aria-label="Roll left">⟲</button>
 <button type="button" id="p3-roll-right" class="p3-btn p3-roll p3-game" aria-label="Roll right">⟳</button>
 <div id="p3-topbar" class="p3-game">
@@ -265,6 +278,7 @@ export async function startPrototype({
     let markers = [], few = false;
     let damage = { angle: 0, alpha: 0 };
     let hitMarker = 0;
+    let hyperspaceAt = null, shieldHitAt = -1e9; // sim time of the last jump / shield hit (renderer effects)
     let target = null, targetScreen = null, leadScreen = null;
     let padActive = null, usingPad = false;
     let perfPrompt = false;
@@ -385,6 +399,8 @@ export async function startPrototype({
         if (renderer && renderer.setWorld) renderer.setWorld(worldFor(view));
         if (audio) guard(() => audio.setRange(worldFor(view).fogFar));
         adaptive.reset(); // as 2D: a new game starts Balanced
+        hyperspaceAt = null;
+        shieldHitAt = -1e9;
         const opts = { seed, view, difficulty: difficultyName(), adaptive };
         if (layout === 'far') {
             sim = createSim({ ...opts, field: false });
@@ -405,6 +421,25 @@ export async function startPrototype({
                 makeRock({ id: nextId(sim), kind: 'green', size: 'small', pos: [x, y, z - 100], vel: [0, 0, 0], rand: sim.rand }),
                 makeRock({ id: nextId(sim), kind: 'red', size: 'small', pos: [x, y, z - 1000], vel: [0, 0, 0], rand: sim.rand }),
             ];
+        } else if (layout === 'ufo') {
+            sim = createSim({ ...opts, field: false });
+            const [x, y, z] = sim.ship.pos;
+            const u = sim.ufoSys.spawnAt([x, y, z - 400], sim.ship.pos);
+            u.vel = [0, 0, 0];
+            u.fireTimer = 1e9;
+            sim.ufos = sim.ufoSys.ufos;
+        } else if (layout === 'boss') {
+            sim = createSim({ ...opts, level: 2, ufos: false, powerUps: false });
+            sim.rocks = [];
+            sim.incoming.left = 0;
+            for (const w of sim.boss.state.weakPoints) { w.destroyed = true; w.health = 0; }
+            sim.boss.state.core.health = 10;
+            sim.boss.state.moveSpeed = 0; // holds still straight ahead, so a test can aim at it
+        } else if (layout === 'powerup') {
+            sim = createSim({ ...opts, field: false });
+            const [x, y, z] = sim.ship.pos;
+            sim.power.dropAt([x, y, z - 60], 'triple_shot');
+            sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - 500], vel: [0, 0, 0], rand: sim.rand }));
         } else {
             sim = createSim(opts);
         }
@@ -618,6 +653,9 @@ export async function startPrototype({
     }
     holdButton('p3-thrust', 'thrust');
     holdButton('p3-fire', 'fire');
+    // Hyperspace: one jump per press (button, H, controller B)
+    let hyperReq = false;
+    $('p3-hyper').addEventListener('pointerdown', (e) => { e.preventDefault(); if (screen === 'playing') hyperReq = true; });
     holdButton('p3-roll-left', 'rollLeft');
     holdButton('p3-roll-right', 'rollRight');
 
@@ -685,6 +723,7 @@ export async function startPrototype({
         if (e.repeat) return;
         if (e.code === 'KeyP') { if (screen === 'playing') pause(); else if (screen === 'paused') begin(); }
         if (e.code === 'KeyR' && screen === 'playing') doRecentre();
+        if (e.code === 'KeyH' && screen === 'playing') hyperReq = true;
         if (e.code === 'KeyL') toggleLevel();
         if (e.code === 'KeyM') $('p3-mode').click();
         if ((e.code === 'Enter') && screen !== 'playing' && renderer) $('p3-start').click();
@@ -705,7 +744,7 @@ export async function startPrototype({
     win.addEventListener('blur', () => releaseAll());
 
     // --- controller (first standard-mapping pad)
-    let padPauseWas = false;
+    let padPauseWas = false, padHyperWas = false;
     function pollPad() {
         pad = { x: 0, y: 0, roll: 0, thrust: false, fire: false };
         let pads = [];
@@ -719,6 +758,9 @@ export async function startPrototype({
         pad.x = l.x; pad.y = l.y; pad.roll = r.x;
         pad.thrust = (gp.buttons[GP.RT] && gp.buttons[GP.RT].value > TRIGGER_THRESHOLD) || b(GP.LT);
         pad.fire = b(GP.A) || b(GP.RB);
+        const hb = b(GP.B);
+        if (hb && !padHyperWas && screen === 'playing') hyperReq = true;
+        padHyperWas = hb;
         const p = b(GP.MENU);
         if (pad.x || pad.y || pad.roll || pad.thrust || pad.fire || p) usingPad = true;
         if (p && !padPauseWas) { if (screen === 'playing') pause(); else if (screen === 'paused') begin(); }
@@ -739,7 +781,10 @@ export async function startPrototype({
             mouseDX, mouseDY,
         }, dt);
         mouseDX = mouseDY = 0;
-        stepSim(sim, { q: look.q, thrust: held.thrust || keys.has('thrust') || pad.thrust, fire: held.fire || keys.has('fire') || pad.fire }, dt);
+        stepSim(sim, {
+            q: look.q, thrust: held.thrust || keys.has('thrust') || pad.thrust, fire: held.fire || keys.has('fire') || pad.fire, hyperspace: hyperReq,
+        }, dt);
+        hyperReq = false;
         for (const ev of drainEvents(sim)) handleEvent(ev);
     }
 
@@ -776,12 +821,46 @@ export async function startPrototype({
             effect('split', { sound: 'explosion', size: ev.size, local: localOf(ev.pos), haptic: ev.byShip ? null : 'rockDestroyed' });
         } else if (ev.type === 'hit' || ev.type === 'shieldHit') {
             if (ev.type === 'hit') flashHit = 1;
+            else shieldHitAt = sim.time;
             if (ev.from) damage = { angle: damageAngle(qRotate(qConj(look.q), ev.from)), alpha: 1 };
             effect(ev.type, { sound: ev.type === 'hit' ? 'hit' : null, haptic: ev.type });
         } else if (ev.type === 'level') {
             // Level 1 is the start of the game, not a level-up
             const up = ev.level > 1;
             effect('level', { sound: up ? 'levelUp' : null, haptic: up ? 'levelUp' : null });
+        } else if (ev.type === 'ufoShoot' || ev.type === 'bossShoot') {
+            effect(ev.type, { sound: 'ufoShoot', local: ev.pos ? localOf(ev.pos) : null });
+        } else if (ev.type === 'ufoSpawn' || ev.type === 'escort') effect('ufo');
+        else if (ev.type === 'ufoDestroyed') {
+            if (ev.by === 'player') hitMarker = 1;
+            if (renderer) {
+                renderer.burst(ev.pos, 'hit');
+                if (renderer.debris) renderer.debris(ev.pos, { size: 'medium', color: UFO_COLOR });
+            }
+            effect('ufoDestroyed', { sound: 'ufoExplode', local: localOf(ev.pos), haptic: ev.by === 'player' ? 'rockDestroyed' : null });
+        } else if (ev.type === 'bossHit') {
+            hitMarker = 1;
+            effect('bossHit');
+        } else if (ev.type === 'weakPointDestroyed') {
+            hitMarker = 1;
+            if (renderer) {
+                renderer.burst(ev.pos, 'hit');
+                if (renderer.debris) renderer.debris(ev.pos, { size: 'large', color: BOSS_COLOR });
+            }
+            effect('weakPoint', { sound: 'explosion', size: 'large', local: localOf(ev.pos), haptic: 'bossWeakPoint' });
+        } else if (ev.type === 'bossDefeated') {
+            if (renderer) {
+                renderer.burst(ev.pos, 'hit');
+                if (renderer.debris) for (let i = 0; i < 3; i++) renderer.debris(ev.pos, { size: 'large', color: BOSS_COLOR });
+            }
+            effect('bossDefeated', { sound: 'bossExplode', local: localOf(ev.pos), haptic: 'bossDefeated' });
+        } else if (ev.type === 'powerUp') {
+            flashCollect = 1;
+            effect('powerUp', { sound: ev.kind === 'extra_life' ? null : 'collectGreen', haptic: 'powerUp' });
+        } else if (ev.type === 'hyperspace') {
+            flashCollect = 1;
+            hyperspaceAt = sim.time;
+            effect('hyperspace', { haptic: 'hyperspace' });
         } else if (ev.type === 'extraLife') effect('extraLife', { sound: 'extraLife' });
         else if (ev.type === 'respawn') effect('respawn');
         else if (ev.type === 'gameover') { effect('gameover', { haptic: 'gameOver' }); gameOver(); }
@@ -862,14 +941,33 @@ export async function startPrototype({
         flashCollect = Math.max(0, flashCollect - dtReal * 3);
         damage.alpha = Math.max(0, damage.alpha - dtReal * 1.2);
         hitMarker = Math.max(0, hitMarker - dtReal * 4);
+        const hs = hyperspaceState(sim);
+        const hyperBtn = $('p3-hyper');
+        hyperBtn.classList.toggle('p3-cool', !hs.ready);
+        const hyperText = hs.ready ? 'HYPER' : String(Math.ceil(hs.cooldown));
+        if (hyperBtn.textContent !== hyperText) hyperBtn.textContent = hyperText;
         if (audio) {
             guard(() => audio.thrust(screen === 'playing' && sim.ship.alive && (held.thrust || keys.has('thrust') || pad.thrust)));
-            guard(() => audio.update({ screen, lives: sim.lives }));
+            guard(() => audio.update({ screen, lives: sim.lives, bossActive: !!sim.boss }));
+            const nu = screen === 'playing' ? sim.ufoSys.nearest(sim.ship.pos) : null;
+            if (audio.ufoHum) guard(() => audio.ufoHum(nu ? qRotate(qConj(look.q), nu.delta) : null));
         }
 
         updateRadar(now);
-        if (renderer) renderer.render({ shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt: dtReal });
+        if (renderer) renderer.render(renderView(dtReal));
         drawOverlay();
+    }
+
+    /** What the renderer draws this frame (render3d.js render(view)). */
+    function renderView(dt) {
+        return {
+            shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt, time: sim.time,
+            ufos: sim.ufos, hostileBullets: [...sim.ufoSys.bullets, ...(sim.boss ? sim.boss.state.bullets : [])],
+            boss: sim.boss ? sim.boss.state : null, powerUps: sim.power.pickups,
+            shield: Math.max(sim.power.effects.shield, sim.ship.shield), shieldHit: Math.max(0, 1 - (sim.time - shieldHitAt) * 2),
+            magnet: sim.power.effects.magnet, magnetRange: POWERUP3D.magnetRadius2d * powerUpScale(sim.world.fogFar),
+            hyperspace: hyperspaceAt === null ? null : sim.time - hyperspaceAt,
+        };
     }
 
     /**
@@ -881,11 +979,18 @@ export async function startPrototype({
         const o = { size: sim.size, range: sim.world.fogFar, aspect: cssW / cssH };
         const ship = { pos: sim.ship.pos, q: look.q, vel: sim.ship.vel };
         few = sim.levels && lastFew(rocksLeft(sim));
-        radar = buildRadar(ship, sim.rocks, { ...o, all: few, clusters: sim.levels });
+        const boss = bossBody(sim);
+        const shots = [...sim.ufoSys.bullets, ...(sim.boss ? sim.boss.state.bullets : [])];
+        radar = buildRadar(ship, [...sim.rocks, ...sim.ufos, ...sim.power.pickups, ...(boss ? [boss] : [])], {
+            ...o, all: few, clusters: sim.levels, shots,
+        });
         // Crystal arrow by the adaptive level (assist3d.js): always / none on screen / last few only
         const arrow = crystalArrowOptions(sim.assist, few);
         edge = arrow ? edgeMarker(ship, sim.rocks, { ...o, always: arrow.always }) : null;
         markers = few ? remainingMarkers(ship, sim.rocks, o) : [];
+        // UFOs within the view distance off screen; the boss wherever it is (always findable)
+        for (const m of remainingMarkers(ship, sim.ufos, o)) if (m.dist <= o.range) markers.push(m);
+        if (boss) markers.push(...remainingMarkers(ship, [boss], o));
         // Target brackets (always) and the lead marker (Assisting and Balanced)
         target = sim.ship.alive ? crosshairTarget(ship, aimTargets(sim), { size: sim.size, range: sim.world.fogFar }) : null;
         targetScreen = target ? projectLocal(target.local, cssW, cssH) : null;
@@ -912,20 +1017,26 @@ export async function startPrototype({
             drawHitMarker(hctx, cssW, cssH, hitMarker);
         }
         const adj = adaptiveInfo(sim);
-        drawHudText(hctx, cssW, cssH, {
+        const below = drawHudText(hctx, cssW, cssH, {
             score: sim.score, lives: sim.lives, mode: look.mode, chosenMode: chosenMode(), levelHorizon: look.level,
             level: sim.levels ? sim.level : 0, rocksLeft: sim.levels ? rocksLeft(sim) : undefined,
             view: VIEW_DISTANCES[viewName()].label, fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
             adjustment: adj.text, adjustmentColor: adj.color,
         }, { top: 0, left: 0, right: 0 });
+        drawPowerUpChips(hctx, activeEffects(sim), 12, (below || 50) + 6);
+        if (sim.boss) drawBossBar(hctx, cssW, cssH, { health: sim.boss.health, maxHealth: sim.boss.maxHealth, phase: sim.boss.phase });
         const pal = findPalette(settings.get('palette'));
+        const markerColor = { crystal: pal.collectRadar, saucer: UFO_COLOR, boss: BOSS_COLOR };
         if (screen === 'playing') {
             drawEdgeMarker(hctx, cssW, cssH, edge, pal.collectRadar);
-            for (const m of markers) drawEdgeMarker(hctx, cssW, cssH, m, m.type === 'crystal' ? pal.collectRadar : pal.hazardRadar);
+            for (const m of markers) drawEdgeMarker(hctx, cssW, cssH, m, markerColor[m.type] || pal.hazardRadar);
             if (!sim.ship.alive && !sim.over) drawBanner(hctx, cssW, cssH, { text: 'SHIP LOST', sub: `${sim.lives} ${sim.lives === 1 ? 'life' : 'lives'} left`, t: 1 });
-            else drawBanner(hctx, cssW, cssH, sim.banner);
+            else if (sim.banner) drawBanner(hctx, cssW, cssH, sim.banner);
+            else if (sim.boss && sim.boss.warning) drawBanner(hctx, cssW, cssH, { text: 'BOSS', sub: 'Shoot the glowing weak points', t: 1 });
         }
-        drawRadar(hctx, layoutR, radar, { collect: pal.collectRadar, hazard: pal.hazardRadar }, clock / 1000);
+        drawRadar(hctx, layoutR, radar, {
+            collect: pal.collectRadar, hazard: pal.hazardRadar, ufo: UFO_COLOR, boss: BOSS_COLOR, powerup: POWERUP_COLOR,
+        }, clock / 1000);
         drawJoystick(hctx, stick);
     }
 
@@ -982,6 +1093,19 @@ export async function startPrototype({
                 id: target.id, dist: Math.round(target.dist), angle: r4(target.angle), onScreen: !!targetScreen, lead: !!leadScreen,
             } : null,
             hitMarker: r4(hitMarker),
+            ufos: sim.ufos.map((u) => ({
+                id: u.id, pos: u.pos.map(r4), dist: Math.round(vLen(nearestDelta(sim.ship.pos, u.pos, sim.size))), escort: !!u.escort,
+            })),
+            ufoBullets: sim.ufoSys.bullets.length,
+            boss: sim.boss ? {
+                ...sim.boss.snapshot(), pos: sim.boss.state.pos.map(r4), dist: Math.round(vLen(nearestDelta(sim.ship.pos, sim.boss.state.pos, sim.size))),
+                warning: sim.boss.warning,
+            } : null,
+            powerUps: sim.power.pickups.map((p) => ({
+                id: p.id, type: p.type, life: r4(p.life), dist: Math.round(vLen(nearestDelta(sim.ship.pos, p.pos, sim.size))),
+            })),
+            effects: Object.fromEntries(activeEffects(sim).map((e) => [e.kind, r4(e.left)])),
+            hyperspace: { ...hyperspaceState(sim), cooldown: r4(hyperspaceState(sim).cooldown) },
             particles: renderer && renderer.particles !== undefined ? renderer.particles : null,
             perf: { ...perf.snapshot(), prompt: perfPrompt },
             contextLoss: ctxLoss.snapshot(),
@@ -1015,7 +1139,7 @@ export async function startPrototype({
         return { id: r.id, kind: r.kind, size: r.size, ...(v || {}) };
     });
     hook.probe3d = () => (renderer
-        ? renderer.probeLitPixels({ shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt: 0 })
+        ? renderer.probeLitPixels(renderView(0))
         : null);
 
     refreshUi();

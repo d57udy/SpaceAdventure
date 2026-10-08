@@ -14,9 +14,9 @@ import { defineConfig, devices } from '@playwright/test';
 //   menus fit, screenshots per project in tests/screenshots/
 //   pwa-chromium           service worker, offline, install, full screen at /       -> pwa spec
 //   pwa-subpath            the same served under /SpaceAdventure/ like GitHub Pages -> pwa spec
-//   chromium-3d            3D prototype (?3d=1): landscape phone 892x412, touch, WebGL through
-//                          SwiftShader (no GPU on CI)                                -> proto3d spec
-//   chromium-3d-desktop    the same at 1280x800 with mouse and keyboard             -> proto3d spec
+//   chromium-3d            3D game (?3d=1): landscape phone 892x412, touch, WebGL through
+//                          SwiftShader (no GPU on CI)                      -> proto3d + game3d specs
+//   chromium-3d-desktop    the same at 1280x800 with mouse and keyboard             -> proto3d + game3d specs
 //
 // The existing projects block service workers (serviceWorkers: 'block') so they stay
 // deterministic; only the pwa-* projects let the worker run (the page opts in with ?sw=1
@@ -32,7 +32,7 @@ const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 's
 const PWA_SPECS = ['pwa.spec.js'];
 const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js', 'platform.spec.js'];
 // 3D prototype: WebGL needs SwiftShader in headless CI (docs/plans/06-3d-mode.md §5)
-const SPECS_3D = ['proto3d.spec.js'];
+const SPECS_3D = ['proto3d.spec.js', 'game3d.spec.js']; // game3d: the full game through js/3d/ui3d.js (skips until wired)
 const ARGS_3D = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--mute-audio'];
 // A tall phone (the adaptive, non-square canvas on a small screen)
 const PIXEL_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'phone.spec.js', 'settings.spec.js', 'tutorial.spec.js', 'layout.spec.js'];

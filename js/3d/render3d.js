@@ -20,6 +20,10 @@ import * as THREE from './vendor/three.module.min.js';
 import { nearestDelta, worldFor } from './world3d.js';
 import { verticalFov } from './radar3d.js';
 import { createDebrisPool, DEBRIS3D } from './debris3d.js';
+import {
+    createUfoMeshes, createHostileBullets, createBossMeshes, createPowerUpMeshes, createShieldBubble, createMagnetHint,
+    createHyperspaceEffect,
+} from './meshes3d.js';
 
 const BG = 0x02030a;
 const DUST_COUNT = 520;
@@ -244,6 +248,48 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
     scene.add(debrisMesh);
     const _c = new THREE.Color();
 
+    // --- UFOs, hostile shots, the boss, power-ups, shield, magnet, hyperspace (meshes3d.js
+    // builders: { object3d, update(state, time), dispose() }). The boss is rebuilt for each
+    // new boss (its weak points differ); the hyperspace effect is screen-fixed (under the camera).
+    const content = {
+        ufos: createUfoMeshes(),
+        shots: createHostileBullets(),
+        powerUps: createPowerUpMeshes(),
+        shield: createShieldBubble(),
+        magnet: createMagnetHint(),
+        hyper: createHyperspaceEffect(),
+    };
+    for (const k of ['ufos', 'shots', 'powerUps', 'shield', 'magnet']) scene.add(content[k].object3d);
+    camera.add(content.hyper.object3d);
+    let bossMesh = null, bossOf = null;
+
+    function syncContent(view) {
+        const v = {
+            shipPos, size: worldSize, cullDistance, fogNear, fogFar, far: camera.far,
+            camQ: [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w],
+        };
+        const t = performance.now() / 1000;
+        content.ufos.update({ ufos: view.ufos || [], view: v }, t);
+        content.shots.update({
+            bullets: (view.hostileBullets || []).map((b) => ({ pos: b.pos, radius: b.radius, life: b.life, from: b.from === 'boss' ? 'boss' : 'ufo' })),
+            view: v,
+        }, t);
+        content.powerUps.update({ powerUps: view.powerUps || [], view: v }, t);
+        content.shield.update({ shield: view.shield || 0, shieldHit: view.shieldHit || 0 }, t);
+        content.magnet.update({ magnet: view.magnet || 0, magnetRange: view.magnetRange || 0 }, t);
+        content.hyper.update({ hyperspace: view.hyperspace }, t);
+        const boss = view.boss || null;
+        if (boss !== bossOf) {
+            if (bossMesh) { scene.remove(bossMesh.object3d); bossMesh.dispose(); bossMesh = null; }
+            bossOf = boss;
+            if (boss) {
+                bossMesh = createBossMeshes({ normals: boss.weakPoints.map((w) => w.dir) });
+                scene.add(bossMesh.object3d);
+            }
+        }
+        if (bossMesh) bossMesh.update({ boss, turretFlash: view.turretFlash || 0, view: v }, t);
+    }
+
     let drawCalls = 0;
     let shipPos = [0, 0, 0];
     let drawnRocks = 0;
@@ -416,6 +462,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
             syncDust();
             syncSparks(view.dt || 0);
             syncDebris(view.dt || 0);
+            syncContent(view);
             renderer.render(scene, camera);
             drawCalls = renderer.info.render.calls;
         },
@@ -453,6 +500,10 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         },
         get drawnRocks() { return drawnRocks; },
         get drawCalls() { return drawCalls; },
-        dispose() { renderer.dispose(); },
+        dispose() {
+            for (const c of Object.values(content)) c.dispose();
+            if (bossMesh) bossMesh.dispose();
+            renderer.dispose();
+        },
     };
 }

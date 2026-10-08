@@ -13,8 +13,8 @@
 
 import { Difficulty, createDynamicDifficulty } from '../difficulty.js';
 
-// Seconds between incoming rocks at level 1 (3D only; plan 07 §2.2)
-const INCOMING_INTERVAL = Object.freeze({ easy: 8.5, medium: 5.5, hard: 4 });
+// Seconds between incoming rocks at level 1 (3D only; plan 07 §2.2, re-tuned with UFOs in §2.1)
+const INCOMING_INTERVAL = Object.freeze({ easy: 7, medium: 4.5, hard: 3.5 });
 
 /** Easy / Medium / Hard: the 2D table (js/difficulty.js Difficulty) plus the 3D incoming-rock timing. */
 export const DIFFICULTY_3D = Object.freeze(Object.fromEntries(Object.values(Difficulty).map((d) => [
@@ -69,7 +69,7 @@ export const RULES3D = Object.freeze({
     incomingStill: 40,         // below this ship speed they come from any direction
     incomingSpeed: [130, 190], // level 1, before the difficulty and adaptive multipliers
     incomingSpeedPerLevel: 0.04,
-    incomingMiss: 1.75,        // aim offset: uniform in a disc of this × (rock + ship radius): about a third would hit a ship that holds its course
+    incomingMiss: 1.5,         // aim offset: uniform in a disc of this × (rock + ship radius): over a third would hit a ship that holds its course (plan 07 §2.1 re-tune)
 });
 
 /**

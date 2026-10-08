@@ -314,7 +314,9 @@ test('view distance: Far by default; choosing one regenerates the world and show
     assert.equal(env.el('p3-view-far').getAttribute('aria-pressed'), 'false');
     assert.equal(env.el('p3-start').textContent, 'Tap to start');
     // layout3d=range keeps its two test rocks in every world
-    assert.deepEqual(g().counts, { green: 1, red: 1, rocks: 2, bullets: 0, left: 2, incoming: 0, incomingLeft: 0 });
+    assert.deepEqual(g().counts, {
+        green: 1, red: 1, rocks: 2, bullets: 0, left: 2, incoming: 0, incomingLeft: 0, ufos: 0, ufoBullets: 0, bossBullets: 0, powerUps: 0,
+    });
     assert.equal(g().levels, false, 'test layouts have no levels: the field stays as placed');
     const f = hud3d.formatHud({ score: 0, lives: 3, mode: 'direct', view: 'Very far', fps: 60, renderScale: 1 });
     assert.match(f.right, /View Very far · 60 fps/);
@@ -541,4 +543,96 @@ test('slow device: still slow at the lowest render scale offers 2D; Stay keeps 3
     assert.equal(g().perf.decision, 'ok');
     env.el('p3-perf-switch').click();
     assert.equal(env.win.location.replaced, './?2d=1');
+});
+
+const startJoystick = async (env) => {
+    env.el('p3-mode-joystick').click();
+    env.el('p3-start').click();
+    await tick();
+};
+
+test('layout3d=ufo: a UFO ahead on the radar and in the hook; shooting it scores 200', async () => {
+    const fx = fakeEffects();
+    const env = await boot({ search: '?3d=1&seed3d=1&layout3d=ufo', start: fx.start });
+    const g = () => env.win.__spaceAdventure.game3d;
+    await startJoystick(env);
+    env.frames(2);
+    assert.equal(g().ufos.length, 1);
+    assert.equal(g().ufos[0].dist, 400);
+    const blip = g().radar.front.find((b) => b.type === 'saucer');
+    assert.ok(blip && Math.abs(blip.x) < 1e-3, JSON.stringify(g().radar.front));
+    assert.equal(g().target.dist, 400, 'the UFO gets the brackets');
+    env.el('p3-fire').pointer('pointerdown');
+    env.frames(40);
+    env.el('p3-fire').pointer('pointerup');
+    assert.equal(g().ufos.length, 0);
+    assert.equal(g().score, 200);
+    assert.equal(g().stats.ufosShot, 1);
+    assert.ok(fx.names('play').includes('ufoExplode'));
+});
+
+test('layout3d=boss: boss in the hook and on the radar; one shot at the core after the entry defeats it; then level 3', async () => {
+    const fx = fakeEffects();
+    const env = await boot({ search: '?3d=1&seed3d=1&layout3d=boss', start: fx.start });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().level, 2);
+    assert.equal(g().boss.phase, 'entering');
+    assert.ok(g().boss.dist > 600 && g().boss.dist < 800);
+    await startJoystick(env);
+    env.frames(2);
+    assert.ok([...g().radar.front, ...g().radar.rear].some((b) => b.type === 'boss'));
+    env.frames(200); // the 3 s entry
+    assert.equal(g().boss.phase, 'fighting');
+    env.el('p3-fire').pointer('pointerdown');
+    for (let i = 0; i < 120 && g().stats.bosses === 0; i++) env.frames(1);
+    env.el('p3-fire').pointer('pointerup');
+    assert.equal(g().stats.bosses, 1);
+    assert.ok(fx.names('haptic').includes('bossDefeated'));
+    assert.ok(g().powerUps.length >= 1, 'the boss drops power-ups');
+    env.frames(150);
+    assert.equal(g().boss, null);
+    assert.equal(g().level, 3);
+});
+
+test('layout3d=powerup: fly into it for triple shot (HUD effect), then three bullets a shot; hyperspace by H and the button', async () => {
+    const env = await boot({ search: '?3d=1&seed3d=1&layout3d=powerup' });
+    const g = () => env.win.__spaceAdventure.game3d;
+    await startJoystick(env);
+    env.frames(2);
+    assert.equal(g().powerUps.length, 1);
+    assert.equal(g().powerUps[0].type, 'triple_shot');
+    env.el('p3-thrust').pointer('pointerdown');
+    for (let i = 0; i < 120 && !g().effects.triple_shot; i++) env.frames(1);
+    env.el('p3-thrust').pointer('pointerup');
+    assert.ok(g().effects.triple_shot > 9, JSON.stringify(g().effects));
+    assert.equal(g().powerUps.length, 0);
+    env.el('p3-fire').pointer('pointerdown');
+    env.frames(2);
+    env.el('p3-fire').pointer('pointerup');
+    assert.equal(g().counts.bullets, 3);
+    // Hyperspace: H, then the button is on cooldown
+    assert.equal(g().hyperspace.ready, true);
+    env.win.fire('keydown', { code: 'KeyH', repeat: false, preventDefault() {} });
+    env.frames(2);
+    assert.equal(g().hyperspace.jumps, 1);
+    if (g().shipAlive) {
+        assert.equal(g().hyperspace.ready, false);
+        assert.equal(env.el('p3-hyper').classList.contains('p3-cool'), true);
+        assert.equal(env.el('p3-hyper').textContent, '5');
+        env.el('p3-hyper').pointer('pointerdown');
+        env.frames(2);
+        assert.equal(g().hyperspace.jumps, 1, 'not ready: no jump');
+    }
+});
+
+test('HUD: power-up chips with timer bars, boss bar, radar glyphs for the new types', () => {
+    const chips = hud3d.chipLayout([{ kind: 'shield', left: 3, max: 6 }, { kind: 'magnet', left: 10, max: 10 }], 12, 60);
+    assert.deepEqual(chips.map((c) => [c.kind, c.x, c.fill]), [['shield', 12, 0.5], ['magnet', 58, 1]]);
+    assert.equal(hud3d.CHIP_STYLE.shield.label, 'S');
+    hud3d.drawPowerUpChips(ctx2d, [{ kind: 'triple_shot', left: 1, max: 10 }], 0, 0);
+    hud3d.drawBossBar(ctx2d, 800, 400, { health: 10, maxHealth: 100, phase: 'fighting' });
+    hud3d.drawBossBar(ctx2d, 800, 400, null);
+    const layout = { r: 40, front: { cx: 100, cy: 100 }, rear: { cx: 100, cy: 200 }, label: 'left' };
+    const blips = ['saucer', 'boss', 'powerup', 'shot'].map((type, i) => ({ id: i, type, x: 0, y: 0, dist: 100, near: 0.5, threat: type === 'shot', beyond: false }));
+    hud3d.drawRadar(ctx2d, layout, { front: blips, rear: [] }, { collect: '#0f0', hazard: '#f00', ufo: '#a0f' }, 0);
 });
