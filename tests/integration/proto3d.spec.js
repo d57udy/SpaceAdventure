@@ -473,6 +473,10 @@ test('Difficulty: Medium by default; Hard persists and the next game starts with
 test('Graphics context loss pauses the game; a restored context is rebuilt and play resumes', async ({ page }) => {
   const errors = await open3d(page, { storage: { spaceAdventure_control3d: 'joystick' } });
   await start(page);
+  // The page must stay: a slow restore is waited for (10 s of visible time), then asked about
+  const url = page.url();
+  let navigations = 0;
+  page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; });
   const lose = () => page.evaluate(() => {
     const gl = document.getElementById('p3-canvas').getContext('webgl2');
     window.__loseExt = gl && gl.getExtension('WEBGL_lose_context');
@@ -490,6 +494,9 @@ test('Graphics context loss pauses the game; a restored context is rebuilt and p
   await poll(page, 'screen').toBe('playing');
   await waitSteps(page, 2);
   await poll(page, 'drawCalls').toBeGreaterThan(0);
+  expect(navigations).toBe(0);
+  expect(page.url()).toBe(url);
+  expect((await g3get(page, 'contextLoss')).gaveUp).toBe(false);
   expect(errors).toEqual([]);
 });
 

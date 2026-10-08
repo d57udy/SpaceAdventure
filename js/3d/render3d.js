@@ -563,6 +563,8 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         },
         get drawnRocks() { return drawnRocks; },
         get drawCalls() { return drawCalls; },
+        /** Ask the browser to restore a lost context (WEBGL_lose_context, where it can). */
+        forceRestore() { renderer.forceContextRestore(); },
         dispose() {
             for (const c of Object.values(content)) c.dispose();
             if (bossMesh) bossMesh.dispose();

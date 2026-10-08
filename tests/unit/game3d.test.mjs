@@ -571,7 +571,7 @@ test('no Web Audio (unit tests, old browsers): the game runs silently', async ()
     assert.ok(g().steps > 0);
 });
 
-test('graphics context loss: pause, rebuild on restore; no restore in time: back to 2D with a message', async () => {
+test('graphics context loss: pause, rebuild on restore; no restore: ask (Retry / Switch to 2D); 3 losses: back to 2D', async () => {
     const env = await boot({ storage: JOY });
     const g = () => env.win.__spaceAdventure.game3d;
     await play(env);
@@ -590,12 +590,42 @@ test('graphics context loss: pause, rebuild on restore; no restore in time: back
     assert.equal(env.renderers.length, 2, 'renderer rebuilt');
     assert.equal(env.renderers[0].disposed, true);
     assert.equal(g().contextLoss.lost, false);
-    // Lost again and never restored: after 3 s, the message, then the 2D game
+    // Lost again and not restored: after 10 s of visible time a prompt asks; nothing navigates
+    env.ui.select(); // Resume on the pause menu
     env.el('p3-canvas').fire('webglcontextlost', { preventDefault() {} });
-    env.frames(400, 20);
-    assert.equal(g().contextLoss.gaveUp, true);
-    assert.match(g().message, /Switched to the 2D game/);
+    env.ui.select(); // OK on the message: the pause menu stays
+    env.frames(300, 20); // 6 s
+    assert.equal(g().ui.screen, 'pause');
+    env.doc.hidden = true; // a backgrounded tab: its time doesn't count
+    env.frames(500, 20);
+    env.doc.hidden = false;
+    assert.equal(g().ui.screen, 'pause');
+    env.frames(250, 20); // 5 s more visible
+    assert.equal(g().ui.screen, 'prompt');
+    assert.deepEqual(g().ui.view.buttons, ['retry', 'switch']);
+    assert.equal(env.win.location.replaced, undefined, 'no automatic switch');
+    let restores = 0;
+    env.renderers.at(-1).forceRestore = () => { restores++; };
+    pick(env, 'prompt-retry');
+    await tick();
+    assert.equal(restores, 1, 'Retry asks the browser to restore it');
+    env.frames(520, 20);
+    assert.equal(g().ui.screen, 'prompt', 'asked again after another wait');
+    pick(env, 'prompt-switch');
+    await tick();
     assert.equal(env.win.location.replaced, './?2d=1');
+    // Lost 3 times within a minute: the graphics are failing, back to 2D by itself
+    const env2 = await boot({ storage: JOY });
+    await play(env2);
+    for (let i = 0; i < 3; i++) {
+        env2.el('p3-canvas').fire('webglcontextlost', { preventDefault() {} });
+        env2.el('p3-canvas').fire('webglcontextrestored');
+        env2.frames(5);
+    }
+    assert.equal(env2.win.__spaceAdventure.game3d.contextLoss.gaveUp, true);
+    assert.match(env2.win.__spaceAdventure.game3d.message, /Switched to the 2D game/);
+    env2.frames(200, 20);
+    assert.equal(env2.win.location.replaced, './?2d=1');
 });
 
 test('slow device: still slow at the lowest render scale offers 2D; Stay keeps 3D, Switch opens 2D', async () => {

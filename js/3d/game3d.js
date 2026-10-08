@@ -336,7 +336,8 @@ export async function startGame3d({
         if (makeHaptics) haptics = await makeHaptics({ settings, gamepad: padRumble, usingController: () => usingPad, nav: win.navigator });
     } catch { haptics = null; }
 
-    // Graphics context loss (perf3d.js): pause, rebuild on restore, 2D when it doesn't come back
+    // Graphics context loss (perf3d.js): pause, rebuild on restore; no restore within 10 s of
+    // visible time: ask (Retry / Switch to 2D); lost 3 times in a minute: back to 2D
     const nowS = () => (clock || performance.now()) / 1000; // the frame clock, as tick() in the loop
     canvas.addEventListener('webglcontextlost', (e) => {
         if (e && e.preventDefault) e.preventDefault(); // otherwise the browser never restores it
@@ -1046,8 +1047,18 @@ export async function startGame3d({
             goodSeconds = n.goodSeconds;
             if (n.scale !== renderScale) { renderScale = n.scale; resize(); }
         }
-        // Graphics context that never came back (or keeps getting lost): back to 2D
-        const fb = ctxLoss.tick(now / 1000);
+        // Graphics context that doesn't come back: ask; one that keeps getting lost: back to 2D
+        const fb = ctxLoss.tick(now / 1000, { visible: !doc.hidden });
+        if (fb && fb.ask && ui) {
+            ui.prompt({
+                title: 'Graphics', text: fb.message,
+                buttons: [{ id: 'retry', label: 'Retry' }, { id: 'switch', label: 'Switch to 2D' }], cancel: 'retry',
+            }).then((id) => {
+                if (id === 'switch') { switchTo2d(); return; }
+                ctxLoss.retry(); // wait again; ask the browser to restore it where it can
+                if (renderer && renderer.forceRestore) guard(() => renderer.forceRestore());
+            });
+        }
         if (fb && fb.fallback) {
             say(fb.message, 1e9);
             fallbackAt = now + FALLBACK_MS;

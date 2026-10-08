@@ -121,6 +121,18 @@ async function flyInto(page) {
  */
 async function playTrainingWithKeyboard(page, { ramRed = false, onStep = null } = {}) {
   const seen = { minLives: Infinity, maxUfos: 0, maxPowerUps: 0, rammed: false, steps: [] };
+  // Every step the game passes through, sampled on every animation frame in the page: a short
+  // step (Avoid ends on the next fire) can come and go between two of the test's own reads
+  await page.evaluate(() => {
+    window.__tutorialSteps = [];
+    const sample = () => {
+      const t = window.__spaceAdventure && window.__spaceAdventure.tutorial;
+      const list = window.__tutorialSteps;
+      if (t && t.step && list[list.length - 1] !== t.step) list.push(t.step);
+      if (!t || t.active || !list.length) requestAnimationFrame(sample);
+    };
+    sample();
+  });
   const record = async () => {
     const g = await page.evaluate(() => {
       const h = window.__spaceAdventure;
@@ -175,6 +187,9 @@ async function playTrainingWithKeyboard(page, { ramRed = false, onStep = null } 
     }
     g = await record();
   }
+  // The page saw every step, also the ones that passed between two reads here
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r())));
+  seen.steps = await page.evaluate(() => window.__tutorialSteps.slice());
   return seen;
 }
 

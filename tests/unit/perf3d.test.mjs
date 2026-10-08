@@ -103,14 +103,28 @@ test('context loss: pause, restore rebuilds and keeps playing', () => {
     assert.deepEqual(c.restored(101), { rebuild: false }, 'nothing to restore');
 });
 
-test('context loss: no restore in time, or too many losses: fall back to 2D once', () => {
+test('context loss: no restore after 10 s of visible time: ask once (Retry waits again); a hidden tab does not count', () => {
+    assert.equal(CONTEXT3D.restoreWait, 10);
     const c = createContextLossTracker();
     c.lost(0);
-    assert.equal(c.tick(CONTEXT3D.restoreWait - 0.1), null);
-    assert.deepEqual(c.tick(CONTEXT3D.restoreWait), { fallback: true, message: CONTEXT_MESSAGES.fallback });
-    assert.equal(c.gaveUp, true);
-    assert.equal(c.tick(10), null, 'only once');
-    assert.deepEqual(c.restored(11), { rebuild: false });
+    for (let t = 1; t < CONTEXT3D.restoreWait; t++) assert.equal(c.tick(t), null);
+    assert.deepEqual(c.tick(CONTEXT3D.restoreWait), { ask: true, message: CONTEXT_MESSAGES.stuck });
+    assert.equal(c.tick(CONTEXT3D.restoreWait + 1), null, 'asked once');
+    assert.equal(c.gaveUp, false, 'never gives up by itself on one loss');
+    c.retry();
+    assert.equal(c.tick(CONTEXT3D.restoreWait + 5), null);
+    assert.equal(c.tick(2 * CONTEXT3D.restoreWait + 1).ask, true, 'Retry: another full wait');
+    assert.deepEqual(c.restored(30), { rebuild: true });
+    // Hidden (backgrounded) time doesn't count toward the wait
+    const h = createContextLossTracker();
+    h.lost(0);
+    assert.equal(h.tick(60, { visible: false }), null);
+    assert.equal(h.snapshot().waited, 0);
+    assert.equal(h.tick(65), null);
+    assert.equal(h.tick(70).ask, true);
+});
+
+test('context loss: lost 3 times within a minute: back to 2D once', () => {
     const d = createContextLossTracker();
     for (let i = 0; i < CONTEXT3D.maxLosses; i++) {
         d.lost(i * 10);
