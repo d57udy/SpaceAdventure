@@ -18,7 +18,7 @@
 const CACHE_PREFIX = 'space-adventure-';
 
 // @generated-begin (scripts/update-sw-version.mjs; do not edit by hand)
-const CACHE_VERSION = 'sa-4c766722d6af';
+const CACHE_VERSION = 'sa-89623d5bde6c';
 const PRECACHE = [
     './',
     'index.html',
@@ -85,6 +85,7 @@ const PRECACHE = [
     'js/3d/hyperspace3d.js',
     'js/3d/look.js',
     'js/3d/math3d.js',
+    'js/3d/meshes3d.js',
     'js/3d/perf3d.js',
     'js/3d/powerup3d.js',
     'js/3d/progress3d.js',
