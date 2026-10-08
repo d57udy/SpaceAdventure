@@ -11,6 +11,8 @@
 //   - update(state, time): state carries the sim objects plus `view` (see VIEW below);
 //     time is the wall clock in seconds (animation only, never gameplay).
 //   - dispose(): frees the geometries, materials and textures the builder made.
+//   - state.reducedMotion (prefers-reduced-motion, or a setting): the shield does not flicker
+//     and the boss pulses slowly and slightly; nothing else changes (blinks stay as cues).
 //
 // VIEW: { shipPos, size, cullDistance, fogNear, fogFar, camQ: [x, y, z, w], far } — the
 // same numbers render3d.js uses (worldFor() plus the camera's far plane). Objects are placed
@@ -113,10 +115,10 @@ export function bossGlowSize(dist, radius = MESHES3D.bossRadius) {
  * A weak point's glow (0..1) and colour weight from its health: full health glows brightest,
  * a damaged one dims, a destroyed one is dark; a hit (flash > 0) flares it. Pulses gently.
  */
-export function weakPointGlow(w, time = 0, flash = 0) {
+export function weakPointGlow(w, time = 0, flash = 0, reducedMotion = false) {
     if (!w || w.destroyed) return { glow: 0, heat: 0, destroyed: true };
     const frac = w.maxHealth > 0 ? clamp01(w.health / w.maxHealth) : 1;
-    const pulse = 0.85 + 0.15 * Math.sin(time * 4 + (Number(w.id) || 0));
+    const pulse = reducedMotion ? 1 : 0.85 + 0.15 * Math.sin(time * 4 + (Number(w.id) || 0));
     return { glow: clamp01((0.35 + 0.65 * frac) * pulse + flash * 10), heat: 1 - frac, destroyed: false }; // boss3d flash: 0.1 on a hit
 }
 
@@ -462,6 +464,7 @@ export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.b
             const b = state.boss;
             const v = viewOf(state);
             if (!b || b.alive === false) { root.visible = false; last = { glowOpacity: 0, bodyVisible: false, weakLit: 0 }; return; }
+            const calm = !!state.reducedMotion; // prefers-reduced-motion: slow, small pulses only
             const d = _rel(b.pos, v);
             const dist = dist3(d);
             const glowOpacity = bossGlowOpacity(dist, v.fogNear, v.fogFar) * seamFade(d, v.size);
@@ -476,7 +479,7 @@ export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.b
             const exposed = outerLeft === 0 && b.core && !b.core.destroyed;
             const hit = clamp01((b.flash || 0) * 10);
             bodyMat.emissive.setRGB(0, 0, 0);
-            if (exposed) bodyMat.emissive.copy(core).multiplyScalar(0.25 + 0.2 * Math.sin(time * 6));
+            if (exposed) bodyMat.emissive.copy(core).multiplyScalar(calm ? 0.3 + 0.05 * Math.sin(time * 1.5) : 0.25 + 0.2 * Math.sin(time * 6));
             if (hit > 0) bodyMat.emissive.lerp(_c.setRGB(1, 1, 1), hit * 0.6);
 
             // Weak points and halos (halos face the camera: undo the body rotation)
@@ -487,7 +490,7 @@ export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.b
             (b.weakPoints || []).forEach((w, i) => {
                 const dir = dirs[i];
                 if (!dir) return;
-                const g = weakPointGlow(w, time, w.id === b.lastHit ? b.flash || 0 : 0);
+                const g = weakPointGlow(w, time, w.id === b.lastHit ? b.flash || 0 : 0, calm);
                 _p.copy(dir).multiplyScalar(R * (g.destroyed ? 0.97 : 1.02));
                 _m.compose(_p, _q.identity(), _s.setScalar(g.destroyed ? 0.7 : 1));
                 if (g.destroyed) { wp.push(_m, dead); return; }
@@ -516,7 +519,7 @@ export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.b
             const cl = clampToFar(d, v.far);
             glow.position.set(cl.pos[0] - d[0], cl.pos[1] - d[1], cl.pos[2] - d[2]);
             glow.scale.setScalar(bossGlowSize(dist, R) * cl.scale);
-            glowMat.opacity = glowOpacity * (0.85 + 0.15 * Math.sin(time * 2));
+            glowMat.opacity = glowOpacity * (calm ? 0.9 : 0.85 + 0.15 * Math.sin(time * 2));
             glow.visible = glowOpacity > 0.01;
             last = { glowOpacity, bodyVisible: body.visible, weakLit: lit };
         },
@@ -611,18 +614,25 @@ void main() {
   gl_FragColor = vec4(uColor, uAlpha * rim * shimmer);
 }`;
 
-/** Shield bubble opacity: 0 without a shield, flickering in its last 2 s, a flare on a hit. */
-export function shieldAlpha(secondsLeft, time, hit = 0) {
+/**
+ * Shield bubble opacity: 0 without a shield, flickering (10 Hz) in its last 2 s, a flare on a
+ * hit. reducedMotion: no flicker; the bubble fades out smoothly over its last 2 s instead
+ * (still a clear "running out" cue) and the hit flare is smaller.
+ */
+export function shieldAlpha(secondsLeft, time, hit = 0, reducedMotion = false) {
     if (!(secondsLeft > 0) && !(hit > 0)) return 0;
     let a = 0.32;
-    if (secondsLeft > 0 && secondsLeft < MESHES3D.shieldWarn && Math.floor(time * 10) % 2) a *= 0.35;
-    return clamp01(a + hit * 0.6);
+    if (secondsLeft > 0 && secondsLeft < MESHES3D.shieldWarn) {
+        if (reducedMotion) a *= 0.35 + 0.65 * (secondsLeft / MESHES3D.shieldWarn);
+        else if (Math.floor(time * 10) % 2) a *= 0.35;
+    }
+    return clamp01(a + hit * (reducedMotion ? 0.3 : 0.6));
 }
 
 /**
  * Shield bubble: a sphere around the camera that tints the screen edges cyan while a shield
  * is active (and flares when it absorbs a hit). 1 draw call, only while visible.
- * state: { shield: seconds left, shieldHit: 0..1 (fading flare) }.
+ * state: { shield: seconds left, shieldHit: 0..1 (fading flare), reducedMotion }.
  */
 export function createShieldBubble({ radius = MESHES3D.shieldRadius, color = 0x00ffff } = {}) {
     const geo = new THREE.SphereGeometry(radius, 32, 16);
@@ -638,9 +648,10 @@ export function createShieldBubble({ radius = MESHES3D.shieldRadius, color = 0x0
     return {
         object3d: mesh,
         update(state = {}, time = 0) {
-            const a = shieldAlpha(state.shield || 0, time, state.shieldHit || 0);
+            const calm = !!state.reducedMotion;
+            const a = shieldAlpha(state.shield || 0, time, state.shieldHit || 0, calm);
             mat.uniforms.uAlpha.value = a;
-            mat.uniforms.uTime.value = time;
+            mat.uniforms.uTime.value = calm ? time * 0.15 : time; // a slow shimmer
             mesh.visible = a > 0;
         },
         get alpha() { return mat.uniforms.uAlpha.value; },

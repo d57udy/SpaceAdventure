@@ -12,7 +12,8 @@
 // boss left, holding still 700 ahead, its outer weak points already gone and the core down
 // to one shot: a test shortcut), &layout3d=doom (a quick game over: 1 life, a small crystal at
 // the ship, a large red rock 300 ahead flying at it, arriving in about 2 s), &layout3d=blocked
-// (level 1 with no rock left, only a still UFO beyond the view distance keeping it going), &layout3d=powerup (a triple-shot power-up 60 ahead, a red rock 500 ahead), &lowres3d=1
+// (level 1 with no rock left, only a still UFO beyond the view distance keeping it going),
+// &layout3d=busy (level 2 with the boss, two UFOs, two power-ups and rocks in view: draw calls), &layout3d=powerup (a triple-shot power-up 60 ahead, a red rock 500 ahead), &lowres3d=1
 // (tests only: fixed half-resolution drawing buffer, no antialiasing, 1x HUD, so a software
 // renderer on CI keeps a usable frame rate; real devices never get it).
 //
@@ -38,6 +39,7 @@ import { BUILD_VERSION } from '../version.js';
 import { createUi3d } from './ui3d.js';
 import { shipMods3d } from './progress3d.js';
 import { Tutorial3d, detectInputKind3d, recordTutorial3dDone } from './tutorial3d.js';
+import { createOrientationLock, rotateHint, prefersReducedMotion } from './orient3d.js';
 import { createWakeLock } from '../wakeLock.js';
 import {
     radialDeadzone, GP, TRIGGER_THRESHOLD, BUTTON_THRESHOLD, RUMBLE_PATTERNS, MENU_STICK_ON as MENU_STICK,
@@ -45,7 +47,7 @@ import {
 } from '../gamepad.js';
 import { URL_2D, writeLastMode } from '../mode3d.js';
 import {
-    createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, levelBlocked, adaptiveInfo, aimTargets, bossBody, activeEffects,
+    createSim, stepSim, drainEvents, simCounts, nextId, rocksLeft, showAllTargets, adaptiveInfo, aimTargets, bossBody, activeEffects,
     hyperspaceState, SIM,
 } from './sim3d.js';
 import { createAdaptive3d } from './rules3d.js';
@@ -67,7 +69,7 @@ import {
     drawTargetBrackets, drawLeadMarker, drawHitMarker, drawPowerUpChips, drawBossBar, drawVignette, vignetteAlpha,
     drawToast, drawTutorialBox, drawRadarPulse,
 } from './hud3d.js';
-import { buildRadar, edgeMarker, radarLayout, remainingMarkers, lastFew } from './radar3d.js';
+import { buildRadar, edgeMarker, radarLayout, remainingMarkers } from './radar3d.js';
 import { findPalette } from '../palette.js';
 
 const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
@@ -134,7 +136,8 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 .p3-small { min-width: 48px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: rgba(20,30,50,0.7);
   border: 1px solid rgba(255,255,255,0.35); font-size: 14px; }
 #p3-portrait-banner { position: absolute; left: 50%; top: calc(56px + env(safe-area-inset-top, 0px)); transform: translateX(-50%);
-  background: rgba(60,40,0,0.75); padding: 6px 12px; border-radius: 8px; font-size: 13px; }
+  background: rgba(60,40,0,0.75); padding: 6px 12px; border-radius: 8px; font-size: 13px; z-index: 40; pointer-events: none;
+  max-width: calc(100% - 32px); text-align: center; }
 .p3-hidden { display: none !important; }
 /* Left-handed layout: the buttons and the stick change sides */
 #proto3d.p3-left #p3-thrust { left: auto; right: calc(16px + env(safe-area-inset-right, 0px)); }
@@ -148,6 +151,9 @@ body.proto3d > *:not(#proto3d) { display: none !important; }
 /* Tutorial: the control it talks about pulses */
 @keyframes p3-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,210,122,0.9); } 50% { box-shadow: 0 0 0 10px rgba(255,210,122,0); } }
 .p3-hl { animation: p3-pulse 1s ease-in-out infinite; border-color: #ffd27a !important; }
+@media (prefers-reduced-motion: reduce) { .p3-hl { animation: none; box-shadow: 0 0 0 4px rgba(255,210,122,0.9); } }
+/* Pointer lock (desktop): no cursor over the view */
+#proto3d.p3-locked { cursor: none; }
 #p3-skip { display: none; }
 #proto3d.p3-tutorial #p3-skip { display: block; }
 /* The menus (ui3d.js) cover the game: no game buttons while they show */
@@ -171,7 +177,7 @@ const HTML = `
   <button type="button" id="p3-level" class="p3-small" aria-label="Level horizon">Level: off</button>
   <button type="button" id="p3-pause" class="p3-small" aria-label="Pause">II</button>
 </div>
-<div id="p3-portrait-banner" class="p3-game p3-hidden">Landscape recommended</div>
+<div id="p3-portrait-banner" class="p3-hidden" role="status">Landscape recommended</div>
 `;
 
 /**
@@ -237,6 +243,7 @@ export async function startGame3d({
     let error = null;
     let fps = 0, frameCount = 0, fpsT = 0;
     let frames = 0, steps = 0; // test hook: frames drawn and fixed sim steps run
+    let peakDrawCalls = 0; // test hook: the most draw calls of a frame while playing (plan 07 §5: < 25)
     let renderScale = 1, goodSeconds = 0, scaleT = 0;
     let pixelRatio = 1;
     let acc = 0, lastT = 0;
@@ -273,6 +280,8 @@ export async function startGame3d({
     const ctxLoss = createContextLossTracker();
     let audio = null, haptics = null;
     let ui = null; // the menus (ui3d.js), created once the page is set up
+    const orientLock = createOrientationLock({ win, doc }); // landscape while a game runs (Android full screen / app)
+    const reducedMotion = prefersReducedMotion(win); // fewer flashes, no hyperspace tunnel, no pulsing
     const guard = (fn) => { try { return fn(); } catch { return null; /* sound and vibration must not break the game */ } };
 
     // Controller rumble on the pad in use (haptics3d.js asks only while it is the last input)
@@ -342,6 +351,7 @@ export async function startGame3d({
             if (renderer && renderer.dispose) renderer.dispose();
             renderer = factory(canvas, { antialias: !lowres, world: worldFor(viewName()) });
             if (renderer.setWorld) renderer.setWorld(worldFor(viewName()));
+            applyLook();
             resize();
             say('Graphics restored.', 2000);
         } catch (e) {
@@ -359,7 +369,9 @@ export async function startGame3d({
         hud.height = Math.round(cssH * hdpr);
         hctx.setTransform(hdpr, 0, 0, hdpr, 0, 0);
         relayoutRadar();
-        $('p3-portrait-banner').classList.toggle('p3-hidden', !isPortrait(win));
+        const banner = $('p3-portrait-banner');
+        banner.classList.toggle('p3-hidden', !isPortrait(win));
+        banner.textContent = rotateHint(win); // iPhones can't lock the orientation: ask to turn
     }
     function relayoutRadar() {
         // Safe-area insets come from the CSS env() values the buttons use
@@ -427,6 +439,20 @@ export async function startGame3d({
             for (const w of sim.boss.state.weakPoints) { w.destroyed = true; w.health = 0; }
             sim.boss.state.core.health = 10;
             sim.boss.state.moveSpeed = 0; // holds still straight ahead, so a test can aim at it
+        } else if (layout === 'busy') {
+            // A busy scene for the draw-call budget: level 2 (the boss and a boss field), two
+            // UFOs, two kinds of power-up in view
+            sim = createSim({ ...opts, level: 2, ufos: false, powerUps: false });
+            const [x, y, z] = sim.ship.pos;
+            for (const dx of [-250, 250]) {
+                const u = sim.ufoSys.spawnAt([x + dx, y + 60, z - 450], sim.ship.pos);
+                u.vel = [0, 0, 0];
+            }
+            sim.ufos = sim.ufoSys.ufos;
+            sim.power.dropAt([x + 80, y, z - 200], 'shield');
+            sim.power.dropAt([x - 80, y, z - 200], 'magnet');
+            sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - 300], vel: [0, 0, 0], rand: sim.rand }));
+            sim.rocks.push(makeRock({ id: nextId(sim), kind: 'green', size: 'large', pos: [x + 40, y + 40, z - 260], vel: [0, 0, 0], rand: sim.rand }));
         } else if (layout === 'blocked') {
             // Level 1 with every rock gone and one UFO far beyond the view distance, holding still
             sim = createSim({ ...opts, powerUps: false });
@@ -461,6 +487,7 @@ export async function startGame3d({
         $('p3-level').textContent = `Level: ${lv ? 'on' : 'off'}`;
         const eff = effectiveMode();
         $('p3-mode').textContent = MODE_LABELS[eff] + (eff !== c ? '*' : '');
+        $('p3-recentre').classList.toggle('p3-hidden', eff === 'joystick'); // plan §3: for Direct and Rate
         root.classList.toggle('p3-joystick', eff === 'joystick');
         root.classList.toggle('p3-free', !lv);
         root.classList.toggle('p3-left', !!settings.get('leftHanded3d'));
@@ -562,6 +589,7 @@ export async function startGame3d({
         // never awaited. Without such a gesture (a controller's Ⓐ) a prompt asks for one.
         const gesture = performance.now() - lastGestureAt < 1000;
         if (gesture || !motionPermissionNeeded(win)) ensureMotion(chosenMode());
+        orientLock.lock(); // never awaited; only where allowed (Android full screen, installed app)
         begin();
         if (training) applyTutorialRequests(tutorial.start({ control: chosenMode(), input: inputKind() }));
         refreshUi();
@@ -721,6 +749,7 @@ export async function startGame3d({
         mouseDY += e.movementY || 0;
     });
     root.addEventListener('contextmenu', (e) => e.preventDefault());
+    doc.addEventListener('pointerlockchange', () => root.classList.toggle('p3-locked', doc.pointerLockElement === root));
 
     // --- keyboard
     const KEYMAP = {
@@ -797,9 +826,12 @@ export async function startGame3d({
         }
         const l = radialDeadzone(gp.axes[0], gp.axes[1]);
         const r = radialDeadzone(gp.axes[2], gp.axes[3]);
-        pad.x = l.x; pad.y = l.y; pad.roll = r.x;
-        pad.thrust = (gp.buttons[GP.RT] && gp.buttons[GP.RT].value > TRIGGER_THRESHOLD) || b(GP.LT);
-        pad.fire = b(GP.A) || b(GP.RB);
+        // Plan 07 §3: left stick turns, LT thrust, RT (or Ⓐ) fire, LB / RB roll (the right stick too)
+        const trigger = (i) => !!gp.buttons[i] && (gp.buttons[i].value > TRIGGER_THRESHOLD || gp.buttons[i].pressed);
+        pad.x = l.x; pad.y = l.y;
+        pad.roll = Math.max(-1, Math.min(1, r.x + (b(GP.RB) ? 1 : 0) - (b(GP.LB) ? 1 : 0)));
+        pad.thrust = trigger(GP.LT);
+        pad.fire = trigger(GP.RT) || b(GP.A);
         const hb = b(GP.B);
         if (hb && !padHyperWas && screen === 'playing') hyperReq = true;
         padHyperWas = hb;
@@ -1093,28 +1125,52 @@ export async function startGame3d({
         if (hyperBtn.textContent !== hyperText) hyperBtn.textContent = hyperText;
         if (audio) {
             guard(() => audio.thrust(screen === 'playing' && sim.ship.alive && (held.thrust || keys.has('thrust') || pad.thrust)));
-            guard(() => audio.update({ screen, lives: sim.lives, bossActive: !!sim.boss }));
+            guard(() => audio.update({ screen, lives: sim.lives, bossActive: !!sim.boss, tutorialActive: tutorial.active }));
             const nu = screen === 'playing' ? sim.ufoSys.nearest(sim.ship.pos) : null;
             if (audio.ufoHum) guard(() => audio.ufoHum(nu ? qRotate(qConj(look.q), nu.delta) : null));
         }
 
         updateRadar(now);
-        if (renderer) renderer.render(renderView(dtReal));
+        if (renderer) {
+            renderer.render(renderView(dtReal));
+            if (screen === 'playing') peakDrawCalls = Math.max(peakDrawCalls, renderer.drawCalls || 0);
+        }
         drawOverlay();
     }
 
-    /** What the renderer draws this frame (render3d.js render(view)). */
+    // Reused every frame (review #13: no per-frame allocation in the hot paths)
+    const markerColor = { crystal: '', saucer: UFO_COLOR, boss: BOSS_COLOR };
+    const radarOpts = {};
+    const radarShip = { pos: null, q: null, vel: null };
+    const radarColors = { collect: '', hazard: '', ufo: UFO_COLOR, boss: BOSS_COLOR, powerup: POWERUP_COLOR };
+    const view = {};
+    const hostile = [];
+    const radarObjects = [];
+    /** UFO and boss shots in one list (the same array every frame). */
+    function hostileShots() {
+        hostile.length = 0;
+        for (const b of sim.ufoSys.bullets) hostile.push(b);
+        if (sim.boss) for (const b of sim.boss.state.bullets) hostile.push(b);
+        return hostile;
+    }
+
+    /** What the renderer draws this frame (render3d.js render(view)); the same object every frame. */
     function renderView(dt) {
-        return {
-            shipPos: sim.ship.pos, q: look.q, rocks: sim.rocks, bullets: sim.bullets, dt, time: sim.time,
-            ufos: sim.ufos, hostileBullets: [...sim.ufoSys.bullets, ...(sim.boss ? sim.boss.state.bullets : [])],
-            boss: sim.boss ? sim.boss.state : null, powerUps: sim.power.pickups,
-            // The firing weak point's muzzle flash (boss3d.js sets and fades them)
-            turretFlash: sim.boss ? sim.boss.state.turretFlash || 0 : 0, turretDir: sim.boss ? sim.boss.state.turretDir || null : null,
-            shield: Math.max(sim.power.effects.shield, sim.ship.shield), shieldHit: Math.max(0, 1 - (sim.time - shieldHitAt) * 2),
-            magnet: sim.power.effects.magnet, magnetRange: POWERUP3D.magnetRadius2d * powerUpScale(sim.world.fogFar),
-            hyperspace: hyperspaceAt === null ? null : sim.time - hyperspaceAt,
-        };
+        view.shipPos = sim.ship.pos; view.q = look.q; view.rocks = sim.rocks; view.bullets = sim.bullets; view.dt = dt; view.time = sim.time;
+        view.ufos = sim.ufos;
+        view.hostileBullets = hostileShots();
+        view.boss = sim.boss ? sim.boss.state : null;
+        view.powerUps = sim.power.pickups;
+        // The firing weak point's muzzle flash (boss3d.js sets and fades them)
+        view.turretFlash = sim.boss ? sim.boss.state.turretFlash || 0 : 0;
+        view.turretDir = sim.boss ? sim.boss.state.turretDir || null : null;
+        view.shield = Math.max(sim.power.effects.shield, sim.ship.shield);
+        view.shieldHit = Math.max(0, 1 - (sim.time - shieldHitAt) * 2);
+        view.magnet = sim.power.effects.magnet;
+        view.magnetRange = POWERUP3D.magnetRadius2d * powerUpScale(sim.world.fogFar);
+        view.hyperspace = hyperspaceAt === null || reducedMotion ? null : sim.time - hyperspaceAt;
+        view.reducedMotion = reducedMotion; // the system setting (orient3d.js): calmer shield and boss
+        return view;
     }
 
     /**
@@ -1124,20 +1180,27 @@ export async function startGame3d({
      */
     function updateRadar(now) {
         const fov = settings.get('fov3d');
-        const o = { size: sim.size, range: sim.world.fogFar, aspect: cssW / cssH, fov };
-        const ship = { pos: sim.ship.pos, q: look.q, vel: sim.ship.vel };
+        const o = radarOpts;
+        o.size = sim.size; o.range = sim.world.fogFar; o.aspect = cssW / cssH; o.fov = fov;
+        const ship = radarShip;
+        ship.pos = sim.ship.pos; ship.q = look.q; ship.vel = sim.ship.vel;
         // No rock left but a UFO or the boss keeps the level going: they show at any distance,
         // with edge arrows, like the last few rocks (review #1)
-        const left = rocksLeft(sim);
-        const blocked = !!sim.levels && left === 0 && levelBlocked(sim);
-        few = !!sim.levels && lastFew(left, blocked);
+        // sim3d.showAllTargets: the last few rocks, or none left while UFOs or the boss block the end
+        few = showAllTargets(sim);
+        const blocked = few && rocksLeft(sim) === 0;
         const boss = bossBody(sim);
-        const shots = [...sim.ufoSys.bullets, ...(sim.boss ? sim.boss.state.bullets : [])];
-        // Power-ups only within the view distance, also while everything else shows at any distance
-        const pickups = sim.power.pickups.filter((p) => vLen(nearestDelta(sim.ship.pos, p.pos, sim.size)) <= o.range);
-        radar = buildRadar(ship, [...sim.rocks, ...sim.ufos, ...pickups, ...(boss ? [boss] : [])], {
-            ...o, all: few, clusters: sim.levels, shots,
-        });
+        // Rocks, UFOs, the boss and power-ups (those only within the view distance, also while
+        // everything else shows at any distance), in one list reused every frame
+        radarObjects.length = 0;
+        for (const r of sim.rocks) radarObjects.push(r);
+        for (const u of sim.ufos) radarObjects.push(u);
+        for (const p of sim.power.pickups) if (vLen(nearestDelta(sim.ship.pos, p.pos, sim.size)) <= o.range) radarObjects.push(p);
+        if (boss) radarObjects.push(boss);
+        o.all = few;
+        o.clusters = sim.levels;
+        o.shots = hostileShots();
+        radar = buildRadar(ship, radarObjects, o);
         // Crystal arrow by the adaptive level (assist3d.js): always / none on screen / last few only
         const arrow = crystalArrowOptions(sim.assist, few);
         edge = arrow ? edgeMarker(ship, sim.rocks, { ...o, always: arrow.always }) : null;
@@ -1164,7 +1227,8 @@ export async function startGame3d({
     function drawOverlay() {
         hctx.clearRect(0, 0, cssW, cssH);
         drawVignette(hctx, cssW, cssH, vignette);
-        drawFlash(hctx, cssW, cssH, flashHit, flashCollect);
+        const fk = reducedMotion ? 0.35 : 1; // reduce motion: gentler full-screen flashes
+        drawFlash(hctx, cssW, cssH, flashHit * fk, flashCollect * fk);
         if (sim.ship.alive) drawCrosshair(hctx, cssW, cssH, sim.ship.invulnerable > 0 ? 'rgba(255,140,140,0.9)' : undefined);
         drawDamage(hctx, cssW, cssH, damage.angle, damage.alpha);
         if (screen === 'playing') {
@@ -1178,11 +1242,13 @@ export async function startGame3d({
             level: sim.levels ? sim.level : 0, rocksLeft: sim.levels ? rocksLeft(sim) : undefined,
             view: VIEW_DISTANCES[viewName()].label, fps, renderScale, speed: vLen(sim.ship.vel), message: screen === 'playing' ? message : '',
             adjustment: adj.text, adjustmentColor: adj.color,
+            debug: !!settings.get('debug3d'),
+            hint: desktopHint(),
         }, { top: 0, left: 0, right: 0 });
         drawPowerUpChips(hctx, activeEffects(sim), 12, (below || 50) + 6);
         if (sim.boss) drawBossBar(hctx, cssW, cssH, { health: sim.boss.health, maxHealth: sim.boss.maxHealth, phase: sim.boss.phase });
         const pal = findPalette(settings.get('palette'));
-        const markerColor = { crystal: pal.collectRadar, saucer: UFO_COLOR, boss: BOSS_COLOR };
+        markerColor.crystal = pal.collectRadar;
         if (screen === 'playing') {
             drawEdgeMarker(hctx, cssW, cssH, edge, pal.collectRadar);
             for (const m of markers) drawEdgeMarker(hctx, cssW, cssH, m, markerColor[m.type] || pal.hazardRadar);
@@ -1190,9 +1256,9 @@ export async function startGame3d({
             else if (sim.banner) drawBanner(hctx, cssW, cssH, sim.banner);
             else if (sim.boss && sim.boss.warning) drawBanner(hctx, cssW, cssH, { text: 'BOSS', sub: 'Shoot the glowing weak points', t: 1 });
         }
-        drawRadar(hctx, layoutR, radar, {
-            collect: pal.collectRadar, hazard: pal.hazardRadar, ufo: UFO_COLOR, boss: BOSS_COLOR, powerup: POWERUP_COLOR,
-        }, clock / 1000);
+        radarColors.collect = pal.collectRadar;
+        radarColors.hazard = pal.hazardRadar;
+        drawRadar(hctx, layoutR, radar, radarColors, clock / 1000);
         if (screen === 'playing' && tutorial.active) {
             const tt = tutorial.text;
             drawTutorialBox(hctx, cssW, cssH, { title: tt.title, body: tt.body, progress: tutorial.progress });
@@ -1200,6 +1266,13 @@ export async function startGame3d({
         }
         if (toast) drawToast(hctx, cssW, cssH, toast);
         drawJoystick(hctx, stick);
+    }
+
+    /** Desktop: how to steer while the mouse is not captured yet. */
+    function desktopHint() {
+        if (screen !== 'playing' || doc.pointerLockElement === root) return '';
+        if (lastInputSource !== 'mouse' && lastInputSource !== 'keyboard') return '';
+        return 'Click the view to steer with the mouse (Esc releases it)';
     }
 
     // --- read-only test hook
@@ -1228,6 +1301,11 @@ export async function startGame3d({
             invert: !!look.invert,
             turnRateMult: look.turnRateMult || 1,
             credits: progress ? progress.creditsEarned : 0,
+            reducedMotion,
+            orientationLocked: orientLock.locked,
+            palette3d: renderer && renderer.palette ? renderer.palette : null,
+            hint: desktopHint(),
+            rotateHint: $('p3-portrait-banner').classList.contains('p3-hidden') ? null : $('p3-portrait-banner').textContent,
             frames,
             steps,
             time: r4(sim.time),
@@ -1292,6 +1370,7 @@ export async function startGame3d({
             renderScale,
             pixelRatio,
             drawCalls: renderer ? renderer.drawCalls : 0,
+            peakDrawCalls,
             three: renderer ? renderer.three : null,
             seed,
             message,
@@ -1315,8 +1394,15 @@ export async function startGame3d({
         ? renderer.probeLitPixels(renderView(0))
         : null);
 
+    /** Renderer settings: field of view and the (colour-safe) palette. */
+    function applyLook() {
+        if (renderer && renderer.setFov) renderer.setFov(settings.get('fov3d'));
+        if (renderer && renderer.setPalette) renderer.setPalette(settings.get('palette'));
+    }
+
     // --- menus (ui3d.js; docs/plans/07-ui3d-wiring.md)
     function switchTo2d() {
+        orientLock.unlock();
         writeLastMode(pageStorage(), null);
         win.location.replace(URL_2D);
     }
@@ -1329,6 +1415,7 @@ export async function startGame3d({
         else if (key === 'invert3d') look.invert = !!value;
         else if (key === 'fov3d') { if (renderer && renderer.setFov) renderer.setFov(value); }
         else if (key === 'leftHanded3d') refreshUi();
+        else if (key === 'palette') { if (renderer && renderer.setPalette) renderer.setPalette(value); }
         else if (key === 'viewDistance3d') chooseView(value); // the next game's world
         // difficulty: the next game; vignette3d, palette: read every frame; sound, music,
         // vibration and rumble: audio3d.js and haptics3d.js follow the settings themselves
@@ -1341,6 +1428,7 @@ export async function startGame3d({
         onResume: () => { if (screen === 'paused') begin(); },
         onRestart: () => startNewGame({ tutorial: false, progress }),
         onQuit: () => {
+            orientLock.unlock();
             if (progress) guard(() => progress.save());
             tutorial.reset();
             screen = 'menu';
@@ -1350,8 +1438,16 @@ export async function startGame3d({
         onSwitch2d: switchTo2d,
         onSettingChange,
     });
-    if (renderer && renderer.setFov) renderer.setFov(settings.get('fov3d'));
+    applyLook();
     ui.show('menu'); // or the name screen first, without a profile
+    if (!renderer) {
+        // No WebGL 2 (or it failed): say so, then the 2D game
+        ui.prompt({
+            title: '3D is not available',
+            text: '3D could not start on this device (WebGL 2 is not available). The 2D game opens instead.',
+            buttons: [{ id: 'ok', label: 'Open 2D' }],
+        }).then(switchTo2d);
+    }
 
     refreshUi();
     win.requestAnimationFrame(frame);

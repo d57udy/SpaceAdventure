@@ -22,9 +22,10 @@ test('difficulty table: the 2D values', () => {
 test('difficulty table: taken from js/difficulty.js, not a copy', () => {
     assert.deepEqual(DIFFICULTY_IDS_3D, ['easy', 'medium', 'hard']);
     for (const d of Object.values(Difficulty)) {
-        const { incomingInterval, ...rest } = DIFFICULTY_3D[d.id];
-        assert.deepEqual(rest, { ...d }, d.id);
-        assert.ok(incomingInterval > 0);
+        // Every 2D field with the 2D value; the 3D-only fields (incoming rock tuning) on top
+        const e = DIFFICULTY_3D[d.id];
+        for (const [k, v] of Object.entries(d)) assert.equal(e[k], v, `${d.id}.${k}`);
+        assert.ok(e.incomingInterval > 0);
     }
 });
 
@@ -84,4 +85,16 @@ test('level plan: difficulty and adaptive modifiers change speed, incoming timin
     const helped = levelPlan(1, { dda: { greenRatioMod: 1.3, asteroidSpeedMod: 0.6 } });
     assert.ok(helped.greens > levelPlan(1).greens, 'more crystals for a struggling player');
     assert.ok(helped.speedMult < levelPlan(1).speedMult);
+});
+
+test('3D tuning per difficulty: Easy fewer incoming rocks and smaller clusters, Hard more and a wider miss', async () => {
+    const { TUNING_3D } = await import('../../js/3d/rules3d.js');
+    const e = levelPlan(1, { difficulty: 'easy' }), m = levelPlan(1, { difficulty: 'medium' }), h = levelPlan(1, { difficulty: 'hard' });
+    assert.ok(e.incoming.count < m.incoming.count && m.incoming.count < h.incoming.count);
+    assert.equal(m.incoming.count, 22);
+    assert.equal(h.incoming.miss, TUNING_3D.hard.miss);
+    assert.ok(h.incoming.miss > m.incoming.miss);
+    assert.ok(e.clusterRocks.small < m.clusterRocks.small);
+    assert.equal(m.clusterRocks.small, 3);
+    assert.ok(e.incoming.interval > m.incoming.interval && m.incoming.interval > h.incoming.interval);
 });

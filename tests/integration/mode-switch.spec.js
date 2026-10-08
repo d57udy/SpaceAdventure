@@ -101,3 +101,19 @@ test('High Scores without 3D and without 3D scores: no switch, LEFT/RIGHT do not
   const regions = await hook(page, 'tapRegions');
   expect(regions.some((r) => r.id === 'highScores:board')).toBe(false);
 });
+
+test('the hook lists the main menu rows as soon as the state is menu (no wait for the first menu frame)', async ({ page }) => {
+  const errors = await openFresh(page, { url: '/?force3d=1', storage: { asteroids_currentUser: 'TESTER', asteroids_userList: JSON.stringify(['TESTER']) } });
+  // Read in the same task that first sees 'menu': before any menu frame could have drawn
+  const options = await page.evaluate(() => new Promise((resolve) => {
+    const check = () => {
+      const h = window.__spaceAdventure;
+      if (h && h.state === 'menu') resolve(h.menuOptions);
+      else setTimeout(check, 0);
+    };
+    check();
+  }));
+  expect(options[0]).toBe('Start 3D');
+  expect(options).toContain('Start');
+  expect(errors).toEqual([]);
+});

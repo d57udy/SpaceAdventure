@@ -18,7 +18,8 @@
 //     straight line passes within half the view distance of the ship, which is what a 2D UFO
 //     crossing its small screen does. A UFO that stays beyond the cull distance for
 //     FAR_TIMEOUT s leaves quietly, so a lost UFO never blocks the next one or the level end.
-//   - It only fires while within the view distance (a 2D UFO off screen still fires, but it
+//   - It only fires at a target within a shot's reach (1050 units; else it skips that turn and
+//     its timer runs again, see fire) and while within the view distance (a 2D UFO off screen still fires, but it
 //     is never more than about a screen away; from beyond the fog a shot would be unfair).
 //   - Distances: SCALE = view distance / 720 3D units per 2D px. At the original 3D view
 //     (fog end 720) one 2D px is one unit; Far (1440) doubles it. So the 2D 400 px "nearby
@@ -50,6 +51,7 @@ export const UFO3D = Object.freeze({
     farTimeout: 8,          // s beyond the cull distance before a UFO leaves
     viewRef: 720,           // 3D view distance at which 1 unit = 1 2D px
     shipRadius2d: 15,       // 2D PlayerShip radius
+    bulletRadius2d: 2,      // 2D BULLET_RADIUS: a 2D shot hits within ship + bullet radius
     shipRadius3d: 9,        // 3D SIM.shipRadius
 });
 
@@ -183,6 +185,8 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
         return ufo;
     }
 
+    const reach = () => UFO3D.bulletSpeed * UFO3D.bulletLife;
+
     function fire(ufo, ship, greens, events) {
         const greenRadius = UFO3D.greenRadius2d * scaleFor(sys.range);
         let target = null;
@@ -199,7 +203,18 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
         const delta = nearestDelta(ufo.pos, target.pos, sys.size);
         const dist = vLen(delta);
         if (dist < 1e-6) return;
-        const theta = aimCone3d(accuracy(), dist, { scale: scaleFor(sys.range), r3: targetType === 'ship' ? UFO3D.shipRadius3d : (target.radius || 16) });
+        // Out of reach (a shot flies bulletSpeed × bulletLife = 1050): no shot this time, the
+        // timer runs again as after a shot. A 2D UFO is always within reach of its screen, so
+        // the 2D rhythm (one shot every 2 s ± 20 %) is kept and no shot is wasted.
+        const targetRadius = targetType === 'ship' ? UFO3D.shipRadius3d : (target.radius || 16);
+        if (dist > reach() + targetRadius) {
+            events.push({ type: 'ufoHold', ufo: ufo.id, target: targetType });
+            return;
+        }
+        // Hit radii as the collisions use them: target + bullet, in 3D and in 2D, so the cone
+        // gives the 2D hit chance (scripts/balance3d.mjs ufoHitCheck measures it)
+        const r3 = (targetType === 'ship' ? UFO3D.shipRadius3d : (target.radius || 16)) + UFO3D.bulletRadius;
+        const theta = aimCone3d(accuracy(), dist, { scale: scaleFor(sys.range), r3, r2: UFO3D.shipRadius2d + UFO3D.bulletRadius2d });
         const dir = randomInCone(rand, vScale(delta, 1 / dist), theta);
         const start = wrapPos(vAdd(ufo.pos, vScale(dir, ufo.radius + 2)), sys.size);
         const bullet = {
@@ -253,6 +268,7 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
          * is left in the level, so a UFO beyond the cull distance turns back toward the ship
          * (straight at it) instead of wandering off for farTimeout s (review #1).
          * Returns events: ufoSpawn { ufo }, ufoShoot { ufo, bullet, target: 'ship'|'green' },
+         * ufoHold { ufo, target } (its turn to fire, but the target is beyond a shot's reach),
          * ufoLeft { ufo } (gone far away), bulletExpired { bullet }.
          */
         update(dt, { ship, greens = [], recall = false } = {}) {

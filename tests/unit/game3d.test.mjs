@@ -120,7 +120,7 @@ function fakeEnv({ permission = null, screenAngle = 90, dpr = 3.5 } = {}) {
         const r = {
             three: 'fake', drawCalls: 7, setSize() {}, render() {}, burst() {}, probeLitPixels: () => ({ lit: 1 }), setWorld(w) { worlds.push(w); },
             debris(pos, o) { debris.push(o); }, get particles() { return debris.length; }, disposed: false, dispose() { this.disposed = true; },
-            fovSet: null, setFov(f) { this.fovSet = f; },
+            fovSet: null, setFov(f) { this.fovSet = f; }, palette: 'standard', setPalette(id) { this.palette = id; },
         };
         renderers.push(r);
         return r;
@@ -924,4 +924,113 @@ test('layout3d=blocked: no rock left, a UFO beyond the view distance keeps the l
     assert.ok(blip, 'on the radar at any distance');
     assert.ok(g().markers.some((m) => m.type === 'saucer'), 'with an edge arrow');
     assert.equal(g().level, 1, 'still blocked');
+});
+
+// --- plan 07 compliance pass: platform and comfort
+
+test('controller in play (plan §3): LT thrusts, RT fires, LB / RB roll, Ⓑ jumps, Start pauses', async () => {
+    const env = await boot({ storage: { ...JOY, ...PILOT(), spaceAdventure_offerTutorial: 'false' } });
+    const g = () => env.win.__spaceAdventure.game3d;
+    await play(env);
+    const buttons = Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }));
+    env.win.navigator.getGamepads = () => [{ connected: true, axes: [0, 0, 0, 0], buttons }];
+    buttons[6].value = 1; // LT
+    env.frames(30);
+    buttons[6].value = 0;
+    assert.ok(g().speed > 20, `thrust: ${g().speed}`);
+    buttons[7].value = 1; // RT
+    env.frames(5);
+    buttons[7].value = 0;
+    assert.ok(g().stats.shots > 0, 'fire');
+    buttons[5].pressed = true; // RB
+    env.frames(20);
+    buttons[5].pressed = false;
+    assert.ok(Math.abs(g().roll) > 5, `roll: ${g().roll}`);
+    buttons[9].pressed = true; // Start
+    env.frames(1);
+    buttons[9].pressed = false;
+    assert.equal(g().screen, 'paused');
+});
+
+test('colour-safe palette in 3D, Recentre only for Direct and Rate, the frame-rate line behind a setting', async () => {
+    const env = await boot({ storage: { ...JOY, ...PILOT(), spaceAdventure_offerTutorial: 'false', spaceAdventure_palette: 'safe' } });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(env.renderers[0].palette, 'safe', 'rocks and crystals in the colour-safe colours');
+    setSetting(env, 'palette', 'standard');
+    assert.equal(env.renderers[0].palette, 'standard');
+    await play(env);
+    assert.equal(env.el('p3-recentre').classList.contains('p3-hidden'), true, 'Joystick: no Recentre');
+    const f = hud3d.formatHud({ score: 0, lives: 3, mode: 'joystick', fps: 60 });
+    assert.match(f.right, /60 fps/, 'still formatted for the debug line');
+    env.el('p3-pause').click();
+    setSetting(env, 'debug3d', true);
+    assert.equal(env.storage.getItem('spaceAdventure_debug3d'), 'true');
+});
+
+test('desktop hint until the mouse is captured; landscape lock in an installed app, unlocked on Quit; reduced motion', async () => {
+    const env = await boot({ storage: { ...JOY, ...PILOT(), spaceAdventure_offerTutorial: 'false' } });
+    const g = () => env.win.__spaceAdventure.game3d;
+    const locks = [];
+    env.win.matchMedia = (q) => ({ matches: /display-mode: standalone/.test(q) });
+    env.win.screen.orientation.lock = (o) => { locks.push(o); return Promise.resolve(); };
+    env.win.screen.orientation.unlock = () => locks.push('unlock');
+    await play(env);
+    await tick();
+    assert.deepEqual(locks, ['landscape']);
+    assert.equal(g().orientationLocked, true);
+    env.doc.key('KeyW', 'w'); // a key: desktop
+    env.frames(1);
+    assert.match(g().hint, /Click the view/);
+    env.doc.pointerLockElement = env.doc.body.children.find((c) => c.id === 'proto3d');
+    env.frames(1);
+    assert.equal(g().hint, '');
+    env.doc.pointerLockElement = null;
+    env.el('p3-pause').click();
+    pick(env, 'quit');
+    assert.deepEqual(locks, ['landscape', 'unlock']);
+    assert.equal(g().reducedMotion, false);
+    const calm = fakeEnv({});
+    calm.win.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
+    installStorage(JOY);
+    await startGame3d({ win: calm.win, createRenderer: calm.fakeRenderer, persistence: new PersistenceManager() });
+    assert.equal(calm.win.__spaceAdventure.game3d.reducedMotion, true);
+});
+
+test('iPhone in portrait: a hint to turn it sideways, also over the menus', async () => {
+    const env = fakeEnv({});
+    env.win.navigator.userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)';
+    env.win.innerWidth = 412;
+    env.win.innerHeight = 892;
+    env.win.screen.orientation.angle = 0;
+    installStorage();
+    await startGame3d({ win: env.win, createRenderer: env.fakeRenderer, persistence: new PersistenceManager() });
+    const g = env.win.__spaceAdventure.game3d;
+    assert.equal(g.ui.visible, true);
+    assert.match(g.rotateHint, /iPhone sideways/);
+});
+
+test('no WebGL 2: a message, then the 2D game', async () => {
+    const env = fakeEnv({});
+    installStorage();
+    const r = await startGame3d({ win: env.win, createRenderer: () => { throw new Error('WebGL2 unavailable'); }, persistence: new PersistenceManager() });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().loaded, false);
+    assert.match(g().error, /WebGL2/);
+    assert.equal(g().ui.screen, 'prompt');
+    assert.match(g().ui.view.text, /WebGL 2/);
+    r.ui.select(); // Open 2D
+    await tick();
+    assert.equal(env.win.location.replaced, './?2d=1');
+});
+
+test('reduced motion reaches the renderer view (calmer shield and boss in meshes3d)', async () => {
+    const env = fakeEnv({});
+    env.win.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
+    installStorage(JOY);
+    const views = [];
+    const make = () => { const r = env.fakeRenderer(); r.render = (v) => views.push({ reducedMotion: v.reducedMotion, hyperspace: v.hyperspace }); return r; };
+    await startGame3d({ win: env.win, createRenderer: make, persistence: new PersistenceManager() });
+    env.frames(2);
+    assert.equal(views.at(-1).reducedMotion, true);
+    assert.equal(views.at(-1).hyperspace, null);
 });

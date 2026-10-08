@@ -109,6 +109,7 @@ export function createIncoming(plan) {
         timer: plan.incoming.interval,
         interval: plan.incoming.interval,
         speed: plan.incoming.speed.slice(),
+        missFactor: plan.incoming.miss ?? RULES3D.incomingMiss,
         sizeMix: plan.incoming.sizeMix,
         sent: 0,
     };
@@ -161,7 +162,7 @@ export function spawnIncoming(rand, inc, { shipPos, shipVel, size, distance, nex
     const rockSpeed = rr(rand, inc.speed[0], inc.speed[1]);
     const rock = makeRock({ id: nextId(), kind: 'red', size: rockSize, pos, vel: [0, 0, 0], rand });
     // Miss offset: uniform in a disc across the approach direction, scaled to the rock and ship
-    const reach = (rock.radius + shipRadius) * RULES3D.incomingMiss;
+    const reach = (rock.radius + shipRadius) * (inc.missFactor ?? RULES3D.incomingMiss);
     const miss = vScale(perpendicular(rand, dir), reach * Math.sqrt(rand()));
     rock.vel = aimVelocity(pos, rockSpeed, shipPos, shipVel, size, miss);
     rock.incoming = { speed: rockSpeed, miss, locked: false, since: time };

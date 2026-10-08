@@ -6,20 +6,26 @@ const T = 90000;
 const shot = (page, testInfo, name) => page.screenshot({ path: `tests/screenshots/uat/${testInfo.project.name}-3d-${name}.png` });
 const g3 = (page) => page.evaluate(() => window.__spaceAdventure.game3d);
 
-async function open3dLive(page, query = '') {
+/**
+ * Open the 3D page with fresh storage (once per test, not on its own reloads). storage: more
+ * localStorage entries, written after the clear in the same init script (a separate init
+ * script would run in registration order, and an earlier one is wiped by the clear).
+ */
+async function open3dLive(page, query = '', storage = {}) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
-  await page.addInitScript(() => {
+  await page.addInitScript((entries) => {
     try {
       if (!sessionStorage.getItem('__uat3d_cleared')) {
         localStorage.clear();
         localStorage.setItem('spaceAdventure_sensor3d', 'event');
         localStorage.setItem('spaceAdventure_control3d', 'joystick');
         localStorage.setItem('spaceAdventure_offerTutorial', 'false');
+        for (const [k, v] of Object.entries(entries)) localStorage.setItem(k, v);
         sessionStorage.setItem('__uat3d_cleared', '1');
       }
     } catch (e) { /* storage unavailable */ }
-  });
+  }, storage);
   await page.goto(`./?3d=1&lowres3d=1${query}`);
   await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
     && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
@@ -92,9 +98,30 @@ const gameScreen = (page) => expect.poll(async () => (await g3(page)).screen, { 
 async function requireUi(page) {
   test.skip(!(await page.evaluate(() => !!window.__spaceAdventure.game3d.ui)), '3D menus (ui3d) not deployed yet');
 }
+/** Wait for `s` seconds of game time. The game clock stops at a game over, so that ends the wait too. */
 async function gameSeconds(page, s) {
   const t0 = (await g3(page)).time;
-  await page.waitForFunction((t) => window.__spaceAdventure.game3d.time >= t, t0 + s, { timeout: Math.max(T, s * 8000) });
+  await page.waitForFunction((t) => window.__spaceAdventure.game3d.time >= t || window.__spaceAdventure.game3d.over,
+    t0 + s, { timeout: Math.max(T, s * 8000) });
+}
+/**
+ * Play for `s` seconds of game time in total. Flying without steering loses lives quickly
+ * (incoming rocks are aimed at the ship, UFOs shoot), so a game over is expected: Play again
+ * and go on counting.
+ */
+async function playSeconds(page, s) {
+  let left = s;
+  while (left > 0) {
+    const t0 = (await g3(page)).time;
+    await gameSeconds(page, Math.min(5, left));
+    const g = await g3(page);
+    left -= Math.max(0.5, g.time - t0);
+    if (g.over) {
+      await uiScreen(page).toBe('gameOver');
+      await item(page, 'again').click();
+      await gameScreen(page).toBe('playing');
+    }
+  }
 }
 /** Fresh storage, then the profile screen: Play as guest. The tutorial is off (open3dLive). */
 async function asGuest(page) {
@@ -111,7 +138,7 @@ test('3D menus: Play as guest, 60 game seconds without page errors, pause and re
   await shot(page, testInfo, 'ui-menu');
   await item(page, 'play').click();
   await gameScreen(page).toBe('playing');
-  await gameSeconds(page, 30);
+  await playSeconds(page, 30);
   await page.keyboard.press('p');
   await uiScreen(page).toBe('pause');
   await gameScreen(page).toBe('paused');
@@ -119,16 +146,7 @@ test('3D menus: Play as guest, 60 game seconds without page errors, pause and re
   await item(page, 'resume').click();
   await gameScreen(page).toBe('playing');
   // A game over before 60 s is fine (careless autopilot-free flying): play again and go on
-  for (let left = 30; left > 0;) {
-    const s = await g3(page);
-    if (s.over) {
-      await uiScreen(page).toBe('gameOver');
-      await item(page, 'again').click();
-      await gameScreen(page).toBe('playing');
-    }
-    await gameSeconds(page, 5);
-    left -= 5;
-  }
+  await playSeconds(page, 30);
   await shot(page, testInfo, 'ui-60s');
   expect(errors).toEqual([]);
 });
@@ -151,17 +169,10 @@ test('3D menus: settings persist after a reload', async ({ page }) => {
 
 test('3D menus: a game over puts the score on the 3D board, highlighted', async ({ page }, testInfo) => {
   test.setTimeout(600000);
-  // A named pilot (guests keep no scores), set before the page loads
-  await page.addInitScript(() => {
-    try {
-      if (!sessionStorage.getItem('__uat3d_named')) {
-        localStorage.setItem('asteroids_currentUser', 'UATPILOT');
-        localStorage.setItem('asteroids_userList', JSON.stringify(['UATPILOT']));
-        sessionStorage.setItem('__uat3d_named', '1');
-      }
-    } catch (e) { /* storage unavailable */ }
+  // A named pilot (guests keep no scores), seeded with the fresh storage
+  const errors = await open3dLive(page, '&seed3d=1&layout3d=doom', {
+    asteroids_currentUser: 'UATPILOT', asteroids_userList: JSON.stringify(['UATPILOT']),
   });
-  const errors = await open3dLive(page, '&seed3d=1&layout3d=doom');
   await requireUi(page);
   await uiScreen(page).toBe('menu');
   await item(page, 'play').click();
@@ -195,7 +206,7 @@ test('3D menus offline: start a game with the network off, Switch to 2D and back
     await asGuest(page);
     await item(page, 'play').click();
     await gameScreen(page).toBe('playing');
-    await gameSeconds(page, 3);
+    await playSeconds(page, 3);
     await page.keyboard.press('p');
     await uiScreen(page).toBe('pause');
     await item(page, 'quit').click();

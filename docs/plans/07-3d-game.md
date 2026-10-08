@@ -78,14 +78,48 @@ With Far's numbers (144 red rocks in a 3200 cube, rock radius 24 to 42, ship rad
 
 Medium meets the §2.1 targets (the dodging pilot at the low end of 2 to 3 minutes). About a third of the careless pilot's lost lives are UFO shots (2.8 % of the shots aimed at the ship hit, the 2D hit chance); the dodging pilot loses most of its lives to UFO shots. Two numbers changed to get there (deviations from §2.2): incoming rocks come every **4.5 s** on Medium (was 5.5; Easy 7, was 8.5; Hard 3.5, was 4) and aim a little closer (miss disc **1.5** × the radii, was 1.75). `tests/unit/balance3d.test.mjs` now checks the full targets with a tolerance (threat every 6 to 10 s, careless 30 to 60 s ± 10 %, dodging 2 to 3 minutes ± 20 %) and Easy < Medium < Hard.
 
+**Easy and Hard re-tune (8 October 2026).** With the table above, Easy had 0.78 times the Medium threat rate (target 0.5) and Hard 1.17 times (target 1.5). Only 3D numbers changed; the shared 2D Difficulty table (UFO timing and accuracy, rock speed, lives, scores) did not (`rules3d.js` `TUNING_3D`):
+
+| Difficulty | Incoming rocks (level 1) | Every | Miss disc | Small rocks per cluster |
+|---|---|---|---|---|
+| Easy | 6 (0.25 × Medium) | 10 s | 2.2 × the radii | 2 |
+| Medium | 22 | 4.5 s | 1.35 × (was 1.5, see below) | 3 |
+| Hard | 33 (1.5 ×) | 3 s | 1.9 × (2.2 before the reach rule, below) | 3 |
+
+More incoming rocks with a wider miss give Hard more threats without making every one a hit. Easy's remaining threats are mostly the 2D-rule UFOs and their shots. Same harness, 16 seeds × 3 minutes, Far, level 1:
+
+| Difficulty | Threat every | Threat rate × Medium | Careless pilot loses a life every | Dodging pilot loses a life every |
+|---|---|---|---|---|
+| Easy | 12.0 s | 0.60 | 120 s | 480 s |
+| Medium | 7.1 s | 1 | 51 s | 131 s |
+| Hard | 4.8 s | 1.49 | 37 s | 111 s |
+
+At levels 3 and 5 the ratios hold (Easy 0.49 to 0.55, Hard 1.43 to 1.58). The Medium threat rate grows about 9 % a level (one every 7.1 s at level 1, 5.8 s at level 3, 5.1 s at level 5), a little above the plan's 8 %.
+
+**UFO hit chance against 2D (§2.4, §6.2).** `ufoHitCheck` in the harness: an empty field, a ship that sits still (as the 2D rule assumes) with a shield that never runs out, UFOs on their 2D timer. Every shot aimed at the ship is compared with the 2D chance at the same distance (`hitChance2d`, distance in 2D px). The aim cone first used the ship's radius alone, but a shot hits within ship + bullet radius (9 + 3 in 3D, 15 + 2 in 2D), so 3D hit 1.2 to 1.3 times as often as 2D; `ufo3d.js` now uses those radii and 3D matches 2D: × 1.00 (Easy, 6.1 % of shots), 1.00 (Medium, 11.7 %), 1.01 (Hard, 42 %). Fewer UFO hits made Medium a little easier, so its incoming rocks aim a little closer (miss disc 1.35, was 1.5).
+
+**UFO shots within reach.** A third of the UFO shots at Far were fired from beyond their reach (350 × 3 s = 1050 units, less than the 1440 view distance): they could never hit, but some still flashed as radar threats. A UFO now skips its turn when the target is beyond reach (plus the target's radius) and its timer runs again as after a shot, so the 2D rhythm (a shot every 2 s ± 20 %) stays; a 2D UFO is always within reach of its screen. The threat rates dropped a little (those were never real threats) and Hard's lives lost with them, so Hard's miss disc went from 2.2 to 1.9. Over 40 seeds the hit chance against 2D is × 1.08 (Easy), 1.04 (Medium), 1.01 (Hard). Level 1, 16 seeds × 3 minutes:
+
+| Difficulty | Threat every | Threat rate × Medium | Careless pilot loses a life every | Dodging pilot loses a life every |
+|---|---|---|---|---|
+| Easy | 12.9 s | 0.59 | 131 s | 411 s |
+| Medium | 7.7 s | 1 | 52 s | 144 s |
+| Hard | 4.7 s | 1.63 | 38 s | 87 s |
+
+Levels 3 and 5: Easy × 0.52 to 0.53, Hard × 1.45 to 1.57. Boss level 2 for the dodging pilot: Easy 87 to 203 s, Medium 120 to 267 s, Hard 210 to 424 s (one Hard run of 16 took longer than 10 minutes).
+
+**Boss levels (§2.6).** As 2D `createLevelAsteroids`: the red rocks are floor(40 %) of a normal level's (fewer clusters and scattered rocks; the incoming rocks fill up to exactly that number), and half the crystals. The dodging pilot, which holds about 420 units from the boss and fires as the weak points turn past, clears level 2 in 107 to 253 s on Easy, 163 to 265 s on Medium and 172 to 500 s on Hard (16 seeds).
+
+`tests/unit/balance3d.test.mjs` checks the ratios at levels 1, 3 and 5 (Easy 0.4 to 0.68, Hard 1.25 to 1.8), the growth (4 to 15 % a level), the boss level (cleared within 6 minutes, Hard 9), the boss-level counts and the UFO hit chance (× 0.8 to 1.2 of 2D).
+
 Rocks alone deliver about half of the targets above. A fixed set of rocks per level (the 2D rule) caps how much rock danger a level can hold without making it very long to clear, so the rest comes from the UFOs (§2.4, Phase 2), which in 2D shoot every 2 s. `tests/unit/balance3d.test.mjs` checks the rocks' share now (Medium: a threat every 7.5 to 17 s, the careless pilot losing a life every 50 to 240 s, dodging helps, Easy < Hard, level 1 clearable in 2 to 5 minutes); Phase 2 tightens it to the full targets.
 
 ### 2.2 Incoming rocks (fix 1)
 
-- Each level's red rocks are a **fixed set** (§2.5). About half of them don't start in the field: they arrive during the level as **incoming rocks** (level 1: 22, +2 per level; `js/3d/rules3d.js`). This keeps the 2D rule that a level ends once every rock is gone.
-- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.5 × (rock radius + ship radius) (1.75 before the UFO re-tune), so a bit more than a third would hit a ship that holds its course. While it's still in the fog it keeps re-aiming; from the fog start (fully visible) it flies straight (`js/3d/spawn3d.js`).
+- Each level's red rocks are a **fixed set** (§2.5). About half of them don't start in the field: they arrive during the level as **incoming rocks** (level 1 on Medium: 22, +2 per level; Easy 0.25 × and Hard 1.5 × as many, §2.1; `js/3d/rules3d.js`). This keeps the 2D rule that a level ends once every rock is gone.
+- An incoming rock appears just beyond the fog (cull distance), inside a 70° cone around the direction the ship is moving (random direction while the ship is nearly still). It's aimed at the point where the ship will be when it arrives (exact intercept), plus a random miss offset in a disc of 1.35 × (rock radius + ship radius) on Medium (1.75 in the first draft, then 1.5; 2.2 on Easy and Hard, §2.1), so on Medium about half would hit a ship that holds its course. While it's still in the fog it keeps re-aiming; from the fog start (fully visible) it flies straight (`js/3d/spawn3d.js`).
 - Speed 130 to 190 units per second at level 1, times the difficulty's `asteroidSpeedMultiplier` and the adaptive `asteroidSpeedMod`, plus 4 % per level. Mostly small (65 %) and medium (30 %), a few large (5 %): danger comes from the aim, and small ones are quick to clear. Shooting a larger one splits it into pieces that keep flying toward you.
-- Timing: Medium level 1 one every 4.5 s, Easy 7 s, Hard 3.5 s (5.5 / 8.5 / 4 before the UFO re-tune, §2.1); 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
+- Timing: Medium level 1 one every 4.5 s, Easy 10 s, Hard 3 s (5.5 / 8.5 / 4 in the first draft, 4.5 / 7 / 3.5 after the UFO re-tune, §2.1); 0.4 s less per level, at least 3 s. At most 4 on their way at once. None in the 3 s after a respawn. When everything else in the level is cleared, the remaining incoming rocks are released straight away, so a level never waits on a timer.
 - An incoming rock that has passed its closest approach is an ordinary rock of the field.
 - They fade in through the fog like every other object. The radar threat flash (already built) marks them once they're within 25 % of the view distance on a closing course.
 
@@ -93,7 +127,7 @@ Rocks alone deliver about half of the targets above. A fixed set of rocks per le
 
 - The field's red rocks are mostly in **clusters**: tight spheres (radius 70 + 35 × ∛members, about 140 to 160) holding 2 medium and 3 small rocks at level 1 (+1 medium every 2 levels, +1 large every 3), that drift slowly together (3 to 8 units per second) and tumble.
 - **Most of the level's crystals sit inside clusters**, so collecting means flying through danger. The space between clusters is calm and has a few scattered rocks and crystals. Crystals come in the three 2D sizes with the 2D scores (`greenScore`) and don't split.
-- Level 1 (every view distance): 3 clusters of 5 rocks with 70 % of the 14 crystals inside them, 3 scattered rocks (medium, every fourth large) and 22 incoming, 54 rocks and crystals over the level. Inside a cluster the average flight between collisions is a few hundred units, so crossing one without care is a real risk. The first draft's 150-plus rocks would have taken far too long to clear under the 2D rule (about 9 minutes for the harness pilot), so the field is smaller and the danger comes from the aim instead.
+- Level 1 on Medium (every view distance): 3 clusters of 5 rocks with 70 % of the 14 crystals inside them, 3 scattered rocks (medium, every fourth large) and 22 incoming, 54 rocks and crystals over the level (Easy: clusters of 4 and 6 incoming; Hard: 33 incoming, §2.1). Inside a cluster the average flight between collisions is a few hundred units, so crossing one without care is a real risk. The first draft's 150-plus rocks would have taken far too long to clear under the 2D rule (about 9 minutes for the harness pilot), so the field is smaller and the danger comes from the aim instead.
 - Levels grow: +1 cluster every 2 levels, +1 scattered rock every 2 levels, +2 crystals and +2 incoming rocks per level; the adaptive `greenRatioMod` changes the crystal count. A bigger view distance spreads the same set over a bigger cube.
 - The radar shows each cluster's rocks as usual. Clusters beyond the view distance appear as a faint ring on the radar rim, so you can find the next one.
 
@@ -126,7 +160,7 @@ The radar shows UFOs as a purple saucer glyph. An edge arrow points to a UFO wit
 - A mothership with a slowly rotating core (radius about 150) and **4 glowing weak points** spread around it, so you have to fly around it to reach them. Weak-point health comes from the 2D boss (`js/boss.js`).
 - It fires bursts from its turrets and releases one escort UFO each time a weak point is destroyed.
 - It's drawn with a glow that stays visible through the fog up to 1.5 times the view distance, and the radar shows it as a ring glyph with a permanent edge arrow, so it's always findable.
-- Boss levels have half the crystals and fewer clusters.
+- Boss levels have half the crystals and fewer clusters; their red rocks are floor(40 %) of a normal level's, as 2D (§2.1).
 
 ### 2.7 Power-ups
 

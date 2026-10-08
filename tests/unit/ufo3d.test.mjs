@@ -315,3 +315,24 @@ test('review #11: a UFO shot\'s last move before it expires is still tested', ()
     assert.equal(u.collideBullets({ ship, rocks: [] }).length, 0);
     assert.equal(u.bullets.length, 0);
 });
+
+test('a UFO never fires at a target beyond a shot\'s reach: it skips that turn and keeps its 2D rhythm', () => {
+    const reach = UFO3D.bulletSpeed * UFO3D.bulletLife;
+    const u = sys({ range: 1440 });
+    u.setEnabled(false);
+    const ufo = u.spawnAt(CENTRE, CENTRE);
+    ufo.vel = [0, 0, 0];
+    ufo.pos = [CENTRE[0] + reach + 60, CENTRE[1], CENTRE[2]]; // in view (1440), out of reach
+    ufo.fireTimer = 0.01;
+    const ship = { pos: CENTRE, alive: true };
+    const ev = u.update(1 / 60, { ship });
+    assert.ok(ev.some((e) => e.type === 'ufoHold' && e.target === 'ship'));
+    assert.ok(!ev.some((e) => e.type === 'ufoShoot'));
+    assert.equal(u.bullets.length, 0);
+    assert.ok(ufo.fireTimer >= UFO3D.fireRate * 0.8 - 1e-9, 'timer runs again as after a shot');
+    // Within reach it fires on its next turn
+    ufo.pos = [CENTRE[0] + reach - 100, CENTRE[1], CENTRE[2]];
+    ufo.fireTimer = 0.01;
+    assert.ok(u.update(1 / 60, { ship }).some((e) => e.type === 'ufoShoot'));
+    assert.equal(u.bullets.length, 1);
+});

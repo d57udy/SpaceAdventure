@@ -17,7 +17,7 @@
 // scaled inside the camera's far plane, so it always stays behind the field.
 
 import * as THREE from './vendor/three.module.min.js';
-import { nearestDelta, worldFor } from './world3d.js';
+import { wrapDelta1, worldFor } from './world3d.js';
 import { verticalFov } from './radar3d.js';
 import { createDebrisPool, DEBRIS3D } from './debris3d.js';
 import {
@@ -28,7 +28,7 @@ import {
 const BG = 0x02030a;
 const DUST_COUNT = 520;
 export const DUST_BOX = 200; // divides every world side, so the dust does not jump when the ship wraps
-const SPARK_MAX = 600;
+const SPARK_MAX = 160;       // sparkles at once: with the 240 debris pieces, the 400 particles of plan 07 §5
 const SKY_RADIUS = 2300;
 /**
  * Rock and crystal colours per palette (js/palette.js ids). Colour-safe: blue crystals and
@@ -190,7 +190,9 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
     const greenGeo = new THREE.OctahedronGeometry(1, 0);
     greenGeo.scale(0.8, 1.5, 0.8);
     const greenMat = new THREE.MeshLambertMaterial({ color: 0x3dffa0, emissive: 0x0c7a40, flatShading: true });
-    const redGeos = [0, 1, 2, 3].map(spikyGeometry);
+    // Two spiky shapes (a draw call each when in view; with UFOs, the boss and power-ups the scene
+    // stays under plan 07 §5's 25 draw calls). The rocks' spin, size and axis vary the look.
+    const redGeos = [0, 1].map(spikyGeometry);
     const redMat = new THREE.MeshLambertMaterial({ color: 0xff3a4c, emissive: 0x3a0610, flatShading: true });
     const glowTex = glowTexture();
     const greenGlowMat = new THREE.MeshBasicMaterial({
@@ -272,20 +274,26 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
     let bossMesh = null, bossOf = null;
 
     function syncContent(view) {
-        const v = {
-            shipPos, size: worldSize, cullDistance, fogNear, fogFar, far: camera.far,
-            camQ: [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w],
-        };
+        const v = contentView;
+        v.shipPos = shipPos; v.size = worldSize; v.cullDistance = cullDistance; v.fogNear = fogNear; v.fogFar = fogFar; v.far = camera.far;
+        v.camQ[0] = camera.quaternion.x; v.camQ[1] = camera.quaternion.y; v.camQ[2] = camera.quaternion.z; v.camQ[3] = camera.quaternion.w;
         const t = performance.now() / 1000;
-        content.ufos.update({ ufos: view.ufos || [], view: v }, t);
-        content.shots.update({
-            bullets: (view.hostileBullets || []).map((b) => ({ id: b.id, pos: b.pos, radius: b.radius, life: b.life, from: b.from === 'boss' ? 'boss' : 'ufo' })),
-            view: v,
-        }, t);
-        content.powerUps.update({ powerUps: view.powerUps || [], view: v }, t);
-        content.shield.update({ shield: view.shield || 0, shieldHit: view.shieldHit || 0 }, t);
-        content.magnet.update({ magnet: view.magnet || 0, magnetRange: view.magnetRange || 0 }, t);
-        content.hyper.update({ hyperspace: view.hyperspace }, t);
+        ufoState.ufos = view.ufos || NONE;
+        content.ufos.update(ufoState, t);
+        // meshes3d reads id, pos, radius and from ('boss', anything else a UFO): passed straight through
+        shotState.bullets = view.hostileBullets || NONE;
+        content.shots.update(shotState, t);
+        powerUpState.powerUps = view.powerUps || NONE;
+        content.powerUps.update(powerUpState, t);
+        shieldState.shield = view.shield || 0;
+        shieldState.shieldHit = view.shieldHit || 0;
+        shieldState.reducedMotion = !!view.reducedMotion; // calmer shield and boss (meshes3d)
+        content.shield.update(shieldState, t);
+        magnetState.magnet = view.magnet || 0;
+        magnetState.magnetRange = view.magnetRange || 0;
+        content.magnet.update(magnetState, t);
+        hyperState.hyperspace = view.hyperspace;
+        content.hyper.update(hyperState, t);
         const boss = view.boss || null;
         if (boss !== bossOf) {
             if (bossMesh) { scene.remove(bossMesh.object3d); bossMesh.dispose(); bossMesh = null; }
@@ -295,8 +303,33 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
                 scene.add(bossMesh.object3d);
             }
         }
-        if (bossMesh) bossMesh.update({ boss, turretFlash: view.turretFlash || 0, turretDir: view.turretDir || null, view: v }, t);
+        if (bossMesh) {
+            bossState.boss = boss;
+            bossState.turretFlash = view.turretFlash || 0;
+            bossState.turretDir = view.turretDir || null;
+            bossState.reducedMotion = !!view.reducedMotion;
+            bossMesh.update(bossState, t);
+        }
     }
+
+    // Per-frame scratch (review #13: no allocation in the frame's hot paths)
+    const _d = [0, 0, 0];
+    /** Ship → nearest image of p, into the shared _d (the array is reused: read it at once). */
+    const deltaOf = (p) => {
+        _d[0] = wrapDelta1(shipPos[0], p[0], worldSize);
+        _d[1] = wrapDelta1(shipPos[1], p[1], worldSize);
+        _d[2] = wrapDelta1(shipPos[2], p[2], worldSize);
+        return _d;
+    };
+    const contentView = { shipPos: null, size: 0, cullDistance: 0, fogNear: 0, fogFar: 0, far: 0, camQ: [0, 0, 0, 1] };
+    const ufoState = { ufos: null, view: contentView };
+    const shotState = { bullets: null, view: contentView };
+    const powerUpState = { powerUps: null, view: contentView };
+    const shieldState = { shield: 0, shieldHit: 0, reducedMotion: false };
+    const magnetState = { magnet: 0, magnetRange: 0 };
+    const hyperState = { hyperspace: null };
+    const bossState = { boss: null, turretFlash: 0, turretDir: null, reducedMotion: false, view: contentView };
+    const NONE = Object.freeze([]);
 
     let drawCalls = 0;
     let fovSetting = 70;
@@ -322,7 +355,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         lastSeen.clear();
         drawnRocks = 0;
         for (const r of rocks) {
-            const d = nearestDelta(shipPos, r.pos, worldSize);
+            const d = deltaOf(r.pos);
             const dist = Math.hypot(d[0], d[1], d[2]);
             const drawn = dist <= cullDistance;
             lastSeen.set(r.id, { distance: dist, drawn });
@@ -349,7 +382,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         bulletPool.ensure(bullets.length);
         bulletPool.begin();
         for (const b of bullets) {
-            const d = nearestDelta(shipPos, b.pos, worldSize);
+            const d = deltaOf(b.pos);
             _p.set(d[0], d[1], d[2]);
             _look.set(b.vel[0], b.vel[1], b.vel[2]);
             if (_look.lengthSq() < 1e-9) _look.set(0, 0, -1);
@@ -395,10 +428,12 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         }
         for (const s of sparks) {
             if (n >= SPARK_MAX) break;
-            const d = nearestDelta(shipPos, s.world, worldSize);
+            const d = deltaOf(s.world);
             sparkPos.set(d, n * 3);
             const k = s.life / s.max;
-            sparkCol.set([s.color[0] * k, s.color[1] * k, s.color[2] * k], n * 3);
+            sparkCol[n * 3] = s.color[0] * k;
+            sparkCol[n * 3 + 1] = s.color[1] * k;
+            sparkCol[n * 3 + 2] = s.color[2] * k;
             n++;
         }
         sparkGeo.setDrawRange(0, n);
@@ -410,7 +445,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         debris.step(dt);
         let n = 0;
         debris.forEach((p, fade) => {
-            const d = nearestDelta(shipPos, p.pos, worldSize);
+            const d = deltaOf(p.pos);
             _p.set(d[0], d[1], d[2]);
             _q.setFromAxisAngle(_axis.set(p.axis[0], p.axis[1], p.axis[2]), p.angle);
             _s.setScalar(p.scale * (0.35 + 0.65 * fade));

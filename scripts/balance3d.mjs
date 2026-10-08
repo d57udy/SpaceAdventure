@@ -18,6 +18,8 @@ import { pathToFileURL } from 'node:url';
 import { createSim, stepSim, drainEvents, SIM } from '../js/3d/sim3d.js';
 import { nearestDelta } from '../js/3d/world3d.js';
 import { isThreat, RADAR } from '../js/3d/radar3d.js';
+import { BOSS3D } from '../js/3d/boss3d.js';
+import { hitChance2d, scaleFor, UFO3D } from '../js/3d/ufo3d.js';
 import {
     vDot, vLen, vNorm, vCross, vSub, vScale, vAdd, qMul, qFromAxisAngle, qNorm, forwardOf, clamp,
 } from '../js/3d/math3d.js';
@@ -33,6 +35,7 @@ export const PILOT = Object.freeze({
     fixDeadband: 25,                // velocity error below which the nose points at the target instead
     threatSample: 6,                // steps between threat samples (0.1 s)
     reaction: 0.6,                  // s: the dodge pilot reacts to a threat this long after it appears
+    bossStandOff: 420,              // hold this far from the boss centre while its weak points turn past
 });
 
 /** Rotate q so its nose turns toward `dir` by at most maxAngle (world-frame rotation). */
@@ -139,7 +142,7 @@ export function pilotInput(s, kind, q, dt, threatList) {
     }
     const crystal = nearest(s, (r) => r.kind === 'green');
     const target = crystal || nearest(s, (r) => r.kind === 'red' || r.kind === 'ufo');
-    if (!target) return { q, thrust: false, fire: false };
+    if (!target) return s.boss ? attackBoss(s, q, dt, range) : { q, thrust: false, fire: false };
     // The careless pilot only shoots once it is hunting red rocks
     const shoots = kind === 'dodge' || !crystal;
     // Steer by velocity, as a player does: the ship can only brake by turning and thrusting,
@@ -157,6 +160,46 @@ export function pilotInput(s, kind, q, dt, threatList) {
 }
 
 /**
+ * The boss, once nothing else is left: hold PILOT.bossStandOff from its centre on the ship's
+ * side and let it turn its weak points past (they are only hit from their outward side). Aim
+ * at the living weak point that faces the ship best, leading its motion, and fire when a
+ * shot would strike a weak point (or the core once they are all gone).
+ */
+function attackBoss(s, q, dt, range) {
+    const boss = s.boss;
+    const st = boss.state;
+    const toBoss = nearestDelta(s.ship.pos, st.pos, s.size);
+    const living = st.weakPoints.filter((w) => !w.destroyed);
+    let aim = toBoss;
+    let best = null;
+    for (const w of living) {
+        const n = boss.weakPointNormal(w);
+        const d = nearestDelta(s.ship.pos, boss.weakPointPos(w), s.size);
+        const facing = -vDot(n, vNorm(d)); // 1: the weak point looks straight at the ship
+        if (!best || facing > best.facing) best = { w, d, n, facing };
+    }
+    if (best) {
+        // The point moves with the spin: v = ω × r
+        const r = vScale(best.n, BOSS3D.bodyRadius);
+        const vel = vScale(vCross(st.axis, r), BOSS3D.spin);
+        aim = leadDirection(best.d, s.ship.vel, vel);
+    }
+    const fire = boss.vulnerable && (() => {
+        const h = boss.hitTest(s.ship.pos, vScale(forwardOf(q), range));
+        return !!h && (h.type === 'weakPoint' || h.type === 'core');
+    })();
+    const goal = vSub(toBoss, vScale(vNorm(toBoss), PILOT.bossStandOff));
+    const want = vScale(vNorm(goal), clamp(vLen(goal) * PILOT.approachGain, 0, PILOT.cruise));
+    const fix = vSub(want, s.ship.vel);
+    if (vLen(fix) > PILOT.fixDeadband * 2) {
+        const nq = turnToward(q, fix, PILOT.turnRate * dt);
+        return { q: nq, thrust: angleTo(nq, fix) < PILOT.thrustCone, fire };
+    }
+    const nq = turnToward(q, aim, PILOT.turnRate * dt);
+    return { q: nq, thrust: false, fire };
+}
+
+/**
  * Run one pilot for `seconds` of game time.
  * @returns {{ minutes, hits, hitsPerMin, threats, threatsPerMin, collected, levels, levelSeconds: number[] }}
  */
@@ -164,6 +207,7 @@ export function runPilot({ seed = 1, seconds = 120, pilot = 'nododge', difficult
     const s = createSim({ seed, view, difficulty, level, dda, lives: 999 });
     let q = s.ship.q;
     let hits = 0, threatCount = 0;
+    const hitsBy = {}; // cause -> lives lost (rock, ufo, ufoShot, boss, bossShot, hyperspace)
     let seen = new Map(); // threat id -> time first seen
     let list = [];
     const levelSeconds = [];
@@ -184,7 +228,10 @@ export function runPilot({ seed = 1, seconds = 120, pilot = 'nododge', difficult
         q = inp.q;
         stepSim(s, inp);
         for (const e of drainEvents(s)) {
-            if (e.type === 'hit' || e.type === 'shieldHit') hits++;
+            if (e.type === 'hit' || e.type === 'shieldHit') {
+                hits++;
+                hitsBy[e.cause || 'rock'] = (hitsBy[e.cause || 'rock'] || 0) + 1;
+            }
             if (e.type === 'level' && e.level > level) { levelSeconds.push(s.time - levelStart); levelStart = s.time; }
         }
     }
@@ -192,6 +239,7 @@ export function runPilot({ seed = 1, seconds = 120, pilot = 'nododge', difficult
     return {
         minutes,
         hits,
+        hitsBy,
         hitsPerMin: hits / minutes,
         threats: threatCount,
         threatsPerMin: threatCount / minutes,
@@ -201,6 +249,38 @@ export function runPilot({ seed = 1, seconds = 120, pilot = 'nododge', difficult
         levels: s.stats.levels,
         levelSeconds,
     };
+}
+
+/**
+ * UFO hit chance against 2D (plan 07 §2.4, §6.2): an empty field, UFOs on their 2D timer, a
+ * ship that sits still (as the 2D rule assumes) and a shield that never runs out, so every
+ * shot that reaches it counts and nothing changes position. For each shot aimed at the ship,
+ * the 2D chance at the same distance (in 2D px: distance / scaleFor(view distance)) is
+ * hitChance2d with the 2D hit radius (ship 15 + bullet 2). Only shots that can reach the ship
+ * count (a 3D shot flies 350 × 3 s = 1050 units, less than the Far view distance; a 2D UFO is
+ * always within reach): `outOfReach` counts the others. Returns the shots, the hits and the
+ * hits expected from 2D (their ratio should be about 1).
+ */
+export function ufoHitCheck({ seed = 1, seconds = 600, difficulty = 'medium', view = 'far', r2 = 17 } = {}) {
+    const s = createSim({ seed, view, difficulty, field: false, ufos: true, powerUps: false, lives: 999 });
+    const scale = scaleFor(s.world.fogFar);
+    let shots = 0, hits = 0, expected = 0, outOfReach = 0;
+    const reach = UFO3D.bulletSpeed * UFO3D.bulletLife + UFO3D.shipRadius3d; // ufo3d fire: beyond this it does not shoot
+    const steps = Math.round(seconds / SIM.dt);
+    for (let i = 0; i < steps; i++) {
+        s.ship.shield = 1e9;
+        s.ship.invulnerable = 0;
+        stepSim(s, { q: s.ship.q });
+        for (const e of drainEvents(s)) {
+            if (e.type === 'ufoShoot' && e.target === 'ship' && e.pos) {
+                const d = vLen(nearestDelta(e.pos, s.ship.pos, s.size));
+                if (d > reach) { outOfReach++; continue; }
+                shots++;
+                expected += hitChance2d(s.ufoSys.accuracy, d / scale, r2);
+            } else if (e.type === 'shieldHit' && e.cause === 'ufoShot') hits++;
+        }
+    }
+    return { shots, hits, expected, outOfReach, ratio: expected > 0 ? hits / expected : 0, hitRate: shots ? hits / shots : 0 };
 }
 
 /** Average over seeds 1..n. */
@@ -229,6 +309,13 @@ function main(argv) {
     const level = Number(arg('level', 1));
     const diffs = arg('difficulty', 'easy,medium,hard').split(',');
     for (const difficulty of diffs) {
+        let u = { shots: 0, hits: 0, expected: 0, outOfReach: 0 };
+        for (let i = 1; i <= seeds; i++) {
+            const r = ufoHitCheck({ seed: i, difficulty, view });
+            u = { shots: u.shots + r.shots, hits: u.hits + r.hits, expected: u.expected + r.expected, outOfReach: u.outOfReach + r.outOfReach };
+        }
+        console.log(`${difficulty.padEnd(6)} UFO shots at a still ship: ${u.shots} (+${u.outOfReach} out of reach), hits ${u.hits} (${(100 * u.hits / Math.max(1, u.shots)).toFixed(1)} %), ` +
+            `2D would hit ${u.expected.toFixed(1)} (${(100 * u.expected / Math.max(1, u.shots)).toFixed(1)} %): × ${(u.hits / Math.max(1e-9, u.expected)).toFixed(2)}`);
         for (const pilot of ['nododge', 'dodge']) {
             const a = averagePilot({ seconds, pilot, difficulty, view, level }, seeds);
             const lv = a.levelSeconds.length ? (a.levelSeconds.reduce((t, x) => t + x, 0) / a.levelSeconds.length).toFixed(0) + ' s' : '-';

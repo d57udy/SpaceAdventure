@@ -2377,7 +2377,11 @@ document.addEventListener('DOMContentLoaded', () => {
         get lives() { return p1().lives; },
         get level() { return level; },
         get menuIndex() { return menuSelectionIndex; },
-        get menuOptions() { return currentMenuOptions.map(o => o.label()); },
+        // The main menu's rows from the rows themselves: currentMenuOptions is only filled by
+        // the first menu frame, and a test may read the hook as soon as the state is 'menu'
+        get menuOptions() {
+            return (currentGameState === GameState.MENU ? visibleRows(mainMenuItems) : currentMenuOptions).map(o => o.label());
+        },
         get highScoresBoard() { return highScoresBoard; },
         get threeDAvailable() { return is3dAvailable(); },
         get difficulty() { return selectedDifficulty.id; },

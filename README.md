@@ -157,26 +157,36 @@ Auto picks side by side in landscape and facing in portrait. Turning the tablet 
 
 Every player has a colour, a hull mark and a number; HUD panel text is at least 18 px. The multiplayer pause menu also has **Mute**.
 
-## 3D game (?3d=1, in development)
+## 3D game
 
-A first-person 3D version of the game, being built in phases ([docs/plans/07-3d-game.md](docs/plans/07-3d-game.md); §7 has the status of each phase). It stays behind `?3d=1` until it is complete. Without the parameter the 2D game is unchanged and loads no 3D file.
+A first-person 3D version of the game ([docs/plans/07-3d-game.md](docs/plans/07-3d-game.md)). Where the device runs 3D well, **Start 3D** is the first entry of the main menu and the default. 2D is one tap away: the 3D menu has **Switch to 2D**, and the 2D menu keeps its **Start** row. The installed app remembers which of the two you used last and opens it again.
+
+**Direct links:** `https://d57udy.github.io/SpaceAdventure/?3d=1` opens the 3D game, and `?2d=1` opens the 2D game (and forgets 3D as the last mode). Devices that draw 3D in software only (no GPU) aren't offered 3D in the menu. If WebGL 2 isn't available at all, the 3D page says so and opens the 2D game.
 
 **Play 3D**
-- Open `https://d57udy.github.io/SpaceAdventure/?3d=1`. Where 3D runs well, the 2D main menu also has a **Start 3D** row; the 3D menu has **Switch to 2D**. The installed app remembers which of the two you used last and opens it again.
-- Hold a phone in landscape. iPhone and iPad ask for motion access on the first Start; without it (or without a motion sensor) the game uses Joystick.
-- The same rules as 2D: fly into green crystals to collect them, shoot red rocks (they split), and clear every red and green to finish a level. Shooting a green wastes it. UFOs appear and shoot, a boss arrives every 2 levels, and the 2D power-ups drop. The world is a wrap-around cube.
-- The 3D game has its own high-score board. Your pilot name, credits, upgrades and achievements are shared with 2D.
+- Hold a phone in landscape. On Android, an installed app or a full-screen page is locked to landscape while you play; an iPhone shows a reminder to turn it sideways. iPhone and iPad ask for motion access when you start; without it (or without a motion sensor) the game uses Joystick.
+- The same rules as 2D: fly into green crystals to collect them, shoot red rocks (they split), and clear every red and green to finish a level. Shooting a green wastes it. UFOs appear and shoot, a boss with glowing weak points arrives every 2 levels, the 2D power-ups drop, and **hyperspace** jumps you away (with the 2D risk). The world is a wrap-around cube.
+- The adaptive difficulty from 2D runs in 3D too (shown as Assisting, Balanced or Challenging), and it switches aim assist, a lead marker and other aids on or off by itself.
+- A first flight offers a short training. The 3D game has its own high-score board. Your pilot name, credits, upgrades and achievements are shared with 2D.
 
 **Controls**
-- **Control types** (Settings, remembered): **Direct** (the phone is the ship: turn, tilt and roll it), **Rate** (tilt away from where you held the phone to keep turning), **Joystick** (drag on the left half to turn, ⟲ ⟳ to roll). **Level horizon** blocks roll. **Recentre** (or a double tap) makes the current phone position "straight ahead". Hold **THRUST**, hold **FIRE**.
-- **Desktop:** click to capture the mouse (the mouse turns), W or ↑ thrust, Space or F fire, A/D or Q/E roll, ← → ↓ turn, R recentre, P pause, Esc releases the mouse.
-- **Game controller:** left stick turns, right stick rolls, RT (or LT) thrust, Ⓐ or RB fire.
-- **Radar:** two circles on the right edge. The top one shows what is in front of you, the bottom one what is behind.
-- More settings: view distance (Normal, Far, Very far), sensitivity, and the shared colours, sound, music and vibration settings. Field of view, vignette, invert up/down and the left-handed layout are being added.
+- **Touch (Settings → Control type):**
+  - **Direct:** the phone is the ship; turn, tilt and roll it.
+  - **Rate:** tilt away from where you held the phone to keep turning.
+  - **Joystick:** drag on the left half to turn, ⟲ ⟳ to roll.
+  - **Level horizon** blocks roll. **Recentre** (or a double tap) makes the current phone position "straight ahead".
+  - Hold **THRUST** to fly and **FIRE** to shoot. **HYPER** next to Fire jumps through hyperspace. **II** pauses.
+- **Keyboard and mouse:** click the view to capture the mouse (the mouse turns). W or ↑ thrust, Space, F or a click fire, A/D or Q/E roll, ← → ↓ turn, H hyperspace, R recentre, Esc or P pause. The menus work with the arrows, Enter and Esc.
+- **Game controller:** left stick turns, LB and RB (or the right stick) roll, LT thrust, RT or Ⓐ fire, Ⓑ hyperspace, Start pauses. In the menus, the D-pad or stick moves, Ⓐ selects and Ⓑ goes back.
+- **Radar:** two circles on the right edge (on the left in the left-handed layout). The top one shows what is in front of you, the bottom one what is behind. A flashing dot is on a collision course.
+- **Settings:**
+  - 3D: control type, Level horizon, sensitivity, invert up/down, view distance (Normal, Far, Very far), field of view, a vignette in fast turns, the left-handed layout, difficulty, and a frame-rate line.
+  - Shared with 2D: colours (including Colour-safe), sound, music and vibration.
+  - The system's "reduce motion" setting means fewer flashes and no hyperspace tunnel.
 
-**Install and offline:** the 3D page is part of the same installable app and is cached for offline play like everything else (three.js r185 is included in `js/3d/vendor/`, MIT licence). See the next section.
+**Install and offline:** the 3D game is part of the same installable app and is cached for offline play like everything else (three.js r185 is included in `js/3d/vendor/`, MIT licence). See the next section.
 
-URL options for testing: `&seed3d=N` repeats a layout, `&layout3d=range|far|last` loads small test layouts, `&lowres3d=1` draws at half resolution (for software renderers).
+URL options for testing: `&seed3d=N` repeats a layout, `&layout3d=range|far|last|ufo|boss|powerup|doom|blocked|busy` loads small test layouts, and `&lowres3d=1` draws at half resolution (for software renderers).
 
 ## Install, full screen and offline play
 

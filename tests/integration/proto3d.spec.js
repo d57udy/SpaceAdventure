@@ -330,7 +330,7 @@ test('View distance: Far by default, the choice persists and changes the world s
   // distance, a handful of draw calls (instancing). drawnRocks is the renderer's count of the
   // same frame's rocks3d() entries inside the cull distance (one read: rocks keep moving).
   await poll(page, 'drawCalls').toBeGreaterThan(0);
-  expect(await g3get(page, 'drawCalls')).toBeLessThan(30);
+  expect(await g3get(page, 'drawCalls')).toBeLessThan(25);
   await expect.poll(() => g3get(page, 'drawnRocks'), { timeout: T }).toBeGreaterThan(0);
   const seen = await page.evaluate(() => ({
     drawn: window.__spaceAdventure.game3d.drawnRocks,
@@ -549,5 +549,24 @@ test('layout3d=blocked: only a far UFO keeps the level going; it is on the radar
   expect(s.lastFew).toBe(true);
   expect([...s.radar.front, ...s.radar.rear].some((b) => b.type === 'saucer')).toBe(true);
   expect(s.markers.some((m) => m.type === 'saucer')).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Draw calls stay under 25 in a busy scene: boss, UFOs, power-ups, rocks, shots and debris (plan 07 §5)', async ({ page }, testInfo) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=busy', storage: { spaceAdventure_control3d: 'joystick' } });
+  await start(page);
+  await expect.poll(() => g3get(page, 'boss').then((b) => b && b.phase), { timeout: T }).toBe('fighting');
+  // Shots and explosions too: fire at the rock ahead until it splits
+  await page.keyboard.down('Space');
+  await expect.poll(() => g3get(page, 'stats').then((s) => s.splits), { timeout: T }).toBeGreaterThan(0);
+  await poll(page, 'particles').toBeGreaterThan(0);
+  await play(page, 1000);
+  await page.keyboard.up('Space');
+  const s = await g3(page);
+  expect(s.ufos.length).toBeGreaterThan(0);
+  expect(s.powerUps.length).toBeGreaterThan(0);
+  expect(s.peakDrawCalls).toBeGreaterThan(10);
+  expect(s.peakDrawCalls).toBeLessThan(25);
+  await shot(page, testInfo, 'busy');
   expect(errors).toEqual([]);
 });

@@ -503,3 +503,29 @@ test('review #14: dropped events are counted', () => {
     assert.equal(s.events.length, RV_MAX_EVENTS);
     assert.ok(simCounts(s).eventsDropped >= 26);
 });
+
+test('review #13: the UFO and power-up modifiers are reconfigured only when the adaptive modifiers change', () => {
+    const adaptive = createAdaptive3d();
+    const s = createSim({ seed: 2, view: 'far', adaptive, lives: 99 });
+    let ufoCalls = 0, powerCalls = 0;
+    const uc = s.ufoSys.configure, pc = s.power.configure;
+    s.ufoSys.configure = (o) => { if (o && o.dda) ufoCalls++; return uc(o); };
+    s.power.configure = (o) => { powerCalls++; return pc(o); };
+    const ddaBefore = s.dda;
+    run(s, { fire: true }, 2);
+    assert.equal(ufoCalls, 0, 'nothing changed: no reconfigure');
+    assert.equal(powerCalls, 0);
+    assert.equal(s.dda, ddaBefore, 'same object');
+    // The tracker moves: the new modifiers apply on the next step, everywhere
+    adaptive.ufoSpawnMod = 0.8;
+    adaptive.ufoAccuracyMod = 1.1;
+    adaptive.powerUpSpawnMod = 1.3;
+    stepSim(s, {});
+    assert.equal(ufoCalls, 1);
+    assert.equal(powerCalls, 1);
+    assert.equal(s.dda.ufoSpawnMod, 0.8);
+    assert.equal(s.ufoSys.state.dda.ufoAccuracyMod, 1.1);
+    assert.equal(s.power.state.spawnMod, 1.3);
+    stepSim(s, {});
+    assert.equal(ufoCalls, 1, 'once per change');
+});

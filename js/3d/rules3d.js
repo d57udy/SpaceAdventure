@@ -13,12 +13,23 @@
 
 import { Difficulty, createDynamicDifficulty } from '../difficulty.js';
 
-// Seconds between incoming rocks at level 1 (3D only; plan 07 §2.2, re-tuned with UFOs in §2.1)
-const INCOMING_INTERVAL = Object.freeze({ easy: 7, medium: 4.5, hard: 3.5 });
+// 3D-only numbers per difficulty (plan 07 §2.1, §2.2), tuned with scripts/balance3d.mjs so Easy
+// has about half the Medium threat rate and Hard about 1.5 times: incoming rocks (seconds
+// between them at level 1, how many a level has × the Medium count, the miss disc × rock +
+// ship radius) and the small rocks in each cluster. The 2D numbers (UFO timing and accuracy,
+// rock speed, lives, scores) come from the shared table unchanged.
+export const TUNING_3D = Object.freeze({
+    easy: Object.freeze({ interval: 10, count: 0.25, miss: 2.2, clusterSmall: 2 }),
+    medium: Object.freeze({ interval: 4.5, count: 1, miss: 1.35, clusterSmall: 3 }),
+    hard: Object.freeze({ interval: 3, count: 1.5, miss: 1.9, clusterSmall: 3 }),
+});
 
-/** Easy / Medium / Hard: the 2D table (js/difficulty.js Difficulty) plus the 3D incoming-rock timing. */
+/** Easy / Medium / Hard: the 2D table (js/difficulty.js Difficulty) plus the 3D incoming-rock numbers. */
 export const DIFFICULTY_3D = Object.freeze(Object.fromEntries(Object.values(Difficulty).map((d) => [
-    d.id, Object.freeze({ ...d, incomingInterval: INCOMING_INTERVAL[d.id] }),
+    d.id, Object.freeze({
+        ...d, incomingInterval: TUNING_3D[d.id].interval, incomingCount: TUNING_3D[d.id].count, incomingMiss: TUNING_3D[d.id].miss,
+        clusterSmall: TUNING_3D[d.id].clusterSmall,
+    }),
 ])));
 export const DIFFICULTY_IDS_3D = Object.freeze(Object.keys(DIFFICULTY_3D));
 export const DEFAULT_DIFFICULTY_3D = 'medium';
@@ -60,7 +71,8 @@ export const RULES3D = Object.freeze({
     bannerSeconds: 2.5,        // "LEVEL N" banner
     lastRocks: 5,              // at or below this many rocks left, all are on the radar and get arrows
     bossEvery: 2,              // 2D BOSS_LEVEL_INTERVAL (the boss itself comes in Phase 3)
-    bossFieldShare: 0.4,       // 2D: 40 % of the rocks on a boss level
+    bossFieldShare: 0.4,       // 2D: 40 % of the rocks on a boss level (floor, as 2D)
+    bossGreenShare: 0.5,       // plan 07 §2.6: half the crystals on a boss level
     maxIncomingInFlight: 4,
     incomingMinInterval: 3,
     incomingPerLevel: 0.4,     // seconds less between incoming rocks per level
@@ -90,7 +102,7 @@ export const isBossLevel = (level) => level > 0 && level % RULES3D.bossEvery ===
  * @returns {{
  *   level, difficulty, speedMult, clusters: number, clusterRocks: {large, medium, small},
  *   scattered: number, greens: number, clusterGreenShare: number, crystalMix: Array,
- *   incoming: { count, interval, speed: [min, max], sizeMix }
+ *   incoming: { count, interval, speed: [min, max], miss, sizeMix }
  * }}
  */
 export function levelPlan(level = 1, { difficulty = DEFAULT_DIFFICULTY_3D, dda = null, boss = false } = {}) {
@@ -98,13 +110,24 @@ export function levelPlan(level = 1, { difficulty = DEFAULT_DIFFICULTY_3D, dda =
     const d = difficultyOf(difficulty);
     const m = ddaOf(dda);
     const speedMult = d.asteroidSpeedMultiplier * m.asteroidSpeedMod;
+    // Boss levels (2D createLevelAsteroids: floor(40 %) of the rocks; plan 07 §2.6: half the
+    // crystals and fewer clusters): fewer clusters and scattered rocks, half the crystals, and
+    // the incoming rocks fill the red rocks up to exactly floor(40 %) of a normal level's
     const share = boss ? RULES3D.bossFieldShare : 1;
     const scale = (n) => Math.max(1, Math.round(n * share));
-    const clusters = scale(3 + Math.floor((L - 1) / 2));
-    const clusterRocks = { large: Math.floor((L - 1) / 3), medium: 2 + Math.floor((L - 1) / 2), small: 3 };
-    const scattered = scale(3 + Math.floor((L - 1) / 2));
+    const clusterRocks = { large: Math.floor((L - 1) / 3), medium: 2 + Math.floor((L - 1) / 2), small: d.clusterSmall };
+    const perCluster = clusterRocks.large + clusterRocks.medium + clusterRocks.small;
+    const baseClusters = 3 + Math.floor((L - 1) / 2);
+    const baseScattered = 3 + Math.floor((L - 1) / 2);
+    const baseIncoming = Math.round((22 + 2 * (L - 1)) * d.incomingCount);
+    const clusters = scale(baseClusters);
+    const scattered = scale(baseScattered);
     // Green share: the 2D adaptive greenRatioMod (more crystals for a struggling player)
-    const greens = scale(Math.round((14 + 2 * (L - 1)) * m.greenRatioMod));
+    const baseGreens = Math.round((14 + 2 * (L - 1)) * m.greenRatioMod);
+    const greens = boss ? Math.max(1, Math.round(baseGreens * RULES3D.bossGreenShare)) : baseGreens;
+    const incomingCount = boss
+        ? Math.max(0, Math.floor((baseClusters * perCluster + baseScattered + baseIncoming) * share) - clusters * perCluster - scattered)
+        : baseIncoming;
     const interval = Math.max(RULES3D.incomingMinInterval, d.incomingInterval - RULES3D.incomingPerLevel * (L - 1));
     const sp = speedMult * (1 + RULES3D.incomingSpeedPerLevel * (L - 1));
     return {
@@ -118,8 +141,9 @@ export function levelPlan(level = 1, { difficulty = DEFAULT_DIFFICULTY_3D, dda =
         clusterGreenShare: 0.7,
         crystalMix: CRYSTAL_MIX,
         incoming: {
-            count: scale(22 + 2 * (L - 1)),
+            count: incomingCount,
             interval,
+            miss: d.incomingMiss,
             speed: [RULES3D.incomingSpeed[0] * sp, RULES3D.incomingSpeed[1] * sp],
             sizeMix: [['large', 0.05], ['medium', 0.3], ['small', 0.65]],
         },

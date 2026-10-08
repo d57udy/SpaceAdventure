@@ -337,3 +337,34 @@ test('review #6: the boss glow fades out before its nearest image switches sides
     assert.equal(boss.object3d.children[0].children[3].visible, true);
     boss.dispose();
 });
+
+test('reduced motion: no shield flicker (a smooth fade instead), calm boss pulsing', () => {
+    // Normal: the last 2 s flicker between two levels; reduced: steady at any instant, fading with time left
+    const flick = new Set(), calm = new Set();
+    for (let i = 0; i < 40; i++) { flick.add(shieldAlpha(1, i / 40).toFixed(3)); calm.add(shieldAlpha(1, i / 40, 0, true).toFixed(3)); }
+    assert.ok(flick.size >= 2);
+    assert.equal(calm.size, 1);
+    assert.ok(shieldAlpha(0.5, 0, 0, true) < shieldAlpha(1.5, 0, 0, true), 'fades as it runs out');
+    assert.ok(shieldAlpha(5, 0, 1, true) < shieldAlpha(5, 0, 1), 'smaller hit flare');
+    const sh = createShieldBubble();
+    sh.update({ shield: 5, reducedMotion: true }, 10);
+    assert.ok(sh.object3d.material.uniforms.uTime.value < 10, 'slow shimmer');
+    sh.dispose();
+    // Weak points: no pulse
+    const w = { id: 1, health: 30, maxHealth: 30 };
+    const g = [0, 0.3, 0.6, 0.9].map((t) => weakPointGlow(w, t, 0, true).glow);
+    assert.ok(g.every((x) => x === g[0]));
+    assert.ok(new Set([0, 0.3, 0.6].map((t) => weakPointGlow(w, t).glow)).size > 1);
+    // Exposed core: a small, slow pulse
+    const { normals, state } = bossState();
+    for (const x of state.boss.weakPoints) { x.destroyed = true; x.health = 0; }
+    const boss = createBossMeshes({ normals, makeCanvas: fakeCanvas });
+    const mat = boss.object3d.children[0].children[0].material;
+    const range = (reducedMotion) => {
+        const v = [];
+        for (let i = 0; i < 30; i++) { boss.update({ ...state, reducedMotion }, i / 30); v.push(mat.emissive.r); }
+        return Math.max(...v) - Math.min(...v);
+    };
+    assert.ok(range(true) < range(false) / 3, `${range(true)} vs ${range(false)}`);
+    boss.dispose();
+});

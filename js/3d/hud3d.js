@@ -70,7 +70,10 @@ export function drawHudText(ctx, w, h, info, insets = { top: 0, left: 0, right: 
         bottom += 4 + Math.round(fs * 0.8);
     }
     ctx.textAlign = 'center';
-    ctx.fillText(t.right, w / 2, h - Math.max(18, h * 0.06) + 4);
+    // The footer (control type, view distance, frame rate) only with the debug setting; a
+    // desktop hint ("click to steer") can use the same line
+    if (info.debug) ctx.fillText(t.right, w / 2, h - Math.max(18, h * 0.06) + 4);
+    else if (info.hint) ctx.fillText(info.hint, w / 2, h - Math.max(18, h * 0.06) + 4);
     if (info.message) {
         ctx.font = `bold ${fs}px Arial, sans-serif`;
         ctx.fillStyle = '#ffd27a';

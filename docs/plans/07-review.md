@@ -18,7 +18,7 @@ A read-only review of `js/3d/sim3d.js`, `ufo3d.js`, `boss3d.js`, `powerup3d.js`,
 | 10 | Low | Split pieces are not wrapped into the cube | `world3d.js:203` | Fixed (in sim3d.hitRed) |
 | 11 | Low | A UFO bullet's last movement is never tested for a hit | `ufo3d.js:287-293`, `301-322` | Fixed |
 | 12 | Low | A cluster's rim marker can point the wrong way when the cluster straddles the far seam | `radar3d.js:82-96` | Fixed |
-| 13 | Low | Small per-frame allocations (CPU measured: not a problem) | `render3d.js:274`, `proto3d.js` `renderView` | Open (render3d / proto3d) |
+| 13 | Low | Small per-frame allocations (CPU measured: not a problem) | `render3d.js:274`, `proto3d.js` `renderView` | Sim side fixed; render3d / proto3d open |
 | 14 | Low | The event queue silently drops old events past 200 | `sim3d.js:147` | Fixed (counter) |
 
 Things checked and found correct are listed at the end.
@@ -140,6 +140,8 @@ Things checked and found correct are listed at the end.
 **Fix:** average the members' positions relative to the first member (`nearestDelta(first, member)`), then take one `nearestDelta` from the ship to that centre.
 
 ## 13. Low: per-frame allocations
+
+**Sim side fixed:** `sim3d.syncAdaptive` rebuilds the modifiers and reconfigures the UFO and power-up systems only when the tracker's modifiers change (an allocation-free compare first). Test: `sim3d` review #13. The render3d / proto3d allocations are the sim agent's.
 
 **Where:**
 - `render3d.js:274` maps every hostile bullet into a new object each frame.

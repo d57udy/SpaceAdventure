@@ -32,7 +32,7 @@ const KEYBOARD_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'keyboard.spec.js', 's
 const PWA_SPECS = ['pwa.spec.js'];
 const TOUCH_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'settings.spec.js', 'colours.spec.js', 'music-render.spec.js', 'gamepad.spec.js', 'tutorial.spec.js', 'mp-modes.spec.js', 'mp-touch.spec.js', 'mp-facing.spec.js', 'app-ui.spec.js', 'mp-access.spec.js', 'phone.spec.js', 'layout.spec.js', 'platform.spec.js'];
 // 3D prototype: WebGL needs SwiftShader in headless CI (docs/plans/06-3d-mode.md §5)
-const SPECS_3D = ['proto3d.spec.js', 'game3d.spec.js']; // game3d: the full game through js/3d/ui3d.js (skips until wired)
+const SPECS_3D = ['proto3d.spec.js', 'game3d.spec.js']; // game3d: the full game through js/3d/ui3d.js
 const ARGS_3D = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--mute-audio'];
 // A tall phone (the adaptive, non-square canvas on a small screen)
 const PIXEL_SPECS = ['smoke.spec.js', 'hidpi.spec.js', 'touch.spec.js', 'phone.spec.js', 'settings.spec.js', 'tutorial.spec.js', 'layout.spec.js'];
@@ -91,7 +91,7 @@ export default defineConfig({
     },
     {
       name: 'ipad-webkit-landscape',
-      testMatch: TOUCH_SPECS,
+      testMatch: [...TOUCH_SPECS, 'webkit3d.spec.js'], // + what a visitor sees of 3D on WebKit
       use: { ...devices['iPad (gen 7) landscape'], browserName: 'webkit', serviceWorkers: 'block' },
     },
     {

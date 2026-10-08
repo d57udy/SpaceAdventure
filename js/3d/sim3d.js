@@ -30,7 +30,7 @@ import { vAdd, vScale, vLen, vSub, vNorm, forwardOf, qIdentity, DEG } from './ma
 import { worldFor, wrapPos, spawnField, splitRock, driftRocks, countRocks, nearestDelta } from './world3d.js';
 import { spheresOverlap, sweptHit } from './collide3d.js';
 import {
-    RULES3D, levelPlan, planRockCount, difficultyOf, ddaOf, crystalScore, nextExtraLife, isBossLevel, DEFAULT_DIFFICULTY_3D,
+    RULES3D, NEUTRAL_DDA, levelPlan, planRockCount, difficultyOf, ddaOf, crystalScore, nextExtraLife, isBossLevel, DEFAULT_DIFFICULTY_3D,
 } from './rules3d.js';
 import { spawnLevel, createIncoming, spawnIncoming, steerIncoming, incomingInFlight, pushRocksAway } from './spawn3d.js';
 import { assistFor, aimAssist, isTarget } from './assist3d.js';
@@ -643,12 +643,24 @@ export function pickupRadius(s) {
  * speed modifier applies to the incoming rocks still to come at once (the field's own drift
  * and the crystal share change with the next level, as in 2D).
  */
+/** Would ddaOf(tracker) differ from the modifiers in effect? (No allocation.) */
+function ddaDiffers(cur, tracker) {
+    for (const k in cur) {
+        const v = Number.isFinite(tracker[k]) ? tracker[k] : NEUTRAL_DDA[k];
+        if (v !== cur[k]) return true;
+    }
+    return false;
+}
+
 function syncAdaptive(s) {
     const a = s.adaptive;
     if (!a) return;
+    s.assist = assistFor(a.getAdjustmentLevel()); // a frozen table row: no allocation
+    // The modifiers change only when the tracker re-evaluates: rebuild and reconfigure then,
+    // not every step (review #13)
+    if (!ddaDiffers(s.dda, a)) return;
     const speedWas = s.dda.asteroidSpeedMod;
     s.dda = ddaOf(a);
-    s.assist = assistFor(a.getAdjustmentLevel());
     // UFO timing and accuracy, power-up timing
     s.ufoSys.configure({ dda: { ufoSpawnMod: s.dda.ufoSpawnMod, ufoAccuracyMod: s.dda.ufoAccuracyMod } });
     s.power.configure({ dda: s.dda });
