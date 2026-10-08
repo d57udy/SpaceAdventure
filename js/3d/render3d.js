@@ -271,7 +271,7 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         const t = performance.now() / 1000;
         content.ufos.update({ ufos: view.ufos || [], view: v }, t);
         content.shots.update({
-            bullets: (view.hostileBullets || []).map((b) => ({ pos: b.pos, radius: b.radius, life: b.life, from: b.from === 'boss' ? 'boss' : 'ufo' })),
+            bullets: (view.hostileBullets || []).map((b) => ({ id: b.id, pos: b.pos, radius: b.radius, life: b.life, from: b.from === 'boss' ? 'boss' : 'ufo' })),
             view: v,
         }, t);
         content.powerUps.update({ powerUps: view.powerUps || [], view: v }, t);

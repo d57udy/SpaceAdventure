@@ -9,7 +9,8 @@
 // (level 1 down to a small crystal and a small red rock straight ahead), &layout3d=ufo (one
 // UFO 400 straight ahead, holding still and not firing), &layout3d=boss (level 2 with only the
 // boss left, holding still 700 ahead, its outer weak points already gone and the core down
-// to one shot: a test shortcut), &layout3d=powerup (a triple-shot power-up 60 ahead, a red rock 500 ahead), &lowres3d=1
+// to one shot: a test shortcut), &layout3d=doom (a quick game over: 1 life, a small crystal at
+// the ship, a large red rock 300 ahead flying at it, arriving in about 2 s), &layout3d=powerup (a triple-shot power-up 60 ahead, a red rock 500 ahead), &lowres3d=1
 // (tests only: fixed half-resolution drawing buffer, no antialiasing, 1x HUD, so a software
 // renderer on CI keeps a usable frame rate; real devices never get it).
 //
@@ -55,7 +56,7 @@ const MODE_LABELS = { direct: 'Direct', rate: 'Rate', joystick: 'Joystick' };
 const MODE_HELP = {
     direct: 'Direct: the phone is the ship. Turn, tilt and roll the phone and the ship does the same.',
     rate: 'Rate: tilt the phone away from where you held it at the start to keep turning (like a joystick).',
-    joystick: 'Joystick: drag on the left half to turn, ⟲ ⟳ to roll. Desktop: click to capture the mouse, W/↑ thrust, Space/F fire, A/D or Q/E roll, Esc release.',
+    joystick: 'Joystick: drag on the left half to turn, ⟲ ⟳ to roll. Desktop: click to capture the mouse, W/↑ thrust, Space/F fire, A/D or Q/E roll, H hyperspace, Esc or P pause.',
 };
 const NO_DATA_MS = 1500;
 const MIN_RENDER_SCALE = 0.5; // nextRenderScale's floor (perf3d.js offers 2D below 30 fps there)
@@ -435,6 +436,11 @@ export async function startPrototype({
             for (const w of sim.boss.state.weakPoints) { w.destroyed = true; w.health = 0; }
             sim.boss.state.core.health = 10;
             sim.boss.state.moveSpeed = 0; // holds still straight ahead, so a test can aim at it
+        } else if (layout === 'doom') {
+            sim = createSim({ ...opts, field: false, lives: 1 });
+            const [x, y, z] = sim.ship.pos;
+            sim.rocks.push(makeRock({ id: nextId(sim), kind: 'green', size: 'small', pos: [x, y, z], vel: [0, 0, 0], rand: sim.rand }));
+            sim.rocks.push(makeRock({ id: nextId(sim), kind: 'red', size: 'large', pos: [x, y, z - 300], vel: [0, 0, 150], rand: sim.rand }));
         } else if (layout === 'powerup') {
             sim = createSim({ ...opts, field: false });
             const [x, y, z] = sim.ship.pos;
@@ -722,6 +728,7 @@ export async function startPrototype({
         if (KEYMAP[e.code]) { keys.add(KEYMAP[e.code]); if (screen === 'playing') e.preventDefault(); }
         if (e.repeat) return;
         if (e.code === 'KeyP') { if (screen === 'playing') pause(); else if (screen === 'paused') begin(); }
+        if (e.code === 'Escape' && screen === 'playing') pause(); // also releases the mouse (browser)
         if (e.code === 'KeyR' && screen === 'playing') doRecentre();
         if (e.code === 'KeyH' && screen === 'playing') hyperReq = true;
         if (e.code === 'KeyL') toggleLevel();

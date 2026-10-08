@@ -636,3 +636,20 @@ test('HUD: power-up chips with timer bars, boss bar, radar glyphs for the new ty
     const blips = ['saucer', 'boss', 'powerup', 'shot'].map((type, i) => ({ id: i, type, x: 0, y: 0, dist: 100, near: 0.5, threat: type === 'shot', beyond: false }));
     hud3d.drawRadar(ctx2d, layout, { front: blips, rear: [] }, { collect: '#0f0', hazard: '#f00', ufo: '#a0f' }, 0);
 });
+
+test('layout3d=doom: the crystal at the ship is collected, the red rock ends the game within about 2 s; Esc pauses', async () => {
+    const env = await boot({ search: '?3d=1&seed3d=1&layout3d=doom' });
+    const g = () => env.win.__spaceAdventure.game3d;
+    assert.equal(g().lives, 1);
+    await startJoystick(env);
+    env.frames(3);
+    assert.ok(g().score > 0, 'collected at once');
+    env.win.fire('keydown', { code: 'Escape', repeat: false, preventDefault() {} });
+    assert.equal(g().screen, 'paused');
+    env.el('p3-start').click();
+    assert.equal(g().screen, 'playing');
+    for (let i = 0; i < 200 && !g().over; i++) env.frames(1);
+    assert.equal(g().over, true);
+    assert.ok(g().time < 2.6, `over at ${g().time} s`);
+    assert.equal(g().screen, 'over');
+});

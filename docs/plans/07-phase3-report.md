@@ -144,3 +144,14 @@ The standalone modules (ufo3d, boss3d, powerup3d, hyperspace3d) were not changed
 - Credits are only collected for the boss and weak points (`stats.credits`). The 2D rule of "10 % of the score as credits" belongs to the game-over and progress step.
 - Regular UFOs keep arriving on their timer during a boss fight, besides the escorts. That matches 2D, which doesn't stop the UFO timer for a boss.
 - The other agents' `tests/integration/game3d.spec.js` expects the ui3d wiring. I didn't touch it.
+
+## Follow-ups (same day)
+
+- `tests/integration/proto3d.spec.js` "View distance": the stale `drawnRocks > 50` check is replaced. It now waits for `drawnRocks > 0` and checks that it equals the number of `rocks3d()` entries inside the cull distance, read in one `evaluate`.
+- `&layout3d=doom` for `game3d.spec.js`:
+  - 1 life.
+  - A small crystal at the ship, collected on the first step.
+  - A large red rock 300 ahead flying at the ship at 150 per second, so the game is over at about 2 s.
+- Esc now pauses while playing, like P; the help text is updated. Unit test added.
+- render3d passes each hostile bullet's `id` to `createHostileBullets`, as the meshes3d API asks.
+- Unit suite: 1023 of 1023 pass. That includes the three tests the ui3d agent saw failing mid-edit (proto3d joystick fire splits, sim3d "shoot a red splits", sim3d aim assist).

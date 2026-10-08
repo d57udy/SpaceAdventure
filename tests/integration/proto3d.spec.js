@@ -307,10 +307,17 @@ test('View distance: Far by default, the choice persists and changes the world s
   await expect(page.locator('#p3-view-veryfar')).toHaveAttribute('aria-pressed', 'true');
   await start(page);
   await play(page, 500);
-  // Hundreds of rocks, still a handful of draw calls (instancing)
+  // Level 1's fixed rock set (plan 07 §2.5) spread over the cube: some of it within the cull
+  // distance, a handful of draw calls (instancing). drawnRocks is the renderer's count of the
+  // same frame's rocks3d() entries inside the cull distance (one read: rocks keep moving).
   await poll(page, 'drawCalls').toBeGreaterThan(0);
   expect(await g3get(page, 'drawCalls')).toBeLessThan(30);
-  expect(await g3get(page, 'drawnRocks')).toBeGreaterThan(50);
+  await expect.poll(() => g3get(page, 'drawnRocks'), { timeout: T }).toBeGreaterThan(0);
+  const seen = await page.evaluate(() => ({
+    drawn: window.__spaceAdventure.game3d.drawnRocks,
+    inCull: window.__spaceAdventure.rocks3d().filter((r) => r.drawn).length,
+  }));
+  expect(seen.drawn).toBe(seen.inCull);
   await shot(page, testInfo, 'far');
   expect(errors).toEqual([]);
 });
