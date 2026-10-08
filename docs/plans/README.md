@@ -14,7 +14,7 @@ This folder holds the implementation plan for the next round of improvements and
 | – | Multiplayer investigation (all options) | [04-multiplayer.md](04-multiplayer.md) | – |
 | – | **Local multiplayer plan** (decided scope) | [05-local-multiplayer.md](05-local-multiplayer.md) | about 3–4 weeks, in 8 phases |
 | – | **3D cockpit mode** (investigation October 2026; Phase 0 prototype built, `?3d=1`) | [06-3d-mode.md](06-3d-mode.md) | about 4–6 weeks, in 5 phases |
-| – | **3D game: full implementation plan** (8 October 2026; replaces plan 06 §6 roadmap) | [07-3d-game.md](07-3d-game.md) | about 5–7 weeks, in 6 phases |
+| – | **3D game: full implementation plan** (8 October 2026; built and live, Start 3D is the default) | [07-3d-game.md](07-3d-game.md) | about 5–7 weeks, in 6 phases |
 
 Sizes: S = under a day, M = 1–2 days, L = 2–3 days, XL = a week or more. Each includes unit, integration and acceptance tests.
 
