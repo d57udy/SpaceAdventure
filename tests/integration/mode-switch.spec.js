@@ -115,5 +115,8 @@ test('the hook lists the main menu rows as soon as the state is menu (no wait fo
   }));
   expect(options[0]).toBe('Start 3D');
   expect(options).toContain('Start');
+  // The same rows the menu draws and selects (currentMenuOptions once it has drawn)
+  await waitForState(page, 'menu');
+  expect(await hook(page, 'menuOptions')).toEqual(options);
   expect(errors).toEqual([]);
 });

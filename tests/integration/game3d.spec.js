@@ -344,9 +344,16 @@ test('credits and upgrades are shared: bought in 3D, shown in 2D', async ({ page
   await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.state === 'menu', null, { timeout: T });
   const upgradesRow = (await page.evaluate(() => window.__spaceAdventure.menuOptions)).indexOf('Upgrades');
   expect(upgradesRow).toBeGreaterThanOrEqual(0);
-  for (let i = 0; i < 20 && (await page.evaluate(() => window.__spaceAdventure.menuIndex)) !== upgradesRow; i++) {
-    await page.keyboard.press('ArrowDown');
+  // One step at a time: wait for each press to move the focus (a slow renderer handles keys a
+  // frame later, and presses sent faster than frames can be dropped or merged), back up on overshoot
+  const index = () => page.evaluate(() => window.__spaceAdventure.menuIndex);
+  for (let i = 0; i < 30; i++) {
+    const at = await index();
+    if (at === upgradesRow) break;
+    await page.keyboard.press(at < upgradesRow ? 'ArrowDown' : 'ArrowUp');
+    await expect.poll(index, { timeout: T }).not.toBe(at);
   }
+  expect(await index()).toBe(upgradesRow);
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.__spaceAdventure.state === 'upgrades', null, { timeout: T });
   await expect.poll(() => page.evaluate(() => [...window.__drawnTexts]), { timeout: T }).toContain('Upgrade Credits: 934');
