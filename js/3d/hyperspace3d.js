@@ -5,12 +5,12 @@
 //
 // 3D translation: 2D lands anywhere at random and can materialise inside a rock (a 2D
 // screen is crowded). The plan asks for a point clear of rocks, so the destination comes from
-// world3d spawnPoint with a clearance; the "materialised inside something" check still runs on
-// the chosen point (spawnPoint falls back to its best try when nothing is clear), so the
+// clearPoint, a clearance from every obstacle's edge; the "materialised inside something"
+// check still runs on the chosen point (clearPoint falls back to its best try), so the
 // 2D risk rule stays. The rolls keep the 2D order: self-destruct first, then the destination.
 
 import { vLen } from './math3d.js';
-import { nearestDelta, spawnPoint } from './world3d.js';
+import { nearestDelta } from './world3d.js';
 
 export const HYPERSPACE3D = Object.freeze({
     cooldown: 5,             // 2D HYPERSPACE_COOLDOWN
@@ -18,6 +18,27 @@ export const HYPERSPACE3D = Object.freeze({
     clearance: 120,          // destination at least this far from every rock and UFO
     shipRadius: 9,
 });
+
+const rr = (rand, lo, hi) => lo + rand() * (hi - lo);
+
+/**
+ * A random point at least `clearance` from the EDGE of every obstacle ({ pos, radius }): a
+ * big obstacle (the boss, radius 150) keeps its own radius clear too (review #4). The same
+ * draws as world3d spawnPoint (3 per try, up to `tries`); with no clear point, the try with the
+ * most room. Returns a position.
+ */
+export function clearPoint(rand, size, obstacles = [], clearance = HYPERSPACE3D.clearance, tries = 40) {
+    let best = null;
+    let bestRoom = -Infinity;
+    for (let i = 0; i < tries; i++) {
+        const p = [rr(rand, 0, size), rr(rand, 0, size), rr(rand, 0, size)];
+        let room = Infinity;
+        for (const o of obstacles) room = Math.min(room, vLen(nearestDelta(o.pos, p, size)) - (o.radius || 0));
+        if (room >= clearance) return p;
+        if (room > bestRoom) { bestRoom = room; best = p; }
+    }
+    return best;
+}
 
 /** Cooldown state: { cooldown } seconds left. */
 export function createHyperspace() {
@@ -46,8 +67,7 @@ export function tryHyperspace(h, { rand, size, shipPos, obstacles = [], shipRadi
         h.failures++;
         return { result: 'selfDestruct', pos: shipPos.slice() };
     }
-    const avoid = obstacles.map(o => o.pos);
-    const pos = spawnPoint(rand, size, avoid, HYPERSPACE3D.clearance);
+    const pos = clearPoint(rand, size, obstacles, HYPERSPACE3D.clearance);
     const into = obstacles.find(o => vLen(nearestDelta(pos, o.pos, size)) <= (o.radius || 0) + shipRadius);
     if (into) {
         h.failures++;

@@ -55,6 +55,8 @@ export const BOSS3D = Object.freeze({
     bulletRadius: 4,
 });
 
+const TURRET_FLASH = 0.15; // s: the muzzle flash after a burst
+
 export const bossLevelOf = (level) => Math.max(1, Math.floor(level / 2));
 
 /** n directions spread evenly over the unit sphere (Fibonacci lattice). */
@@ -129,6 +131,9 @@ export function createBoss3d({ rand, size, level, shipPos, shipForward = [0, 0, 
         target: null,
         bullets: [],
         flash: 0,
+        lastHit: null,       // id of the weak point hit last (its flare, meshes3d.js)
+        turretDir: null,     // body-frame direction of the weak point that fired last ...
+        turretFlash: 0,      // ... and its muzzle flash, 0..1 (fades in TURRET_FLASH s)
     };
 
     const outerLeft = () => b.weakPoints.filter(w => !w.destroyed).length;
@@ -158,8 +163,10 @@ export function createBoss3d({ rand, size, level, shipPos, shipForward = [0, 0, 
             if (w.destroyed) continue;
             const p = wpPos(w);
             const d = vLen(nearestDelta(p, shipP, size));
-            if (!best || d < best.d) best = { p, d, n: wpNormal(w) };
+            if (!best || d < best.d) best = { p, d, n: wpNormal(w), w };
         }
+        b.turretDir = best ? best.w.dir.slice() : null;
+        b.turretFlash = best ? 1 : 0;
         return best ? vAdd(best.p, vScale(best.n, BOSS3D.weakPointRadius + 6)) : b.pos;
     }
 
@@ -216,6 +223,7 @@ export function createBoss3d({ rand, size, level, shipPos, shipForward = [0, 0, 
             if (!b.alive) return events;
             b.q = qNorm(qMul(qFromAxisAngle(b.axis, BOSS3D.spin * dt), b.q));
             b.flash = Math.max(0, b.flash - dt);
+            b.turretFlash = Math.max(0, b.turretFlash - dt / TURRET_FLASH);
             b.phaseTimer += dt;
             if (b.phase === 'entering') {
                 if (b.phaseTimer >= BOSS3D.enterSeconds) {
@@ -246,13 +254,14 @@ export function createBoss3d({ rand, size, level, shipPos, shipForward = [0, 0, 
                 b.alive = false;
                 events.push({ type: 'bossGone' });
             }
+            // Shots that ran out last step go now: collideBullets tested their last move first
+            b.bullets = b.bullets.filter(x => x.life > 0);
             for (const bl of b.bullets) {
                 bl.prev = bl.pos;
                 bl.pos = wrapPos(vAdd(bl.pos, vScale(bl.vel, dt)), size);
                 bl.life -= dt;
                 if (bl.life <= 0) events.push({ type: 'bulletExpired', bullet: bl.id });
             }
-            b.bullets = b.bullets.filter(x => x.life > 0);
             return events;
         },
         /**
@@ -300,6 +309,7 @@ export function createBoss3d({ rand, size, level, shipPos, shipForward = [0, 0, 
                 if (w.destroyed) return events;
                 w.health = Math.max(0, w.health - amount);
                 b.flash = 0.1;
+                b.lastHit = w.id;
                 events.push({ type: 'weakPointHit', id: w.id, health: w.health });
                 if (w.health <= 0) {
                     w.destroyed = true;
@@ -321,12 +331,14 @@ export function createBoss3d({ rand, size, level, shipPos, shipForward = [0, 0, 
         },
         /** Swept boss bullets against the ship; hit bullets removed. Returns [{ bullet }]. */
         collideBullets({ ship = null } = {}) {
-            if (!ship || ship.alive === false || ship.invulnerable > 0) return [];
             const hits = [];
+            const open = ship && ship.alive !== false && !(ship.invulnerable > 0);
             b.bullets = b.bullets.filter(bl => {
-                const t = sweptHit(bl.prev, nearestDelta(bl.prev, bl.pos, size), ship.pos, (ship.radius ?? 9) + bl.radius, size);
-                if (t >= 0) { hits.push({ bullet: bl }); return false; }
-                return true;
+                if (open) {
+                    const t = sweptHit(bl.prev, nearestDelta(bl.prev, bl.pos, size), ship.pos, (ship.radius ?? 9) + bl.radius, size);
+                    if (t >= 0) { hits.push({ bullet: bl }); return false; }
+                }
+                return bl.life > 0; // an expired shot had its last move tested here
             });
             return hits;
         },

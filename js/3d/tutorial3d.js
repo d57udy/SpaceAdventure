@@ -62,12 +62,12 @@ const LOOK_TOUCH = {
 const TEXTS = {
     look: {
         desktop: 'Move the mouse to look around (click first to capture it)',
-        controller: 'Turn with the left stick, roll with the right stick',
+        controller: 'Turn with the left stick, roll with LB and RB',
     },
     thrust: {
         touch: 'Hold THRUST to fly forward',
         desktop: 'Hold W (or ↑) to fly forward',
-        controller: 'Hold RT (or LT) to fly forward',
+        controller: 'Hold LT to fly forward',
     },
     collect: {
         all: 'Turn toward the GREEN crystal and fly INTO it',
@@ -75,7 +75,7 @@ const TEXTS = {
     shoot: {
         touch: 'Point the crosshair at the RED rock and tap FIRE',
         desktop: 'Point the crosshair at the RED rock and press SPACE (or click)',
-        controller: 'Point the crosshair at the RED rock and press Ⓐ or RB',
+        controller: 'Point the crosshair at the RED rock and press RT (or Ⓐ)',
     },
     radar: {
         all: 'Radar: the top circle shows what is IN FRONT, the bottom one what is BEHIND. A crystal is behind you: turn until its dot is in the middle of the top circle',

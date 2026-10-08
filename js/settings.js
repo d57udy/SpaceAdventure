@@ -37,6 +37,7 @@ export const SETTING_DEFS = Object.freeze({
     fov3d: intDef(60, 95, 70), // vertical field of view, degrees (the Settings row steps by 5)
     vignette3d: boolDef(true), // darken the screen edges during fast turns
     leftHanded3d: boolDef(false), // mirrored game buttons: Fire on the left, Thrust on the right
+    debug3d: boolDef(false), // the 3D HUD's footer line: control type, view distance, frame rate, render scale
 });
 
 export const SETTING_NAMES = Object.freeze(Object.keys(SETTING_DEFS));

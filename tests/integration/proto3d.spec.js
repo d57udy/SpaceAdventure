@@ -1,4 +1,5 @@
-// 3D cockpit prototype (?3d=1, docs/plans/06-3d-mode.md Phase 0).
+// The 3D game's flight, world and HUD (?3d=1; docs/plans/06-3d-mode.md, 07-3d-game.md). The
+// menus (ui3d.js) are covered in game3d.spec.js; here a game starts as a guest (Play).
 // Projects: chromium-3d (landscape phone, touch) and chromium-3d-desktop (mouse + keyboard),
 // both with WebGL through SwiftShader. Motion is faked with DeviceOrientationEvent dispatches
 // and a stubbed DeviceOrientationEvent.requestPermission (browser API stubs, never game
@@ -53,12 +54,30 @@ async function waitSteps(page, n = 2) {
   await page.waitForFunction((t) => window.__spaceAdventure.game3d.steps >= t, s0 + n, { timeout: T });
 }
 
-/** Start: the menu closes at once and the game runs, whatever the motion permission does. */
+const ui = (page) => page.evaluate(() => window.__spaceAdventure.game3d.ui);
+const item = (page, id) => page.locator(`[data-u3d="${id}"]`);
+
+/** Start as a guest: the menu closes at once and the game runs, whatever the motion permission does. */
 async function start(page) {
-  await page.click('#p3-start');
+  await expect.poll(async () => (await ui(page)).screen, { timeout: T }).toMatch(/^(profile|menu)$/);
+  if ((await ui(page)).screen === 'profile') await item(page, 'guest').click();
+  await item(page, 'play').click();
   await expect.poll(() => g3get(page, 'screen'), { timeout: T }).toBe('playing');
-  await expect(page.locator('#p3-menu')).toBeHidden();
+  await expect(page.locator('#u3d')).toBeHidden();
   await waitSteps(page, 1);
+}
+
+/** Step a Settings row (from the menu or the pause menu) until it shows `value`, then Back. */
+async function setRow(page, key, value) {
+  await item(page, 'settings').click();
+  await expect.poll(async () => (await ui(page)).screen, { timeout: T }).toBe('settings');
+  for (let i = 0; i < 12; i++) {
+    const it = (await ui(page)).items.find((x) => x.id === `set-${key}`);
+    if (it.value === value) break;
+    await page.locator(`#u3d-set-${key} button`).nth(2).click();
+  }
+  expect((await ui(page)).items.find((x) => x.id === `set-${key}`).value).toBe(value);
+  await item(page, 'back').click();
 }
 
 /** Wait for `ms` of GAME time (sim.time), not wall time: a slow renderer slows the game. */
@@ -253,12 +272,11 @@ test('Keyboard: W thrusts, Space fires, P pauses', async ({ page }) => {
   await page.keyboard.up('Space');
   await page.keyboard.press('KeyP');
   await poll(page, 'screen').toBe('paused');
-  await expect(page.locator('#p3-start')).toHaveText('Resume');
+  await expect(item(page, 'resume')).toBeVisible();
 });
 
 test('Permission denied falls back to Joystick with a message', async ({ page }) => {
   await open3d(page, { permission: 'denied' });
-  await expect(page.locator('#p3-start')).toHaveText('Enable motion & start');
   await start(page);
   await poll(page, 'permission').toBe('denied');
   await orientRel(page, { yaw: 30 }); // ignored without permission
@@ -268,15 +286,16 @@ test('Permission denied falls back to Joystick with a message', async ({ page })
   expect(s.chosenMode).toBe('direct');
   expect(s.mode).toBe('joystick');
   expect(s.message).toMatch(/denied/);
-  // Shown once, on the HUD: the menu (and its status line) is hidden while playing
-  await expect(page.locator('#p3-msg')).toBeHidden();
+  // Shown once, on the HUD: the menus are hidden while playing
+  await expect(page.locator('#u3d')).toBeHidden();
   expect(Math.abs(s.yaw)).toBeLessThan(0.01);
 });
 
 test('Portrait shows "landscape recommended"', async ({ page }, testInfo) => {
   await open3d(page);
   await page.setViewportSize({ width: 412, height: 892 });
-  await expect(page.locator('#p3-portrait-note')).toBeVisible();
+  await start(page);
+  await expect(page.locator('#p3-portrait-banner')).toBeVisible();
   expect(await g3get(page, 'portrait')).toBe(true);
   await shot(page, testInfo, 'portrait-warning');
 });
@@ -287,8 +306,9 @@ test('View distance: Far by default, the choice persists and changes the world s
   expect(s.viewDistance).toBe('far');
   expect(s.world.size).toBe(3200);
   expect(s.world.rendered.fogFar).toBe(1440);
-  await expect(page.locator('#p3-view-far')).toHaveAttribute('aria-pressed', 'true');
-  await page.click('#p3-view-veryfar');
+  await expect.poll(async () => (await ui(page)).screen, { timeout: T }).toBe('profile');
+  await item(page, 'guest').click();
+  await setRow(page, 'viewDistance3d', 'veryfar');
   await poll(page, 'viewDistance').toBe('veryfar');
   s = await g3(page);
   expect(s.world.size).toBe(4200);
@@ -304,7 +324,6 @@ test('View distance: Far by default, the choice persists and changes the world s
   await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
     && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
   expect(await g3get(page, 'viewDistance')).toBe('veryfar');
-  await expect(page.locator('#p3-view-veryfar')).toHaveAttribute('aria-pressed', 'true');
   await start(page);
   await play(page, 500);
   // Level 1's fixed rock set (plan 07 §2.5) spread over the cube: some of it within the cull
@@ -332,10 +351,13 @@ test('A red rock beyond the old fog end (720) is visible at Far, fogged out at N
   expect(r.distance).toBeLessThan(1440);
   expect(r.fog).toBeLessThan(0.9); // clearly visible, not just a fogged ghost
   // Normal view distance: the same layout, the rock is (almost) fully fogged
+  // (a view distance applies to the next game: pause, Settings, Quit, Play again)
   await page.keyboard.press('KeyP');
   await poll(page, 'screen').toBe('paused');
-  await page.click('#p3-view-normal');
+  await setRow(page, 'viewDistance3d', 'normal');
   await poll(page, 'viewDistance').toBe('normal');
+  await item(page, 'quit').click();
+  await start(page);
   await expect.poll(async () => (await red()).fog, { timeout: T }).toBeGreaterThan(0.9);
   r = await red();
   expect(r.distance).toBeGreaterThan(900);
@@ -365,9 +387,11 @@ test('Radar: the red rock ahead is at the front centre, the crystal behind at th
   expect(errors).toEqual([]);
 });
 
-test('Back to 2D reloads the normal game without the parameter', async ({ page }) => {
+test('Switch to 2D opens the normal game without the parameter', async ({ page }) => {
   await open3d(page);
-  await page.click('#p3-back2d');
+  await expect.poll(async () => (await ui(page)).screen, { timeout: T }).toBe('profile');
+  await item(page, 'guest').click();
+  await item(page, 'switch2d').click();
   await page.waitForFunction(() => window.__spaceAdventure && typeof window.__spaceAdventure.state === 'string', null, { timeout: T });
   expect(new URL(page.url()).searchParams.get('3d')).toBeNull();
   expect(await page.evaluate(() => 'game3d' in window.__spaceAdventure)).toBe(false);
@@ -430,18 +454,19 @@ test('Phase 2 hook: adaptive difficulty Balanced, its aids, the rock ahead brack
   expect(errors).toEqual([]);
 });
 
-test('Difficulty row: Medium by default; Hard persists and starts with 2 lives', async ({ page }) => {
+test('Difficulty: Medium by default; Hard persists and the next game starts with 2 lives', async ({ page }) => {
   const errors = await open3d(page);
-  await expect(page.locator('#p3-diff-medium')).toHaveAttribute('aria-pressed', 'true');
-  await page.click('#p3-diff-hard');
-  await poll(page, 'difficulty').toBe('hard');
-  expect(await g3get(page, 'lives')).toBe(2);
+  expect(await g3get(page, 'difficulty')).toBe('medium');
+  await expect.poll(async () => (await ui(page)).screen, { timeout: T }).toBe('profile');
+  await item(page, 'guest').click();
+  await setRow(page, 'difficulty', 'hard');
   expect(await page.evaluate(() => localStorage.getItem('spaceAdventure_difficulty'))).toBe('hard');
   await page.reload();
   await page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
     && window.__spaceAdventure.game3d.loaded, null, { timeout: T });
+  await start(page);
   expect(await g3get(page, 'difficulty')).toBe('hard');
-  await expect(page.locator('#p3-diff-hard')).toHaveAttribute('aria-pressed', 'true');
+  expect(await g3get(page, 'lives')).toBe(2);
   expect(errors).toEqual([]);
 });
 
@@ -459,7 +484,9 @@ test('Graphics context loss pauses the game; a restored context is rebuilt and p
   await expect.poll(() => g3get(page, 'contextLoss').then((c) => c.lost), { timeout: T }).toBe(true);
   await page.evaluate(() => window.__loseExt.restoreContext());
   await expect.poll(() => g3get(page, 'contextLoss').then((c) => c.lost), { timeout: T }).toBe(false);
-  await page.click('#p3-start');
+  // The message came as a prompt over the pause menu: OK, then Resume
+  await item(page, 'prompt-ok').click();
+  await item(page, 'resume').click();
   await poll(page, 'screen').toBe('playing');
   await waitSteps(page, 2);
   await poll(page, 'drawCalls').toBeGreaterThan(0);
@@ -510,5 +537,17 @@ test('layout3d=powerup: thrust into the triple shot, then each shot fires 3 bull
   await page.keyboard.up('Space');
   await page.keyboard.press('KeyH');
   await expect.poll(() => g3get(page, 'hyperspace').then((h) => h.jumps), { timeout: T }).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('layout3d=blocked: only a far UFO keeps the level going; it is on the radar and has an edge arrow', async ({ page }) => {
+  const errors = await open3d(page, { url: '/?3d=1&seed3d=1&layout3d=blocked', storage: { spaceAdventure_control3d: 'joystick' } });
+  await start(page);
+  const s = await g3(page);
+  expect(s.rocksLeft).toBe(0);
+  expect(s.ufos[0].dist).toBeGreaterThan(s.world.fogFar);
+  expect(s.lastFew).toBe(true);
+  expect([...s.radar.front, ...s.radar.rear].some((b) => b.type === 'saucer')).toBe(true);
+  expect(s.markers.some((m) => m.type === 'saucer')).toBe(true);
   expect(errors).toEqual([]);
 });

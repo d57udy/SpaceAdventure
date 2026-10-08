@@ -246,7 +246,7 @@ test('settings: every 3D and shared key, values persist through the settings obj
     const ids = snap().items.filter((i) => i.kind === 'row').map((i) => i.id.slice(4));
     assert.deepEqual(ids, [
         'control3d', 'levelHorizon3d', 'sensitivity3d', 'invert3d', 'viewDistance3d', 'fov3d', 'vignette3d', 'leftHanded3d',
-        'difficulty', 'palette', 'haptics', 'musicTune', 'musicVolume', 'sfxVolume', 'rumble',
+        'difficulty', 'palette', 'haptics', 'musicTune', 'musicVolume', 'sfxVolume', 'rumble', 'debug3d',
     ]);
     assert.deepEqual(ids, SETTINGS3D_ROWS.map((r) => r.key));
     assert.equal(snap().focus, 'set-control3d');

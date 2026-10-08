@@ -118,3 +118,12 @@ test('updateSource is idempotent', () => {
     const { version, precache } = parseSw(src);
     assert.equal(updateSource(src, version, precache), src);
 });
+
+test('js/version.js carries the cache version (precached, left out of the hash)', async () => {
+    const { VERSION_FILE, versionSource } = await import('../../scripts/update-sw-version.mjs');
+    const { actual, expected } = checkSw(DEFAULT_ROOT);
+    assert.equal(readFileSync(join(DEFAULT_ROOT, VERSION_FILE), 'utf8'), versionSource(expected.version), HOW_TO_FIX);
+    assert.ok(actual.precache.includes(VERSION_FILE));
+    const { BUILD_VERSION } = await import('../../js/version.js');
+    assert.equal(BUILD_VERSION, actual.version);
+});

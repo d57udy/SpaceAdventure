@@ -217,3 +217,54 @@ test('UFOs, power-ups and the boss on the radar; the boss at any distance; hosti
     const ram = buildRadar({ ...ship, vel: [0, 0, -100] }, [objs[0]], { size: SIZE, range: RANGE });
     assert.equal(ram.front[0].threat, true);
 });
+
+test('left-handed layout: the radar on the left edge, below the HUD text, labels to the right; FOV scales the view', () => {
+    const l = radarLayout(892, 412, { side: 'left' });
+    const r = radarLayout(892, 412);
+    assert.ok(l.front.cx < 892 / 2 && r.front.cx > 892 / 2);
+    assert.equal(l.label, 'right');
+    assert.ok(l.front.cy - l.r >= 130, 'below the score block');
+    assert.equal(verticalFov(16 / 9, 70), verticalFov(16 / 9));
+    assert.ok(verticalFov(16 / 9, 95) > verticalFov(16 / 9) * 1.3);
+    // Wider view: a direction off screen at 70 can be on screen at 95
+    const local = [Math.tan(50 * DEG), 0, -1];
+    assert.equal(onScreen(local, 16 / 9, 0.92, 70), false);
+    assert.equal(onScreen(local, 16 / 9, 0.92, 95), true);
+});
+
+test('review #1 and #12: blockers count as the last few; a cluster across the far seam keeps its direction', () => {
+    assert.equal(radar3d.lastFew(0), false);
+    assert.equal(radar3d.lastFew(0, true), true, 'no rock left, a UFO or the boss still there');
+    assert.equal(radar3d.lastFew(3, false), true);
+    assert.equal(radar3d.lastFew(9, true), false);
+    // Cluster members straddling the seam opposite the ship, along +x: about half a cube away
+    const rocks = [
+        { id: 1, kind: 'red', cluster: 'c', pos: [C[0] + SIZE / 2 - 20, C[1], C[2]] },
+        { id: 2, kind: 'red', cluster: 'c', pos: [C[0] + SIZE / 2 + 20 - SIZE, C[1], C[2]] },
+        { id: 3, kind: 'red', cluster: 'c', pos: [C[0] + SIZE / 2 - 10, C[1] + 30, C[2]] },
+    ];
+    const [c] = radar3d.clusterCentres(C, rocks, SIZE);
+    assert.ok(Math.abs(Math.abs(c.delta[0]) - SIZE / 2) < 20, `along the x axis: ${c.delta}`);
+    assert.ok(Math.abs(c.delta[2]) < 1e-6 && c.dist > SIZE / 2 - 20);
+});
+
+// --- Regression tests for docs/plans/07-review.md
+test('review #1: no rock left but the level is blocked: show everything', () => {
+    const { lastFew } = radar3d;
+    assert.equal(lastFew(0, true), true);
+    assert.equal(lastFew(0, false), false);
+    assert.equal(lastFew(3, false), true);
+    assert.equal(lastFew(RADAR.lastRocks + 1, true), false, 'rocks left: the usual rule');
+});
+
+test('review #12: a cluster across the seam opposite the ship keeps its direction', () => {
+    const { clusterCentres } = radar3d;
+    const size = 3200;
+    const ship = [100, 1600, 1600];
+    // Members around x = 1700 (exactly opposite the ship along x: delta ±1600 flips per member)
+    const rocks = [1650, 1690, 1730, 1770].map((x, i) => ({ id: i, cluster: 7, pos: [x, 1700, 1600] }));
+    const [c] = clusterCentres(ship, rocks, size);
+    assert.ok(Math.abs(Math.abs(c.delta[0]) - 1590) < 1e-6, `along x, 1590 away, not averaged to ~0 (${c.delta})`);
+    assert.ok(Math.abs(c.delta[1] - 100) < 1e-6);
+    assert.ok(c.dist > 1590);
+});

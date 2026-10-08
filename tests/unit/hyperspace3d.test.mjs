@@ -55,3 +55,24 @@ test('nowhere clear: materialising inside a rock destroys the ship', () => {
     assert.ok(res.into);
     assert.equal(h.failures >= 0, true);
 });
+
+// --- Regression test for docs/plans/07-review.md
+import { clearPoint } from '../../js/3d/hyperspace3d.js';
+
+test('review #4: the clearance is kept from each obstacle\'s edge (a big boss too)', () => {
+    const boss = { kind: 'boss', pos: C, radius: 150 };
+    // Draws that put the first try 130 from the boss centre: inside its radius + ship
+    const first = [(C[0] + 130) / SIZE, C[1] / SIZE, C[2] / SIZE];
+    const far = [0.1, 0.1, 0.1];
+    const p = clearPoint(seq(...first, ...far), SIZE, [boss], HYPERSPACE3D.clearance);
+    assert.ok(vLen(nearestDelta(C, p, SIZE)) - boss.radius >= HYPERSPACE3D.clearance, 'the second try, far from the boss');
+    // A jump next to the boss never materialises inside it
+    let inside = 0;
+    for (let seed = 1; seed <= 400; seed++) {
+        const rand = mulberry32(seed);
+        const obstacles = [boss, ...Array.from({ length: 40 }, () => ({ pos: [rand() * SIZE, rand() * SIZE, rand() * SIZE], radius: 30 }))];
+        const r = tryHyperspace(createHyperspace(), { rand, size: SIZE, shipPos: [0, 0, 0], obstacles });
+        if (r.result === 'materialised' && r.into === boss) inside++;
+    }
+    assert.equal(inside, 0);
+});

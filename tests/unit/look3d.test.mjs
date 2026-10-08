@@ -213,3 +213,27 @@ test('switching level horizon on in rate mode keeps the heading and drops roll',
     close(a.roll, 0, 1e-9);
     close(forwardOf(look.q), forwardOf(qFromEulerYXZ(0.3, 1.2, 0.7)), 0.25);
 });
+
+test('invert up/down flips stick and mouse pitch; the Turn Speed upgrade scales Joystick and Rate, not Direct', async () => {
+    const L = await import('../../js/3d/look.js');
+    const up = L.createLook({ mode: 'joystick' });
+    L.stepLook(up, { stickY: -1 }, 0.1);
+    const inv = L.createLook({ mode: 'joystick', invert: true });
+    L.stepLook(inv, { stickY: -1 }, 0.1);
+    assert.ok(up.rates.pitch > 0 && Math.abs(inv.rates.pitch + up.rates.pitch) < 1e-9);
+    const m = L.createLook({ mode: 'joystick', invert: true });
+    L.stepLook(m, { mouseDY: -10 }, 0.1);
+    assert.ok(L.lookAngles(m).pitch < 0, 'mouse up looks down when inverted');
+    const plain = L.createLook({ mode: 'joystick' });
+    L.stepLook(plain, { stickX: 1 }, 0.1);
+    const fast = L.createLook({ mode: 'joystick', turnRateMult: 1.3 });
+    L.stepLook(fast, { stickX: 1 }, 0.1);
+    assert.ok(Math.abs(fast.rates.yaw / plain.rates.yaw - 1.3) < 1e-9);
+    // Direct follows the phone 1:1 whatever the upgrade
+    const N = L.deviceQuat(0, 90, 0, 0);
+    const D = L.deviceQuat(30, 90, 0, 0);
+    const d1 = L.createLook({ mode: 'direct' });
+    const d2 = L.createLook({ mode: 'direct', turnRateMult: 1.5 });
+    for (const d of [d1, d2]) { L.stepLook(d, { device: N }, 0.016); L.stepLook(d, { device: D }, 0.016); }
+    assert.deepEqual(d1.q.map((v) => v.toFixed(9)), d2.q.map((v) => v.toFixed(9)));
+});

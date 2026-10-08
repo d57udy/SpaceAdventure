@@ -159,3 +159,33 @@ test('fighting: hovers 450 to 650 from the ship and spins; seeded runs repeat', 
     const snap = (seed) => { const x = make(4, seed); run(x, 20); return JSON.stringify(x.snapshot()); };
     assert.equal(snap(5), snap(5));
 });
+
+// --- Regression tests for docs/plans/07-review.md
+test('review #7: the boss records the weak point hit last and the firing turret (flash fades)', () => {
+    const b = make();
+    run(b, 3.05);
+    const w = b.state.weakPoints[1];
+    const s = shotAt(b, w);
+    b.damage(b.hitTest(s.p0, s.move));
+    assert.equal(b.state.lastHit, w.id);
+    assert.equal(b.state.turretFlash, 0);
+    let fired = false;
+    for (let i = 0; i < 60 * 4 && !fired; i++) fired = b.update(1 / 60, { ship: { pos: SHIP, alive: true } }).some((e) => e.type === 'bossShoot');
+    assert.ok(fired);
+    assert.equal(b.state.turretFlash, 1);
+    assert.ok(b.state.weakPoints.some((x) => !x.destroyed && x.dir.every((c, k) => c === b.state.turretDir[k])), 'a living weak point fired');
+    run(b, 0.2);
+    assert.ok(b.state.turretFlash < 1, 'fades');
+});
+
+test('review #11: a boss shot\'s last move before it expires is still tested', () => {
+    const b = make();
+    const ship = { pos: SHIP, alive: true, radius: 9 };
+    b.state.bullets.push({ id: 'x', pos: [SHIP[0], SHIP[1], SHIP[2] - 15], prev: null, vel: [0, 0, 300], life: 1 / 60, radius: 4 });
+    b.update(1 / 60, { ship: { pos: [0, 0, 0], alive: false } });
+    assert.equal(b.collideBullets({ ship }).length, 1);
+    b.state.bullets.push({ id: 'y', pos: [SHIP[0] + 400, SHIP[1], SHIP[2]], prev: null, vel: [0, 0, 300], life: 1 / 60, radius: 4 });
+    b.update(1 / 60, { ship: { pos: [0, 0, 0], alive: false } });
+    assert.equal(b.collideBullets({ ship }).length, 0);
+    assert.equal(b.state.bullets.length, 0, 'expired after its last test');
+});

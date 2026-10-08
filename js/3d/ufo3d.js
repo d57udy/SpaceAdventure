@@ -249,12 +249,16 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
         /** Off during the tutorial or between lives (2D: no UFO while every ship is waiting). */
         setEnabled(on) { sys.enabled = !!on; },
         /**
-         * One step. world: { ship: { pos, alive }, greens: [rock] }.
+         * One step. world: { ship: { pos, alive }, greens: [rock], recall }. recall: nothing else
+         * is left in the level, so a UFO beyond the cull distance turns back toward the ship
+         * (straight at it) instead of wandering off for farTimeout s (review #1).
          * Returns events: ufoSpawn { ufo }, ufoShoot { ufo, bullet, target: 'ship'|'green' },
          * ufoLeft { ufo } (gone far away), bulletExpired { bullet }.
          */
-        update(dt, { ship, greens = [] } = {}) {
+        update(dt, { ship, greens = [], recall = false } = {}) {
             const events = [];
+            // Shots that ran out last step go now: collideBullets tested their last move first
+            sys.bullets = sys.bullets.filter(b => b.life > 0);
             const shipPos = ship && ship.pos;
             const shipAlive = !!(ship && ship.alive !== false);
             // Spawning (not while the ship waits to respawn)
@@ -269,8 +273,14 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
             // UFOs: straight line, wrap, fire within the view distance, leave when lost
             for (const ufo of sys.ufos) {
                 ufo.pos = wrapPos(vAdd(ufo.pos, vScale(ufo.vel, dt)), sys.size);
-                const dist = shipPos ? vLen(nearestDelta(shipPos, ufo.pos, sys.size)) : Infinity;
-                ufo.farTime = dist > sys.cull ? ufo.farTime + dt : 0;
+                const toShip = shipPos ? nearestDelta(ufo.pos, shipPos, sys.size) : null;
+                const dist = toShip ? vLen(toShip) : Infinity;
+                if (recall && toShip && dist > sys.cull) {
+                    ufo.vel = vScale(toShip, UFO3D.speed / dist);
+                    ufo.recalled = (ufo.recalled || 0) + 1;
+                }
+                // Lost far away: it leaves after farTimeout s (never while recalled: it is on its way back)
+                ufo.farTime = dist > sys.cull && !recall ? ufo.farTime + dt : 0;
                 if (ufo.farTime >= UFO3D.farTimeout) {
                     ufo.alive = false;
                     events.push({ type: 'ufoLeft', ufo: ufo.id });
@@ -290,7 +300,6 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
                 b.life -= dt;
                 if (b.life <= 0) events.push({ type: 'bulletExpired', bullet: b.id });
             }
-            sys.bullets = sys.bullets.filter(b => b.life > 0);
             return events;
         },
         /**
@@ -315,7 +324,7 @@ export function createUfoSystem({ rand, size, range, cull, difficulty = 'medium'
                     if (t >= 0 && t < bestT) { bestT = t; best = r; }
                 }
                 if (best) hits.push({ bullet: b, hit: best });
-                else keep.push(b);
+                else if (b.life > 0) keep.push(b); // an expired shot had its last move tested here
             }
             sys.bullets = keep;
             return hits;

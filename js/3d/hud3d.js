@@ -290,6 +290,10 @@ export function drawRadar(ctx, layout, radar, colors, time = 0) {
             ctx.textAlign = 'right';
             ctx.textBaseline = 'middle';
             ctx.fillText(text, cx - r - 6, cy);
+        } else if (layout.label === 'right') {
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, cx + r + 6, cy);
         } else {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'bottom';
@@ -421,5 +425,101 @@ export function drawHitMarker(ctx, w, h, alpha) {
         ctx.lineTo(cx + sx * r * 1.3, cy + sy * r * 1.3);
     }
     ctx.stroke();
+    ctx.restore();
+}
+
+/** Vignette strength for a turn rate (rad/s): none below 60°/s, full (0.55) from 180°/s. */
+export function vignetteAlpha(turnRate) {
+    const deg = (Math.abs(Number(turnRate) || 0) * 180) / Math.PI;
+    return 0.55 * Math.max(0, Math.min(1, (deg - 60) / 120));
+}
+
+/** Darkened screen edges during fast artificial turns (setting vignette3d). alpha 0..1. */
+export function drawVignette(ctx, w, h, alpha) {
+    if (!(alpha > 0.01)) return;
+    const r = Math.hypot(w, h) / 2;
+    const g = ctx.createRadialGradient(w / 2, h / 2, r * 0.45, w / 2, h / 2, r);
+    g.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    g.addColorStop(1, `rgba(0, 0, 0, ${Math.min(0.9, alpha)})`);
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+}
+
+/** A short message box at the bottom centre (achievement unlocked). toast: { text, t } (fades in the last 0.5 s). */
+export function drawToast(ctx, w, h, toast) {
+    if (!toast || !toast.text) return;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, toast.t / 0.5));
+    ctx.font = 'bold 14px Arial, sans-serif';
+    const tw = (ctx.measureText ? ctx.measureText(toast.text).width : toast.text.length * 8) || toast.text.length * 8;
+    const bw = tw + 28, bh = 30;
+    const x = (w - bw) / 2, y = h - 140;
+    ctx.fillStyle = 'rgba(10, 16, 30, 0.85)';
+    ctx.fillRect(x, y, bw, bh);
+    ctx.strokeStyle = 'rgba(255, 210, 122, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.fillStyle = '#ffd27a';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(toast.text, w / 2, y + bh / 2);
+    ctx.restore();
+}
+
+/** Lines of at most `max` characters (the tutorial box text; pure). */
+export function wrapText(text, max = 56) {
+    const out = [];
+    let line = '';
+    for (const word of String(text || '').split(/\s+/).filter(Boolean)) {
+        if (line && (line + ' ' + word).length > max) { out.push(line); line = word; }
+        else line = line ? line + ' ' + word : word;
+    }
+    if (line) out.push(line);
+    return out;
+}
+
+/** The tutorial step's title, text and progress bar in a box at the top centre. */
+export function drawTutorialBox(ctx, w, h, { title = '', body = '', progress = null } = {}) {
+    if (!title && !body) return;
+    const lines = wrapText(body, Math.max(24, Math.floor(Math.min(w * 0.55, 560) / 8)));
+    const bw = Math.min(w - 32, 580), lh = 18;
+    const bh = 34 + lines.length * lh + (progress ? 10 : 0);
+    const x = (w - bw) / 2, y = Math.max(56, h * 0.14);
+    ctx.save();
+    ctx.fillStyle = 'rgba(10, 16, 30, 0.82)';
+    ctx.fillRect(x, y, bw, bh);
+    ctx.strokeStyle = 'rgba(159, 255, 208, 0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#9fffd0';
+    ctx.font = 'bold 15px Arial, sans-serif';
+    ctx.fillText(title, w / 2, y + 8);
+    ctx.fillStyle = '#e8f4ff';
+    ctx.font = '14px Arial, sans-serif';
+    lines.forEach((l, i) => ctx.fillText(l, w / 2, y + 28 + i * lh));
+    if (progress && progress.count > 0) {
+        const f = Math.max(0, Math.min(1, (progress.index + (progress.value || 0)) / progress.count));
+        ctx.fillStyle = 'rgba(159, 255, 208, 0.85)';
+        ctx.fillRect(x + 8, y + bh - 8, (bw - 16) * f, 3);
+    }
+    ctx.restore();
+}
+
+/** Pulsing rings around both radar circles (the tutorial's radar step). */
+export function drawRadarPulse(ctx, layout, time = 0) {
+    if (!layout) return;
+    const k = 0.5 + 0.5 * Math.sin(time * 6);
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 210, 122, ${0.4 + 0.5 * k})`;
+    ctx.lineWidth = 3;
+    for (const hemi of ['front', 'rear']) {
+        ctx.beginPath();
+        ctx.arc(layout[hemi].cx, layout[hemi].cy, layout.r + 4 + 4 * k, 0, Math.PI * 2);
+        ctx.stroke();
+    }
     ctx.restore();
 }

@@ -8,8 +8,6 @@
 // Every URL the test opens carries &lowres3d=1. (The 2D menu's Start 3D opens ./?3d=1 by
 // itself, without it: that one test only checks the 3D menu, which draws no 3D scene.)
 //
-// Until ui3d is wired in, game3d.ui is missing and every test here skips itself.
-//
 // REQUIRED HOOK FIELDS (window.__spaceAdventure.game3d), for the wiring agent:
 //   ui          ui.snapshot() from js/3d/ui3d.js: { visible, screen, focus, items, profile,
 //               guest, prompts, view }
@@ -58,8 +56,6 @@ async function open3d(page, { query = '&seed3d=1', storage = {}, path = '/?3d=1'
   }, storage);
   await page.goto(`${path}${query}&lowres3d=1`);
   await waitLoaded(page);
-  const wired = await page.evaluate(() => !!window.__spaceAdventure.game3d.ui);
-  test.skip(!wired, 'ui3d is not wired into the 3D page yet (game3d.ui missing)');
   return errors;
 }
 const waitLoaded = (page) => page.waitForFunction(() => window.__spaceAdventure && window.__spaceAdventure.game3d
@@ -314,7 +310,6 @@ test('Start 3D from the 2D menu (?force3d=1) reaches the 3D menu with the same p
     page.keyboard.press('Enter'),
   ]);
   await waitLoaded(page);
-  test.skip(!(await page.evaluate(() => !!window.__spaceAdventure.game3d.ui)), 'ui3d is not wired into the 3D page yet');
   await uiScreen(page).toBe('menu');
   expect((await ui(page)).profile).toBe('TESTER');
   expect(errors).toEqual([]);

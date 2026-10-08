@@ -38,6 +38,7 @@ import { createUfoSystem } from './ufo3d.js';
 import { createBoss3d, BOSS3D } from './boss3d.js';
 import { createPowerUps, POWERUP_TYPES } from './powerup3d.js';
 import { createHyperspace, tickHyperspace, tryHyperspace, hyperspaceReady } from './hyperspace3d.js';
+import { lastFew } from './radar3d.js';
 
 export const SIM = Object.freeze({
     dt: 1 / 60,
@@ -115,6 +116,7 @@ export function createSim({
         fireCooldown: 0,
         nextIdValue: 1,
         events: [],
+        eventsDropped: 0,      // events dropped because nobody drained them (cap 200; review #14)
         stats: {
             collected: 0, wasted: 0, splits: 0, redsShot: 0, hits: 0, shieldHits: 0, shots: 0, shotsHit: 0, assisted: 0, levels: 0, bestCombo: 0,
             ufosShot: 0, ufoHits: 0, bossHits: 0, weakPoints: 0, bosses: 0, powerUps: 0, jumps: 0, credits: 0,
@@ -138,13 +140,19 @@ export function createSim({
     return s;
 }
 
+/** Undrained events kept at most (the oldest go first; s.eventsDropped counts them). */
+export const MAX_EVENTS = 200;
+
 export function nextId(s) {
     return s.nextIdValue++;
 }
 
 function emit(s, type, data = {}) {
     s.events.push({ type, t: s.time, ...data });
-    if (s.events.length > 200) s.events.splice(0, s.events.length - 200);
+    if (s.events.length > MAX_EVENTS) {
+        s.eventsDropped += s.events.length - MAX_EVENTS;
+        s.events.splice(0, s.events.length - MAX_EVENTS);
+    }
 }
 
 /**
@@ -172,8 +180,8 @@ function startLevel(s, level) {
     // A new level: no UFOs or shots left over, pickups go (effects stay, as in 2D), the boss
     // appears ahead of the ship on boss levels
     if (s.ufoSys) {
+        s.ufoSys.configure({ level }); // first: clear() times the first UFO with the new level
         s.ufoSys.clear();
-        s.ufoSys.configure({ level });
         s.ufos = s.ufoSys.ufos;
     }
     if (s.power) s.power.clearPickups();
@@ -190,6 +198,14 @@ export function rocksLeft(s) {
 /** Something other than rocks keeps the level going: a hostile UFO, or the boss until it is gone. */
 export function levelBlocked(s) {
     return (s.ufos || []).some((u) => u.alive !== false && !u.friendly) || !!(s.boss && s.boss.alive !== false);
+}
+
+/**
+ * Should the radar show everything at any distance, with edge arrows (radar3d.js lastFew)?
+ * The last few rocks of a level, or no rock left while a UFO or the boss still blocks the end.
+ */
+export function showAllTargets(s) {
+    return !!s.levels && lastFew(rocksLeft(s), levelBlocked(s));
 }
 
 /** The boss as a target / obstacle ({ id, kind, pos, radius, vel }), or null. */
@@ -237,7 +253,10 @@ function hitRed(s, rock, hitDir, by = 'player') {
     const byShip = by === 'ship';
     if (!removeRock(s, rock)) return;
     const pieces = splitRock(rock, s.rand, { hitDir, nextId: () => nextId(s) });
-    for (const p of pieces) if (rock.cluster) p.cluster = rock.cluster;
+    for (const p of pieces) {
+        p.pos = wrapPos(p.pos, s.size); // splitRock places them beside the rock, maybe across the seam
+        if (rock.cluster) p.cluster = rock.cluster;
+    }
     s.rocks.push(...pieces);
     s.stats.splits++;
     if (by === 'player') {
@@ -283,6 +302,9 @@ function dropPowerUp(s, pos) {
  */
 function shipHit(s, from, cause = 'rock') {
     const ship = s.ship;
+    // One hit at a time: a shield (or a life) already lost this step protects from the rest of
+    // the step and the grace that follows (2D: nothing collides while protected)
+    if (cause !== 'hyperspace' && (!ship.alive || s.over || ship.invulnerable > 0)) return;
     const shielded = cause !== 'hyperspace' && (ship.shield > 0 || s.power.consumeShield());
     if (shielded) {
         ship.shield = 0;
@@ -301,6 +323,7 @@ function shipHit(s, from, cause = 'rock') {
     ship.vel = [0, 0, 0];
     if (s.lives <= 0) {
         s.over = true;
+        s.bullets = []; // shots still in flight score nothing after the game is over
         emit(s, 'gameover', { score: s.score, level: s.level });
     } else {
         ship.respawn = RULES3D.respawnDelay;
@@ -313,9 +336,18 @@ function respawnShip(s) {
     ship.respawn = 0;
     ship.invulnerable = RULES3D.respawnInvulnerable;
     pushRocksAway(s.rocks, ship.pos, RULES3D.respawnPush, s.size);
+    // Never inside the boss (a failed jump or a collision can leave the ship there)
+    if (s.boss && s.boss.alive) {
+        const d = nearestDelta(s.boss.state.pos, ship.pos, s.size);
+        const len = vLen(d);
+        const want = BOSS3D.bodyRadius + SIM.shipRadius + RESPAWN_BOSS_MARGIN;
+        if (len < want) ship.pos = wrapPos(vAdd(s.boss.state.pos, vScale(len > 1e-6 ? vScale(d, 1 / len) : [0, 0, 1], want)), s.size);
+    }
     if (s.incoming) s.incoming.timer = Math.max(s.incoming.timer, RULES3D.incomingHoldAfterRespawn);
     emit(s, 'respawn', { lives: s.lives });
 }
+
+const RESPAWN_BOSS_MARGIN = 40;
 
 /** The ship as the enemy systems see it. */
 const shipView = (s) => ({
@@ -348,7 +380,9 @@ function hyperspace(s) {
 /** UFOs, the boss and power-ups for one step: their own updates and what they report. */
 function stepEnemies(s, dt) {
     const ship = shipView(s);
-    for (const e of s.ufoSys.update(dt, { ship, greens: s.rocks.filter((r) => r.kind === 'green') })) {
+    // Nothing else left in the level: a UFO lost beyond the cull distance heads back to the ship
+    const recall = s.levels && rocksLeft(s) === 0;
+    for (const e of s.ufoSys.update(dt, { ship, greens: s.rocks.filter((r) => r.kind === 'green'), recall })) {
         if (e.type === 'ufoSpawn' || e.type === 'ufoLeft') emit(s, e.type, { id: e.ufo });
         else if (e.type === 'ufoShoot') {
             const u = s.ufoSys.ufos.find((x) => x.id === e.ufo);
@@ -532,7 +566,7 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
     syncAdaptive(s);
 
     // Bullets: swept against every rock (earliest hit wins); crystals are destroyed, reds split
-    for (let i = s.bullets.length - 1; i >= 0; i--) {
+    for (let i = s.over ? -1 : s.bullets.length - 1; i >= 0; i--) {
         const b = s.bullets[i];
         const move = vScale(b.vel, dt);
         let best = null;
@@ -549,8 +583,12 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
         if (bh && bh.t < bestT) { bestT = bh.t; best = bh; }
         if (best) {
             s.bullets.splice(i, 1);
-            s.stats.shotsHit++;
-            if (s.adaptive) s.adaptive.trackShotHit();
+            // A shot the boss body absorbs (no weak point, or the boss still entering) is no hit
+            // for the accuracy the adaptive difficulty sees
+            if (!(best === bh && (bh.type === 'body' || !s.boss.vulnerable))) {
+                s.stats.shotsHit++;
+                if (s.adaptive) s.adaptive.trackShotHit();
+            }
             if (best === u) shootUfo(s, u);
             else if (best === bh) shootBoss(s, bh);
             else if (best.kind === 'green') {
@@ -580,7 +618,7 @@ export function stepSim(s, input = {}, dt = SIM.dt) {
                 const from = nearestDelta(ship.pos, r.pos, s.size);
                 hitRed(s, r, vSub([0, 0, 0], from), 'ship');
                 shipHit(s, from);
-                if (!ship.alive || s.over) break;
+                if (!ship.alive || s.over || ship.invulnerable > 0) break; // a shield hit protects from the rest
             }
         }
     }
@@ -643,6 +681,7 @@ export function simCounts(s) {
         ufoBullets: s.ufoSys.bullets.length,
         bossBullets: s.boss ? s.boss.state.bullets.length : 0,
         powerUps: s.power.pickups.length,
+        eventsDropped: s.eventsDropped,
     };
 }
 

@@ -71,26 +71,33 @@ export function isThreat(delta, relVel, rockRadius, range) {
     return miss < rockRadius + RADAR.shipRadius + RADAR.threatMargin;
 }
 
-/** Is the level down to its last few rocks (plan 07 §2.5: all of them on the radar, with arrows)? */
-export const lastFew = (rocksLeft) => rocksLeft > 0 && rocksLeft <= RADAR.lastRocks;
+/**
+ * Is the level down to its last few rocks (plan 07 §2.5: all of them on the radar, with
+ * arrows)? blocked: no rock left but a UFO or the boss still keeps the level going; those
+ * then show at any distance too, so the player can find them (review #1).
+ */
+export const lastFew = (rocksLeft, blocked = false) => (rocksLeft > 0 && rocksLeft <= RADAR.lastRocks) || (rocksLeft === 0 && !!blocked);
 
 /**
- * Where each cluster's remaining rocks are, as seen from the ship: the mean of their nearest
- * images (so a cluster across the wrap seam stays together). Clusters with no rock left are
- * dropped. @returns {Array<{ id, delta, dist, count }>}
+ * Where each cluster's remaining rocks are, as seen from the ship: their mean, kept together
+ * across the wrap seam. Clusters with no rock left are dropped.
+ * @returns {Array<{ id, delta, dist, count }>}
  */
 export function clusterCentres(shipPos, rocks, size) {
+    // Members are averaged around the first member (nearest images to it), then the centre is
+    // taken at its nearest image to the ship: a cluster across the seam opposite the ship
+    // stays together instead of averaging two images (review #12)
     const acc = new Map();
     for (const r of rocks) {
         if (!r.cluster) continue;
-        const d = nearestDelta(shipPos, r.pos, size);
-        const a = acc.get(r.cluster) || { sum: [0, 0, 0], count: 0 };
-        a.sum = vAdd(a.sum, d);
+        let a = acc.get(r.cluster);
+        if (!a) { a = { ref: r.pos, sum: [0, 0, 0], count: 0 }; acc.set(r.cluster, a); }
+        a.sum = vAdd(a.sum, nearestDelta(a.ref, r.pos, size));
         a.count++;
-        acc.set(r.cluster, a);
     }
     return [...acc].map(([id, a]) => {
-        const delta = vScale(a.sum, 1 / a.count);
+        const centre = vAdd(a.ref, vScale(a.sum, 1 / a.count));
+        const delta = nearestDelta(shipPos, centre, size);
         return { id, delta, dist: vLen(delta), count: a.count };
     });
 }
@@ -165,17 +172,25 @@ export function buildRadar(ship, rocks, { size, range, all = false, clusters = f
     return out;
 }
 
-/** The camera's vertical field of view (degrees) for an aspect ratio (render3d.js uses it). */
-export function verticalFov(aspect) {
+/** The Field of view setting's default (fov3d): the view the game was tuned with. */
+export const DEFAULT_FOV = 70;
+
+/**
+ * The camera's vertical field of view (degrees) for an aspect ratio (render3d.js uses it):
+ * about 90° across on wide screens, 50 to 80° up and down. The Field of view setting (fov3d,
+ * 60 to 95, default 70) scales it: 70 is the tuned view, 95 about a third wider.
+ */
+export function verticalFov(aspect, fov = DEFAULT_FOV) {
     const vfov = 2 * Math.atan(Math.tan(45 * Math.PI / 180) / Math.max(1e-6, aspect)) * 180 / Math.PI;
-    return Math.min(80, Math.max(50, vfov));
+    const scale = (Number.isFinite(fov) && fov > 0 ? fov : DEFAULT_FOV) / DEFAULT_FOV;
+    return Math.min(110, Math.max(40, Math.min(80, Math.max(50, vfov)) * scale));
 }
 
 /** Is a ship-local direction inside the camera's view (with a small margin)? */
-export function onScreen(local, aspect, margin = 0.92) {
+export function onScreen(local, aspect, margin = 0.92, fov = DEFAULT_FOV) {
     const [x, y, z] = local;
     if (z >= -1e-6) return false;
-    const ty = Math.tan((verticalFov(aspect) * Math.PI / 180) / 2) * margin;
+    const ty = Math.tan((verticalFov(aspect, fov) * Math.PI / 180) / 2) * margin;
     const tx = ty * aspect;
     return Math.abs(x / -z) <= tx && Math.abs(y / -z) <= ty;
 }
@@ -188,7 +203,7 @@ export function onScreen(local, aspect, margin = 0.92) {
  * distance.
  * @returns {{ id, angle: number, dist: number } | null}
  */
-export function edgeMarker(ship, rocks, { size, range, aspect, always = false }) {
+export function edgeMarker(ship, rocks, { size, range, aspect, always = false, fov = DEFAULT_FOV }) {
     const inv = qConj(ship.q);
     let best = null;
     for (const r of rocks) {
@@ -196,7 +211,7 @@ export function edgeMarker(ship, rocks, { size, range, aspect, always = false })
         const delta = nearestDelta(ship.pos, r.pos, size);
         const dist = vLen(delta);
         const local = qRotate(inv, delta);
-        const visible = dist <= range && onScreen(local, aspect);
+        const visible = dist <= range && onScreen(local, aspect, undefined, fov);
         if (visible && !always) return null; // a crystal is in view
         if (!best || dist < best.dist) best = { r, dist, local, visible };
     }
@@ -212,14 +227,14 @@ export function edgeMarker(ship, rocks, { size, range, aspect, always = false })
  * beyond the view distance, pointing the shortest way to turn (as edgeMarker).
  * @returns {Array<{ id, type, angle, dist }>}
  */
-export function remainingMarkers(ship, rocks, { size, range, aspect }) {
+export function remainingMarkers(ship, rocks, { size, range, aspect, fov = DEFAULT_FOV }) {
     const inv = qConj(ship.q);
     const out = [];
     for (const r of rocks) {
         const delta = nearestDelta(ship.pos, r.pos, size);
         const dist = vLen(delta);
         const local = qRotate(inv, delta);
-        if (dist <= range && onScreen(local, aspect)) continue;
+        if (dist <= range && onScreen(local, aspect, undefined, fov)) continue;
         const [x, y] = local;
         const angle = Math.hypot(x, y) < 1e-6 ? -Math.PI / 2 : Math.atan2(y, x);
         out.push({ id: r.id, type: TYPE_OF[r.kind] || r.kind, angle, dist });
@@ -233,22 +248,24 @@ export function remainingMarkers(ship, rocks, { size, range, aspect }) {
  * buttons on the right (Fire; roll buttons above it when they show). Labels sit left of each
  * circle. Button boxes mirror proto3d.js CSS (84 px round buttons 16 px from the edges, 64 px
  * roll buttons at bottom 116). rollButtons: the roll buttons are visible (Joystick, no level
- * horizon). insets: safe-area insets in CSS px.
- * @returns {{ r: number, front: {cx, cy}, rear: {cx, cy}, label: 'left' }}
+ * horizon). insets: safe-area insets in CSS px. side 'left' (the left-handed layout, whose
+ * buttons are on the left): the left edge, below the HUD text, labels right of the circles.
+ * @returns {{ r: number, front: {cx, cy}, rear: {cx, cy}, label: 'left' | 'right' }}
  */
-export function radarLayout(w, h, { rollButtons = false, insets = {} } = {}) {
-    const it = insets.top || 0, ir = insets.right || 0, ib = insets.bottom || 0;
+export function radarLayout(w, h, { rollButtons = false, insets = {}, side = 'right' } = {}) {
+    const it = insets.top || 0, ir = insets.right || 0, ib = insets.bottom || 0, il = insets.left || 0;
     const gap = 10;
-    const top = it + 8 + 44 + 10;                                 // below the top bar
+    const left = side === 'left';
+    const top = it + (left ? 130 : 8 + 44 + 10);                  // below the HUD text (left) or the top bar
     const bottom = h - ib - (rollButtons ? 116 + 64 : 16 + 84) - 10; // above the right buttons
     const fit = Math.floor((bottom - top - gap) / 4);
     const r = Math.max(22, Math.min(70, Math.round(Math.min(w, h) * 0.11), fit));
-    const cx = w - ir - 12 - r;
+    const cx = left ? il + 12 + r : w - ir - 12 - r;
     const frontY = top + r;
     return {
         r,
         front: { cx, cy: frontY },
         rear: { cx, cy: frontY + 2 * r + gap },
-        label: 'left',
+        label: left ? 'right' : 'left',
     };
 }

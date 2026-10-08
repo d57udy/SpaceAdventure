@@ -147,12 +147,16 @@ export function mouseDeltas(dx, dy, sensitivity = 5) {
  * @param {'direct'|'rate'|'joystick'} [o.mode]
  * @param {boolean} [o.levelHorizon]
  * @param {number} [o.sensitivity] 1..10
+ * @param {boolean} [o.invert] - invert up/down (setting invert3d)
+ * @param {number} [o.turnRateMult] - Turn Speed upgrade (progress3d shipMods3d turnRateMult)
  */
-export function createLook({ mode = 'direct', levelHorizon = false, sensitivity = 5 } = {}) {
+export function createLook({ mode = 'direct', levelHorizon = false, sensitivity = 5, invert = false, turnRateMult = 1 } = {}) {
     return {
         mode: CONTROL_MODES.includes(mode) ? mode : 'direct',
         level: !!levelHorizon,
         sensitivity,
+        invert: !!invert,          // invert up/down: sticks, keys, mouse and Rate tilt (not Direct's 1:1 pose)
+        turnRateMult,              // Turn Speed upgrade: Rate and Joystick maximum rates (not Direct)
         q: qIdentity(),
         yaw: 0, pitch: 0,          // used while level horizon is on
         neutral: null,             // device quaternion of the neutral pose
@@ -239,9 +243,10 @@ function applyDeltas(look, dPitch, dYaw, dRoll) {
 export function stepLook(look, input = {}, dt = 1 / 60) {
     const device = input.device || null;
     if (device && !look.neutral) recentre(look, device); // first reading sets the neutral pose
-    const m = mouseDeltas(input.mouseDX, input.mouseDY, look.sensitivity);
+    const flip = look.invert ? -1 : 1;
+    const m = mouseDeltas(input.mouseDX, (input.mouseDY || 0) * flip, look.sensitivity);
     // Manual inputs work in every mode (joystick, controller, keys, mouse)
-    const manual = joystickRates(input.stickX, input.stickY, input.roll, look.sensitivity);
+    const manual = joystickRates(input.stickX, (input.stickY || 0) * flip, input.roll, look.sensitivity);
 
     if (look.mode === 'direct' && device && look.neutral) {
         // Manual input nudges the base orientation; the phone then drives it 1:1
@@ -261,10 +266,12 @@ export function stepLook(look, input = {}, dt = 1 / 60) {
         return look;
     }
 
-    let rates = manual;
+    // Rate and Joystick: the Turn Speed upgrade raises the maximum rates
+    const k = Number.isFinite(look.turnRateMult) && look.turnRateMult > 0 ? look.turnRateMult : 1;
+    let rates = { pitch: manual.pitch * k, yaw: manual.yaw * k, roll: manual.roll * k };
     if (look.mode === 'rate' && device && look.neutral) {
         const r = rateFromDeflection(deflection(look.neutral, device), look.sensitivity);
-        rates = { pitch: r.pitch + manual.pitch, yaw: r.yaw + manual.yaw, roll: r.roll + manual.roll };
+        rates = { pitch: (r.pitch * flip + manual.pitch) * k, yaw: (r.yaw + manual.yaw) * k, roll: (r.roll + manual.roll) * k };
     }
     look.rates = rates;
     applyDeltas(look, rates.pitch * dt + m.pitch, rates.yaw * dt + m.yaw, look.level ? 0 : rates.roll * dt);

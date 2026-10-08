@@ -29,7 +29,15 @@ const BG = 0x02030a;
 const DUST_COUNT = 520;
 export const DUST_BOX = 200; // divides every world side, so the dust does not jump when the ship wraps
 const SPARK_MAX = 600;
-const SKY_RADIUS = 2300;     // outermost sky geometry (planet far side), scaled to fit the far plane
+const SKY_RADIUS = 2300;
+/**
+ * Rock and crystal colours per palette (js/palette.js ids). Colour-safe: blue crystals and
+ * orange rocks, as the 2D Colour-safe palette (the shapes keep their meaning too).
+ */
+export const PALETTE3D = Object.freeze({
+    standard: Object.freeze({ crystal: 0x3dffa0, crystalEmissive: 0x0c7a40, glow: 0x33ff99, rock: 0xff3a4c, rockEmissive: 0x3a0610 }),
+    safe: Object.freeze({ crystal: 0x3db7ff, crystalEmissive: 0x0b3f78, glow: 0x3db7ff, rock: 0xff8a1e, rockEmissive: 0x3a1800 }),
+});     // outermost sky geometry (planet far side), scaled to fit the far plane
 
 // Radial fog for every fogged material (patched once, before any shader compiles)
 THREE.ShaderChunk.fog_vertex = THREE.ShaderChunk.fog_vertex.replace('- mvPosition.z', 'length( mvPosition.xyz )');
@@ -287,10 +295,12 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
                 scene.add(bossMesh.object3d);
             }
         }
-        if (bossMesh) bossMesh.update({ boss, turretFlash: view.turretFlash || 0, view: v }, t);
+        if (bossMesh) bossMesh.update({ boss, turretFlash: view.turretFlash || 0, turretDir: view.turretDir || null, view: v }, t);
     }
 
     let drawCalls = 0;
+    let fovSetting = 70;
+    let paletteId = 'standard';
     let shipPos = [0, 0, 0];
     let drawnRocks = 0;
     const lastSeen = new Map(); // rock id -> { distance, drawn } from the last frame (test hook)
@@ -426,9 +436,16 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
             const aspect = width / Math.max(1, height);
             camera.aspect = aspect;
             // About 90° horizontally on wide screens, at most 80° vertically when tall
-            camera.fov = verticalFov(aspect);
+            camera.fov = verticalFov(aspect, fovSetting);
             camera.updateProjectionMatrix();
         },
+        /** The Field of view setting (fov3d, 60 to 95; 70 = the tuned view, radar3d verticalFov). */
+        setFov(fov) {
+            fovSetting = fov;
+            camera.fov = verticalFov(camera.aspect, fovSetting);
+            camera.updateProjectionMatrix();
+        },
+        get fov() { return camera.fov; },
         /** Add a burst of sparkles at a world position. kind: 'collect' | 'split' | 'hit'. */
         burst(pos, kind = 'collect') {
             const color = kind === 'collect' ? [0.3, 1, 0.6] : kind === 'hit' ? [1, 0.5, 0.3] : [1, 0.35, 0.3];
@@ -489,6 +506,17 @@ export function createRenderer3d(canvas, { world = worldFor(), antialias = true 
         },
         /** World settings in effect (test hook). */
         get world() { return { size: worldSize, fogNear, fogFar, cullDistance, cameraFar: camera.far }; },
+        /** Rock and crystal colours for a palette id ('standard' | 'safe', PALETTE3D). */
+        setPalette(id) {
+            const p = PALETTE3D[id] || PALETTE3D.standard;
+            greenMat.color.setHex(p.crystal);
+            greenMat.emissive.setHex(p.crystalEmissive);
+            greenGlowMat.color.setHex(p.glow);
+            redMat.color.setHex(p.rock);
+            redMat.emissive.setHex(p.rockEmissive);
+            paletteId = PALETTE3D[id] ? id : 'standard';
+        },
+        get palette() { return paletteId; },
         /**
          * How visible a rock was in the last frame (test hook, no pixel reads): distance from
          * the ship, drawn (inside the cull distance) and the fog factor (0 clear, 1 fully fogged).

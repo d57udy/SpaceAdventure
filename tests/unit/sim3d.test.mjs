@@ -385,3 +385,121 @@ test('aim assist: a rock 3° off the nose is hit when Assisting (4°), missed wh
     place(s, 'red', -300, 'small');
     assert.deepEqual(aimTargets(s).map((r) => r.kind), ['red']);
 });
+
+// --- Regression tests for docs/plans/07-review.md
+import { showAllTargets as rvShowAll, MAX_EVENTS as RV_MAX_EVENTS } from '../../js/3d/sim3d.js';
+import { BOSS3D as RV_BOSS3D } from '../../js/3d/boss3d.js';
+
+test('review #2: a shield hit protects from a second hit in the same step', () => {
+    const s = empty({ lives: 3 });
+    s.power.activate('shield');
+    place(s, 'red', 0, 'small', 10);
+    place(s, 'red', 0, 'small', -10);
+    stepSim(s, {});
+    const t = types(s);
+    assert.deepEqual(t.filter((x) => x === 'hit' || x === 'shieldHit'), ['shieldHit']);
+    assert.equal(s.lives, 3);
+    // Two UFO-shot-like hits through shipHit: only the first counts while protected
+    const s2 = empty({ lives: 3 });
+    s2.ship.invulnerable = 0.5;
+    place(s2, 'red', 0, 'small', 5);
+    stepSim(s2, {});
+    assert.equal(s2.lives, 3, 'protected: no hit');
+});
+
+test('review #3: nothing scores after the game is over (shots in flight are cleared)', () => {
+    const s = empty({ lives: 1 });
+    const [x, y, z] = s.ship.pos;
+    const u = s.ufoSys.spawnAt([x, y, z - 80], s.ship.pos);
+    u.vel = [0, 0, 0];
+    s.bullets.push({ id: nextId(s), pos: [x, y, z - 20], vel: [0, 0, -900], life: 1 });
+    place(s, 'red', 0, 'small', 5);
+    run(s, {}, 0.2);
+    const t = types(s);
+    assert.ok(t.includes('gameover'));
+    assert.ok(!t.includes('ufoDestroyed'), t.join());
+    assert.equal(s.score, 0);
+    assert.equal(s.bullets.length, 0);
+});
+
+test('review #4: a respawn never leaves the ship inside the boss', () => {
+    const s = createSim({ seed: 3, level: 2, lives: 3 });
+    assert.ok(s.boss);
+    s.ship.pos = s.boss.state.pos.slice(); // a failed jump left it right inside
+    s.ship.alive = false;
+    s.ship.respawn = 1 / 120;
+    stepSim(s, {});
+    assert.equal(s.ship.alive, true);
+    const d = wrappedDistance(s.ship.pos, s.boss.state.pos, s.size);
+    assert.ok(d >= RV_BOSS3D.bodyRadius + SIM.shipRadius, `outside the boss (${d})`);
+});
+
+test('review #1: no rock left: a UFO lost far away heads back, and the radar shows everything', () => {
+    const s = createSim({ seed: 4, view: 'far', lives: 99 });
+    s.incoming.left = 0;
+    s.rocks = [];
+    const u = s.ufoSys.spawnAt(s.ship.pos, s.ship.pos);
+    u.pos = [s.ship.pos[0] + 1550, s.ship.pos[1] + 1000, s.ship.pos[2]]; // beyond the cull distance
+    u.vel = [100, 0, 0]; // flying away
+    s.ufos = s.ufoSys.ufos;
+    assert.equal(rvShowAll(s), true, 'blocking UFO with no rocks: show all at any distance');
+    stepSim(s, {});
+    const toShip = nearestDelta(u.pos, s.ship.pos, s.size);
+    assert.ok(vDot(u.vel, toShip) > 0, 're-aimed toward the ship');
+    // It comes within the cull distance instead of leaving
+    let closest = Infinity;
+    for (let i = 0; i < 60 * 30 && s.level === 1; i++) {
+        stepSim(s, {});
+        if (s.ufos.length) closest = Math.min(closest, wrappedDistance(s.ufos[0].pos, s.ship.pos, s.size));
+    }
+    assert.ok(closest < s.world.cullDistance, `came back (${closest})`);
+    // With rocks left it is not "show all"
+    const t = createSim({ seed: 4, view: 'far' });
+    assert.equal(rvShowAll(t), false);
+});
+
+test('review #8: the first UFO of a new level is timed with the new level', () => {
+    const s = createSim({ seed: 9, lives: 99 });
+    s.incoming.left = 0;
+    s.rocks = [];
+    stepSim(s, {}); // level 2 starts
+    assert.equal(s.level, 2);
+    assert.equal(s.ufoSys.state.level, 2);
+    const lo = 15 * 1 * 1 * (1 - 2 * 0.05) * 0.75, hi = 15 * (1 - 2 * 0.05) * 1.25;
+    assert.ok(s.ufoSys.state.spawnTimer >= lo - 1e-9 && s.ufoSys.state.spawnTimer <= hi + 1e-9, `${s.ufoSys.state.spawnTimer}`);
+});
+
+test('review #9: shots the boss body absorbs are not hits for the adaptive difficulty', () => {
+    const adaptive = createAdaptive3d();
+    const s = createSim({ seed: 3, level: 2, lives: 99, adaptive });
+    s.rocks = [];
+    s.incoming.left = 0;
+    const b = s.boss.state;
+    // Straight at the body centre, away from every weak point direction (entering: absorbed)
+    const [x, y, z] = b.pos;
+    s.ship.pos = [x, y, z + 400];
+    s.bullets.push({ id: nextId(s), pos: [x, y, z + 300], vel: [0, 0, -900], life: 1 });
+    const before = s.stats.shotsHit;
+    run(s, {}, 0.3);
+    assert.equal(s.bullets.length, 0, 'the body absorbed it');
+    assert.equal(s.stats.shotsHit, before);
+});
+
+test('review #10: split pieces are wrapped into the cube', () => {
+    const s = empty();
+    const [x, y, z] = s.ship.pos;
+    const r = makeRock({ id: nextId(s), kind: 'red', size: 'large', pos: [s.size - 1, y, z - 200], vel: [0, 0, 0], rand: s.rand });
+    s.rocks.push(r);
+    s.bullets.push({ id: nextId(s), pos: [s.size - 1, y, z - 120], vel: [0, 0, -900], life: 1 });
+    run(s, {}, 0.2);
+    assert.ok(s.rocks.length >= 2, 'split');
+    for (const p of s.rocks) for (const c of p.pos) assert.ok(c >= 0 && c < s.size, `${p.pos}`);
+});
+
+test('review #14: dropped events are counted', () => {
+    const s = empty();
+    for (let i = 0; i < RV_MAX_EVENTS + 25; i++) s.events.push({ type: 'x' });
+    stepSim(s, { fire: true });
+    assert.equal(s.events.length, RV_MAX_EVENTS);
+    assert.ok(simCounts(s).eventsDropped >= 26);
+});

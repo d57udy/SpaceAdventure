@@ -94,6 +94,16 @@ export function clampToFar(rel, far, limit = far * 0.92) {
     return { pos: [rel[0] * k, rel[1] * k, rel[2] * k], scale: k };
 }
 
+/**
+ * Fade for an object drawn beyond the cull distance (the boss glow): toward half the cube
+ * along any axis its nearest image is about to switch to the opposite side, so it fades out
+ * between 0.42 and 0.5 × size there instead of jumping across the sky (review #6).
+ */
+export function seamFade(delta, size) {
+    const m = Math.max(Math.abs(delta[0]), Math.abs(delta[1]), Math.abs(delta[2]));
+    return 1 - smooth(m, size * 0.42, size * 0.5);
+}
+
 /** Boss glow sprite side: large enough to find from far away (about 4 % of the distance). */
 export function bossGlowSize(dist, radius = MESHES3D.bossRadius) {
     return Math.max(radius * 3.2, dist * 0.42);
@@ -389,8 +399,9 @@ export function createHostileBullets({ max = MESHES3D.bulletMax, makeCanvas } = 
  * @param {object} o
  * @param {number[][]} o.normals - unit directions of the weak points (boss3d weakPoints[].dir)
  * state: { boss: { alive, pos, q: [x,y,z,w], weakPoints: [{ id, health, maxHealth, destroyed }],
- *   core: { health, maxHealth, destroyed }, flash, lastHit?: weak point id }, turretFlash: 0..1,
- *   turretDir: [x,y,z] (body frame; boss3d weakPoints[].dir of the firing one), view }.
+ *   core: { health, maxHealth, destroyed }, flash, lastHit, turretFlash, turretDir }, view }; boss3d
+ *   sets lastHit (the flaring weak point) and turretFlash / turretDir (the firing one, body frame);
+ *   state.turretFlash / state.turretDir override them.
  */
 export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.bossRadius, weakRadius = MESHES3D.weakPointRadius } = {}) {
     const R = radius;
@@ -453,7 +464,7 @@ export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.b
             if (!b || b.alive === false) { root.visible = false; last = { glowOpacity: 0, bodyVisible: false, weakLit: 0 }; return; }
             const d = _rel(b.pos, v);
             const dist = dist3(d);
-            const glowOpacity = bossGlowOpacity(dist, v.fogNear, v.fogFar);
+            const glowOpacity = bossGlowOpacity(dist, v.fogNear, v.fogFar) * seamFade(d, v.size);
             root.visible = dist <= v.cullDistance || glowOpacity > 0.01;
             root.position.set(d[0], d[1], d[2]);
             body.visible = dist <= v.cullDistance;
@@ -490,10 +501,12 @@ export function createBossMeshes({ normals = [], makeCanvas, radius = MESHES3D.b
             wp.end(); halo.end();
 
             // Turret flash at the firing weak point
-            const tf = clamp01(state.turretFlash || 0);
-            flash.visible = tf > 0 && !!state.turretDir;
+            // From the state, or from boss3d's own turretFlash / turretDir
+            const tf = clamp01(Math.max(state.turretFlash || 0, b.turretFlash || 0));
+            const tdir = state.turretDir || b.turretDir;
+            flash.visible = tf > 0 && !!tdir;
             if (flash.visible) {
-                const t = state.turretDir;
+                const t = tdir;
                 flash.position.set(t[0], t[1], t[2]).normalize().multiplyScalar(R + weakRadius * 1.4);
                 flash.scale.setScalar(weakRadius * 4 * tf);
                 flashMat.opacity = tf;

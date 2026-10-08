@@ -2242,8 +2242,8 @@ function spawnPowerUpAt(x, y) {
 // --- Initialization ---
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Hidden 3D prototype (docs/plans/06-3d-mode.md, Phase 0): ?3d=1 hands the page to
-    // js/3d/proto3d.js. Dynamic import, so the 2D game never loads any 3D file.
+    // The 3D game (docs/plans/07-3d-game.md): ?3d=1 hands the page to js/3d/game3d.js.
+    // Dynamic import, so the 2D game never loads any 3D file.
     if (new URLSearchParams(location.search).get('3d') === '1') {
         writeLastMode(safeStorage(), '3d'); // the installed app reopens 3D next time
         // Still register the service worker, so a first visit via ?3d=1 installs the offline
@@ -2251,11 +2251,16 @@ document.addEventListener('DOMContentLoaded', () => {
         // waiting update is applied by itself (one reload) while the 3D start or game-over
         // screen shows; never during a run or while paused.
         const hook3d = window.__spaceAdventure || (window.__spaceAdventure = {});
-        const screen3d = () => {
-            try { return (hook3d.game3d && hook3d.game3d.screen) || 'menu'; } catch { return 'menu'; }
+        // Safe for an update: the 3D menu, name or game-over screen (game3d.updateSafe)
+        const updateSafe3d = () => {
+            try {
+                const g = hook3d.game3d;
+                if (!g) return true;
+                return g.updateSafe !== undefined ? !!g.updateSafe : ['menu', 'over'].includes(g.screen);
+            } catch { return true; }
         };
         try {
-            pwa = initPwa({ getState: () => (['menu', 'over'].includes(screen3d()) ? 'menu' : 'playing') });
+            pwa = initPwa({ getState: () => (updateSafe3d() ? 'menu' : 'playing') });
             const tryUpdate = () => { if (pwa.getPwaState().updateReady) pwa.applyUpdate(); };
             pwa.onUpdateReady(tryUpdate);
             setInterval(tryUpdate, 2000); // an update found mid-run applies at the next menu
@@ -2263,8 +2268,8 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('[3d] PWA setup failed:', err);
         }
         Object.defineProperty(hook3d, 'pwa', { get: () => (pwa ? pwa.getPwaState() : null), configurable: true, enumerable: true });
-        import('./3d/proto3d.js').then((m) => m.startPrototype()).catch((err) => {
-            console.error('[3d] prototype failed to load, back to 2D:', err);
+        import('./3d/game3d.js').then((m) => m.startGame3d()).catch((err) => {
+            console.error('[3d] the 3D game failed to load, back to 2D:', err);
             location.replace(location.pathname);
         });
         return;

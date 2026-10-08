@@ -276,3 +276,42 @@ test('cross products used for the cone basis are well defined near the axes', ()
         assert.ok(vLen(vCross(dir, v)) <= Math.sin(0.2) + 1e-9);
     }
 });
+
+// --- Regression tests for docs/plans/07-review.md
+test('review #1: recall: a UFO beyond the cull distance turns toward the ship and never leaves', () => {
+    const u = sys({ cull: RANGE + 90 });
+    const ufo = u.spawnAt(CENTRE, CENTRE);
+    ufo.pos = [CENTRE[0] + 1580, CENTRE[1] + 900, CENTRE[2]];
+    ufo.vel = [UFO3D.speed, 0, 0];
+    const ship = { pos: CENTRE, alive: true };
+    u.update(1 / 60, { ship, recall: true });
+    assert.ok(vDot(ufo.vel, nearestDelta(ufo.pos, CENTRE, SIZE)) > 0, 'heading back');
+    assert.ok(Math.abs(vLen(ufo.vel) - UFO3D.speed) < 1e-6, 'same speed');
+    for (let i = 0; i < 60 * (UFO3D.farTimeout + 2); i++) u.update(1 / 60, { ship, recall: true });
+    assert.equal(u.ufos.length, 1, 'still there (not left)');
+    assert.ok(vLen(nearestDelta(CENTRE, u.ufos[0].pos, SIZE)) < RANGE + 90);
+    // Without recall it would have left
+    const w = sys({ cull: RANGE + 90 });
+    const far = w.spawnAt(CENTRE, CENTRE);
+    far.pos = [CENTRE[0] + 1580, CENTRE[1] + 900, CENTRE[2]];
+    far.vel = [0, 0, 0];
+    for (let i = 0; i < 60 * (UFO3D.farTimeout + 1); i++) w.update(1 / 60, { ship });
+    assert.equal(w.ufos.length, 0);
+});
+
+test('review #11: a UFO shot\'s last move before it expires is still tested', () => {
+    const u = sys();
+    u.setEnabled(false);
+    const ship = { pos: CENTRE, alive: true, radius: 9 };
+    // A shot that reaches the ship on the very step its life runs out
+    u.state.bullets.push({ id: 'b', pos: [CENTRE[0], CENTRE[1], CENTRE[2] - 15], prev: null, vel: [0, 0, UFO3D.bulletSpeed], life: 1 / 60, radius: 3 });
+    u.update(1 / 60, { ship });
+    const hits = u.collideBullets({ ship, rocks: [] });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].hit, 'ship');
+    // An expired shot that missed is gone after the collision test
+    u.state.bullets.push({ id: 'c', pos: [CENTRE[0] + 500, CENTRE[1], CENTRE[2]], prev: null, vel: [0, 0, UFO3D.bulletSpeed], life: 1 / 60, radius: 3 });
+    u.update(1 / 60, { ship });
+    assert.equal(u.collideBullets({ ship, rocks: [] }).length, 0);
+    assert.equal(u.bullets.length, 0);
+});

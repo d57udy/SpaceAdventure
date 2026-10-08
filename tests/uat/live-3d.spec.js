@@ -26,10 +26,22 @@ async function open3dLive(page, query = '') {
   return errors;
 }
 
+/** Start a game: through the menus (Play as guest) when deployed, else the prototype's start button. */
+async function startLive(page) {
+  const g = await g3(page);
+  if (g.ui) {
+    await expect.poll(async () => (await g3(page)).ui.screen, { timeout: T }).toMatch(/^(profile|menu)$/);
+    if ((await g3(page)).ui.screen === 'profile') await page.click('[data-u3d="guest"]');
+    await page.click('[data-u3d="play"]');
+  } else {
+    await page.click('#p3-start');
+  }
+}
+
 test('3D: loads, starts and the game advances', async ({ page }, testInfo) => {
   const errors = await open3dLive(page, '&seed3d=1');
   await shot(page, testInfo, 'menu');
-  await page.click('#p3-start');
+  await startLive(page);
   await expect.poll(async () => (await g3(page)).screen, { timeout: T }).toBe('playing');
   const s0 = (await g3(page)).steps;
   await page.waitForFunction((t) => window.__spaceAdventure.game3d.steps >= t, s0 + 30, { timeout: T });
@@ -39,7 +51,7 @@ test('3D: loads, starts and the game advances', async ({ page }, testInfo) => {
 
 test('3D: the radar sits on the right edge, front above rear', async ({ page }) => {
   await open3dLive(page, '&seed3d=1');
-  await page.click('#p3-start');
+  await startLive(page);
   await expect.poll(async () => (await g3(page)).screen, { timeout: T }).toBe('playing');
   const { layout } = (await g3(page)).radar;
   const w = page.viewportSize().width;

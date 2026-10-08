@@ -313,3 +313,27 @@ test('hyperspace effect: runs for its duration, then hides', () => {
     assert.equal(h.object3d.visible, false);
     h.dispose();
 });
+
+// --- Regression test for docs/plans/07-review.md
+import { seamFade } from '../../js/3d/meshes3d.js';
+
+test('review #6: the boss glow fades out before its nearest image switches sides', () => {
+    assert.equal(seamFade([0, 0, -1000], 3200), 1);
+    assert.equal(seamFade([0, 1600, 0], 3200), 0);
+    assert.ok(seamFade([1500, 0, 0], 3200) < 0.5);
+    const { normals, state } = bossState();
+    const boss = createBossMeshes({ normals, makeCanvas: fakeCanvas });
+    state.boss.pos = [100 + 1590, 100, 100]; // 1590 along x: about to flip
+    boss.update(state, 0);
+    assert.ok(boss.info.glowOpacity < 0.05, `${boss.info.glowOpacity}`);
+    state.boss.pos = [100 + 1100, 100 + 1100, 100]; // 1556 away, both axes well inside
+    boss.update(state, 0);
+    assert.ok(boss.info.glowOpacity > 0.3);
+    // The turret flash from boss3d's own state
+    state.boss.turretFlash = 1;
+    state.boss.turretDir = [1, 0, 0];
+    state.boss.pos = [100, 100, -400];
+    boss.update(state, 0);
+    assert.equal(boss.object3d.children[0].children[3].visible, true);
+    boss.dispose();
+});

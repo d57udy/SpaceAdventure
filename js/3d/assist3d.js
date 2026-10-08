@@ -142,13 +142,13 @@ export function leadPoint(target, bulletSpeed) {
 
 /**
  * Screen position of a ship-frame point with the camera's field of view (radar3d.js
- * verticalFov, as render3d.js uses). null when behind the ship.
+ * verticalFov with the Field of view setting, as render3d.js uses). null when behind the ship.
  * @returns {{ x: number, y: number, scale: number } | null} scale: CSS px per world unit at that depth
  */
-export function projectLocal(local, w, h) {
+export function projectLocal(local, w, h, fov) {
     const [x, y, z] = local;
     if (z >= -1e-6) return null;
-    const ty = Math.tan((verticalFov(w / h) * DEG) / 2);
+    const ty = Math.tan((verticalFov(w / h, fov) * DEG) / 2);
     const depth = -z;
     const scale = (h / 2) / (ty * depth);
     return { x: w / 2 + x * scale, y: h / 2 - y * scale, scale };

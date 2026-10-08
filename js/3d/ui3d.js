@@ -65,6 +65,7 @@ export const SETTINGS3D_ROWS = Object.freeze([
     { key: 'musicVolume', label: 'Music volume' },
     { key: 'sfxVolume', label: 'Sound effects volume' },
     { key: 'rumble', label: 'Controller rumble', format: onOff },
+    { key: 'debug3d', label: 'Frame rate line', format: onOff },
 ].map(Object.freeze));
 
 /** The text a Settings row shows for a value. */
@@ -100,7 +101,7 @@ export const CONTROL_HELP = Object.freeze({
         all: 'Click to capture the mouse, then move it to look around. W or ↑ thrust, Space, F or click fire, A/D or Q/E roll, ← → ↓ turn, H hyperspace, R recentre, Esc or P pause.',
     }),
     controller: Object.freeze({
-        all: 'Left stick turns, right stick rolls. RT (or LT) thrust, Ⓐ or RB fire, Ⓑ hyperspace, Start pauses. In menus: the stick or D-pad moves, Ⓐ selects, Ⓑ goes back.',
+        all: 'Left stick turns, LB and RB (or the right stick) roll. LT thrust, RT or Ⓐ fire, Ⓑ hyperspace, Start pauses. In menus: the stick or D-pad moves, Ⓐ selects, Ⓑ goes back.',
     }),
 });
 
